@@ -1,6 +1,6 @@
 # LTracker
 
-Version: `0.03`
+Version: `0.04`
 
 LTracker is a Lumiverse Spindle extension that creates per-chat tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -17,6 +17,7 @@ LTracker is a Lumiverse Spindle extension that creates per-chat tracker snapshot
 - Saves the latest snapshot in per-user extension storage keyed by chat id.
 - Optionally auto-generates after assistant completions or user messages with debounce and first-message skipping.
 - Optionally saves a storage-only tracker snapshot attached to the triggering message id.
+- Optionally injects the latest cached tracker snapshot into normal generation context through a context handler.
 - Displays status, latest snapshot JSON, diagnostics, settings, and structured errors in the drawer.
 
 ## Auto Mode
@@ -33,17 +34,42 @@ Auto Mode includes:
 - Quiet-generation filtering so LTracker's own tracker calls do not recursively trigger auto mode.
 - Storage-only message-attached snapshots at `chats/{chatId}/messages/{messageId}/tracker-snapshot.json`.
 
-Message-attached snapshots do not mutate chat messages and do not add visible message widgets in `0.03`.
+Message-attached snapshots do not mutate chat messages and do not add visible message widgets in `0.04`.
+
+## Context Handler Injection
+
+Prompt injection is off by default. When enabled, LTracker registers a Lumiverse context handler and injects formatted cached tracker state into normal roleplay generations. It never runs tracker generation inside the context handler; the hook only reads extension storage, formats an existing snapshot, and returns quickly.
+
+Supported injection modes:
+
+- `latest_chat_snapshot`: injects the latest per-chat tracker snapshot.
+- `latest_message_snapshot`: injects the latest storage-only snapshot attached to a triggering message.
+
+Supported formats:
+
+- `compact`: readable continuity block for scene, cast, important state, and open threads.
+- `minimal`: short model-facing location/cast/continuity summary.
+- `pretty_json`: sanitized, pretty-printed JSON block.
+
+The installed `lumiverse-spindle-types@0.5.21` exposes `spindle.registerContextHandler(handler, priority?)` with an `unknown` context shape and `unknown` return type. LTracker isolates this behind a thin adapter and currently returns a plain text context block. If a future Lumiverse API documents a richer context-block DTO, update the adapter first.
+
+To test injection:
+
+1. Generate a tracker manually.
+2. Enable LTracker injection in the drawer and save settings.
+3. Start a normal roleplay generation.
+4. Confirm diagnostics show an injected block, character count, snapshot timestamp, and no skipped reason.
 
 ## Diagnostics
 
-The drawer includes a diagnostics panel for manual debugging before automatic generation or prompt injection are added. It shows:
+The drawer includes a diagnostics panel for manual debugging. It shows:
 
 - Extension version, active chat id, current status, and permission status.
 - Last generation start/completion timestamps and duration.
 - Last generation source, manual or auto.
 - Auto event, scheduled, triggered, skipped, and source-message details.
 - Latest message-attached snapshot id, index, timestamp, and storage key.
+- Injection enabled state, last injection timestamp, skipped reason, injected character count, snapshot timestamp, and source message id.
 - Number of messages read and source message ids/range.
 - Storage key used for the current chat snapshot.
 - Last raw model output, collapsed by default.
@@ -53,7 +79,7 @@ The drawer includes a diagnostics panel for manual debugging before automatic ge
 - Build/type information when available.
 - Last cancelled job when a newer Generate Tracker request supersedes an older one.
 
-The drawer also includes buttons for Refresh State, Generate Tracker, Clear Current Chat Snapshot, Copy Latest Tracker JSON, Copy Last Prompt, Copy Last Raw Output, and Copy Message Snapshot. All displayed model output is escaped; LTracker does not render raw LLM HTML.
+The drawer also includes buttons for Refresh State, Generate Tracker, Clear Current Chat Snapshot, Copy Latest Tracker JSON, Copy Last Prompt, Copy Last Raw Output, Copy Message Snapshot, and Copy Injection Preview. All displayed model output is escaped; LTracker does not render raw LLM HTML.
 
 ## Generator Settings
 
@@ -73,6 +99,14 @@ Settings are stored in per-user extension storage at `settings.json` and repaire
 | `auto.triggerAfterUserMessages` | `false` | boolean |
 | `auto.attachSnapshotToMessage` | `true` | boolean |
 | `auto.onlyWhenChatActive` | `true` | boolean |
+| `injection.enabled` | `false` | boolean |
+| `injection.mode` | `latest_chat_snapshot` | `latest_chat_snapshot` or `latest_message_snapshot` |
+| `injection.format` | `compact` | `compact`, `pretty_json`, or `minimal` |
+| `injection.maxInjectedChars` | `3000` | `500` to `20000` |
+| `injection.includeHeader` | `true` | boolean |
+| `injection.includeTimestamp` | `true` | boolean |
+| `injection.includeSourceMessageId` | `false` | boolean |
+| `injection.onlyInjectWhenSnapshotExists` | `true` | boolean |
 
 Use Save Settings to persist changes or Reset Settings to restore defaults.
 
@@ -80,7 +114,7 @@ Use Save Settings to persist changes or Reset Settings to restore defaults.
 
 1. Open the LTracker drawer.
 2. Click Refresh State.
-3. Check permission status for `generation`, `chats`, and `chat_mutation`.
+3. Check permission status for `generation`, `chats`, `chat_mutation`, and `context_handler`.
 4. Inspect the staged error in Last parse/generation/storage error.
 5. Expand Last prompt preview to verify the transcript and schema sent to the model.
 6. Expand Last raw model output to see whether the model returned valid JSON.
@@ -102,29 +136,31 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 | --- | --- | --- |
 | `generation` | Calls `spindle.generate.quiet()` for tracker extraction and listens for generation-completed events. | Generate requests show a clear missing-permission error; auto assistant triggers cannot run. |
 | `chats` | Resolves the user's active chat through `spindle.chats.getActive()` when the frontend does not supply one. | Generate requests fall back to the frontend-supplied chat id or show a clear missing-permission error. |
-| `chat_mutation` | Reads chat messages through `spindle.chat.getMessages()`. LTracker does not mutate chat message content in `0.03`. | Generate requests show a clear missing-permission error. |
+| `chat_mutation` | Reads chat messages through `spindle.chat.getMessages()`. LTracker does not mutate chat message content in `0.04`. | Generate requests show a clear missing-permission error. |
+| `context_handler` | Registers `spindle.registerContextHandler()` for optional cached tracker snapshot injection. | Injection stays unavailable and diagnostics show missing permission. |
 
 Drawer tabs, input-bar actions, frontend/backend messaging, logging, toasts, and user storage are treated as free-tier surfaces in the inspected `lumiverse-spindle-types@0.5.21` API.
 
 ## Known Limitations
 
-- No context handler, interceptor, prompt injection, World Books, Memory Cortex, schema editor, per-field regeneration, cleanup/pending fields, or message-local widgets.
+- No interceptor, World Books, Memory Cortex, schema editor, custom HTML template renderer, connection-profile selection, per-field regeneration, cleanup/pending fields, or message-local widgets.
 - Auto Mode depends on Lumiverse event delivery and the user-scoped `userId` supplied by the host. If an event arrives without a known user, LTracker skips it.
 - Active-chat-only stale-job handling is best-effort when the drawer has not yet observed a chat switch.
+- Context handler payload and return types are loose in `lumiverse-spindle-types@0.5.21`; LTracker uses a conservative text-return adapter and fails to no-op if it cannot resolve user/chat context.
 - The MVP uses prompt-engineered JSON rather than provider-native structured output.
 - Diagnostics may contain sensitive chat-derived prompt and model output when raw/prompt saving is enabled.
 - If future Lumiverse API versions change generation, chat, or storage signatures, the thin backend adapters should be updated first.
 
 ## Roadmap
 
-1. Compact cached snapshot injection through a context handler.
-2. Optional interceptor mode for exact prompt placement.
-3. Schema presets and schema editor.
-4. Sequential generation, per-section regeneration, and per-field regeneration.
-5. Cleanup/pending field workflows.
-6. World Book allowlists and character exclusions after permissions/API verification.
-7. Export/import flows and deeper diagnostics.
+1. `0.05 Schema Presets`: JSON Schema and prompt instructions.
+2. `0.06 Safe HTML Template Renderer`.
+3. `0.07 Connection Settings`.
+4. `0.08 Visible Per-Response Tracker Blocks / Message Widgets`.
+5. `0.09 Sequential + Partial Regeneration`.
+6. `0.10 Cleanup + Repair Mode`.
+7. `0.11 World Books, Character Exclusions, Import/Export, TOON/XML/native modes`.
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.03`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.04`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

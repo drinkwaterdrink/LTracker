@@ -8,6 +8,11 @@ import {
   isQuietGenerationType,
   shouldScheduleAutoTracker,
 } from "./shared/auto";
+import {
+  buildInjectionDecision,
+  shouldSkipContextForInternalGeneration,
+  toContextHandlerResult,
+} from "./shared/contextInjection";
 import { parseTrackerJson } from "./shared/parser";
 import {
   DEFAULT_SETTINGS,
@@ -38,6 +43,8 @@ import {
   type LTrackerDiagnostics,
   type LTrackerError,
   type LTrackerErrorStage,
+  type LTrackerInjectionFormat,
+  type LTrackerInjectionMode,
   type LTrackerSettings,
   type MessageAttachedSnapshot,
   type PermissionState,
@@ -93,6 +100,8 @@ const activeChatByUser = new Map<string, string | null>();
 const usersByChat = new Map<string, Set<string>>();
 const eventCleanups: Array<() => void> = [];
 let autoSubscriptionsActive = false;
+let contextHandlerRegistered = false;
+let internalTrackerGenerationDepth = 0;
 let disposed = false;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -153,6 +162,7 @@ function permissionState(): PermissionState {
     generation: spindle.permissions.has("generation"),
     chats: spindle.permissions.has("chats"),
     chatMutation: spindle.permissions.has("chat_mutation"),
+    contextHandler: spindle.permissions.has("context_handler"),
   };
 }
 
@@ -195,6 +205,14 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     latestAttachedMessageIndex: null,
     latestAttachedSnapshotAt: null,
     latestAttachedSnapshotStorageKey: null,
+    injectionEnabled: false,
+    lastInjectionAt: null,
+    lastInjectionMode: null,
+    lastInjectionFormat: null,
+    lastInjectedChars: 0,
+    lastInjectionSkippedReason: null,
+    lastInjectionSnapshotCreatedAt: null,
+    lastInjectionSourceMessageId: null,
   };
 }
 
@@ -224,6 +242,14 @@ function sourceKindOrNull(value: unknown): TrackerGenerationSourceKind | null {
 
 function autoEventTypeOrNull(value: unknown): AutoTriggerEventType | null {
   return value === "GENERATION_ENDED" || value === "MESSAGE_SENT" ? value : null;
+}
+
+function injectionModeOrNull(value: unknown): LTrackerInjectionMode | null {
+  return value === "latest_chat_snapshot" || value === "latest_message_snapshot" ? value : null;
+}
+
+function injectionFormatOrNull(value: unknown): LTrackerInjectionFormat | null {
+  return value === "compact" || value === "pretty_json" || value === "minimal" ? value : null;
 }
 
 function errorOrNull(value: unknown): LTrackerError | null {
@@ -287,6 +313,16 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     latestAttachedMessageIndex: nonNegativeInteger(value.latestAttachedMessageIndex),
     latestAttachedSnapshotAt: stringOrNull(value.latestAttachedSnapshotAt),
     latestAttachedSnapshotStorageKey: stringOrNull(value.latestAttachedSnapshotStorageKey),
+    injectionEnabled: typeof value.injectionEnabled === "boolean" ? value.injectionEnabled : false,
+    lastInjectionAt: stringOrNull(value.lastInjectionAt),
+    lastInjectionMode: injectionModeOrNull(value.lastInjectionMode),
+    lastInjectionFormat: injectionFormatOrNull(value.lastInjectionFormat),
+    lastInjectedChars: typeof value.lastInjectedChars === "number" && Number.isFinite(value.lastInjectedChars)
+      ? Math.max(0, Math.round(value.lastInjectedChars))
+      : 0,
+    lastInjectionSkippedReason: stringOrNull(value.lastInjectionSkippedReason),
+    lastInjectionSnapshotCreatedAt: stringOrNull(value.lastInjectionSnapshotCreatedAt),
+    lastInjectionSourceMessageId: stringOrNull(value.lastInjectionSourceMessageId),
   };
 }
 
@@ -375,6 +411,12 @@ async function buildState(
     diagnostics.latestAttachedMessageId,
     userId,
   );
+  const injectionPreview = buildInjectionDecision({
+    settings,
+    chatSnapshot: snapshot,
+    messageSnapshot: latestMessageSnapshot,
+    internalTrackerGeneration: false,
+  }).text;
   const stateError = error ?? diagnostics.lastError;
   return {
     version: EXTENSION_VERSION,
@@ -382,6 +424,7 @@ async function buildState(
     chatId,
     snapshot,
     latestMessageSnapshot,
+    injectionPreview,
     error: stateError,
     permissions: permissionState(),
     settings,
@@ -390,6 +433,7 @@ async function buildState(
       status: status ?? diagnostics.status,
       lastError: stateError,
       autoSubscriptionActive: autoSubscriptionsActive,
+      injectionEnabled: settings.injection.enabled,
     },
   };
 }
@@ -493,6 +537,7 @@ async function runTrackerGeneration(
   if (parentSignal.aborted) controller.abort();
 
   try {
+    internalTrackerGenerationDepth += 1;
     const result = await spindle.generate.quiet({
       type: "quiet",
       messages,
@@ -510,6 +555,7 @@ async function runTrackerGeneration(
     }
     throw error;
   } finally {
+    internalTrackerGenerationDepth = Math.max(0, internalTrackerGenerationDepth - 1);
     clearTimeout(timer);
     parentSignal.removeEventListener("abort", onParentAbort);
   }
@@ -844,6 +890,162 @@ function handleChatSwitched(payload: unknown, userId?: string): void {
   rememberActiveChat(userId, chatId);
 }
 
+function stringAtPath(value: unknown, path: string[]): string | null {
+  let current = value;
+  for (const segment of path) {
+    if (!isRecord(current)) return null;
+    current = current[segment];
+  }
+  return typeof current === "string" && current.trim() ? current : null;
+}
+
+function firstStringAtPath(value: unknown, paths: string[][]): string | null {
+  for (const path of paths) {
+    const result = stringAtPath(value, path);
+    if (result) return result;
+  }
+  return null;
+}
+
+function contextChatId(context: unknown): string | null {
+  return firstStringAtPath(context, [
+    ["chatId"],
+    ["chat_id"],
+    ["chat", "id"],
+    ["request", "chatId"],
+    ["request", "chat_id"],
+    ["request", "chat", "id"],
+    ["input", "chatId"],
+    ["input", "chat_id"],
+    ["generation", "chatId"],
+    ["generation", "chat_id"],
+    ["metadata", "chatId"],
+  ]);
+}
+
+function contextUserId(context: unknown): string | null {
+  return firstStringAtPath(context, [
+    ["userId"],
+    ["user_id"],
+    ["operatorUserId"],
+    ["request", "userId"],
+    ["request", "user_id"],
+    ["input", "userId"],
+    ["generation", "userId"],
+    ["metadata", "userId"],
+  ]);
+}
+
+function knownUserForContext(userId: string | null, chatId: string | null): string | null {
+  if (userId) return userId;
+  if (chatId) {
+    const users = targetUsersForChat(chatId);
+    if (users.length === 1) return users[0] ?? null;
+  }
+  if (activeChatByUser.size === 1) {
+    return activeChatByUser.keys().next().value ?? null;
+  }
+  return null;
+}
+
+async function resolveContextChatId(context: unknown, userId: string): Promise<string | null> {
+  const fromContext = contextChatId(context);
+  if (fromContext) return fromContext;
+  return resolveActiveChatId(null, userId).catch(() => null);
+}
+
+async function withContextTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+): Promise<{ timedOut: false; value: T } | { timedOut: true; value: null }> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      operation.then((value) => ({ timedOut: false as const, value })),
+      new Promise<{ timedOut: true; value: null }>((resolve) => {
+        timer = setTimeout(() => resolve({ timedOut: true, value: null }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function recordInjectionDiagnostics(
+  chatId: string,
+  userId: string,
+  settings: LTrackerSettings,
+  decision: ReturnType<typeof buildInjectionDecision>,
+  baseDiagnostics?: LTrackerDiagnostics,
+): Promise<void> {
+  const currentDiagnostics = baseDiagnostics ?? await loadDiagnostics(chatId, userId);
+  const diagnostics = {
+    ...currentDiagnostics,
+    injectionEnabled: settings.injection.enabled,
+    lastInjectionAt: decision.text ? nowIso() : currentDiagnostics.lastInjectionAt,
+    lastInjectionMode: settings.injection.mode,
+    lastInjectionFormat: settings.injection.format,
+    lastInjectedChars: decision.injectedChars,
+    lastInjectionSkippedReason: decision.skippedReason,
+    lastInjectionSnapshotCreatedAt: decision.snapshotCreatedAt,
+    lastInjectionSourceMessageId: decision.sourceMessageId,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+}
+
+async function handleContextInjection(context: unknown): Promise<unknown> {
+  const contextUser = contextUserId(context);
+  const contextChat = contextChatId(context);
+  const userId = knownUserForContext(contextUser, contextChat);
+  if (!userId) return null;
+
+  const chatId = await resolveContextChatId(context, userId);
+  if (!chatId) return null;
+  rememberActiveChat(userId, chatId);
+
+  let storageResult: { timedOut: false; value: unknown } | { timedOut: true; value: null };
+  try {
+    storageResult = await withContextTimeout((async () => {
+      const settings = await getSettings(userId);
+      const skipInternal = shouldSkipContextForInternalGeneration(context, internalTrackerGenerationDepth > 0);
+      const diagnostics = await loadDiagnostics(chatId, userId);
+      const snapshot = settings.injection.mode === "latest_chat_snapshot"
+        ? await loadSnapshot(chatId, userId)
+        : null;
+      const messageSnapshot = settings.injection.mode === "latest_message_snapshot"
+        ? await loadMessageSnapshot(chatId, diagnostics.latestAttachedMessageId, userId)
+        : null;
+      const decision = buildInjectionDecision({
+        settings,
+        chatSnapshot: snapshot,
+        messageSnapshot,
+        internalTrackerGeneration: skipInternal,
+      });
+      await recordInjectionDiagnostics(chatId, userId, settings, decision, diagnostics);
+      return toContextHandlerResult(decision.text);
+    })(), 750);
+  } catch (error) {
+    spindle.log.warn(`LTracker context injection skipped after storage error: ${errorMessage(error)}`);
+    return null;
+  }
+
+  if (!storageResult.timedOut) return storageResult.value;
+
+  const settings = await getSettings(userId).catch(() => null);
+  if (settings) {
+    await recordInjectionDiagnostics(chatId, userId, settings, {
+      text: null,
+      skippedReason: "Context handler storage lookup timed out.",
+      snapshotCreatedAt: null,
+      sourceMessageId: null,
+      injectedChars: 0,
+    }).catch((error: unknown) => {
+      spindle.log.warn(`LTracker could not record context timeout: ${errorMessage(error)}`);
+    });
+  }
+  return null;
+}
+
 async function generateTracker(
   chatId: string | null,
   userId: string,
@@ -1154,6 +1356,7 @@ function disposeBackend(): void {
   activeJobs.clear();
   for (const cleanup of eventCleanups.splice(0).reverse()) cleanup();
   autoSubscriptionsActive = false;
+  contextHandlerRegistered = false;
 }
 
 function registerEventListeners(): void {
@@ -1172,7 +1375,18 @@ function registerEventListeners(): void {
   autoSubscriptionsActive = true;
 }
 
+function registerContextInjection(): void {
+  if (contextHandlerRegistered) return;
+  if (!permissionState().contextHandler) {
+    spindle.log.warn("LTracker context injection is unavailable because context_handler permission is missing.");
+    return;
+  }
+  spindle.registerContextHandler(handleContextInjection, 40);
+  contextHandlerRegistered = true;
+}
+
 registerEventListeners();
+registerContextInjection();
 
 spindle.onFrontendMessage((payload, userId) => {
   if (!isFrontendMessage(payload)) return;

@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.03";
+export const EXTENSION_VERSION = "0.04";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -7,6 +7,8 @@ export type TrackerStatus = "idle" | "generating" | "error";
 export type TranscriptRole = "user" | "assistant";
 export type TrackerGenerationSourceKind = "manual" | "auto";
 export type AutoTriggerEventType = "GENERATION_ENDED" | "MESSAGE_SENT";
+export type LTrackerInjectionMode = "latest_chat_snapshot" | "latest_message_snapshot";
+export type LTrackerInjectionFormat = "compact" | "pretty_json" | "minimal";
 export type LTrackerErrorStage =
   | "active_chat"
   | "read_messages"
@@ -76,6 +78,17 @@ export interface LTrackerAutoSettings {
   onlyWhenChatActive: boolean;
 }
 
+export interface LTrackerInjectionSettings {
+  enabled: boolean;
+  mode: LTrackerInjectionMode;
+  format: LTrackerInjectionFormat;
+  maxInjectedChars: number;
+  includeHeader: boolean;
+  includeTimestamp: boolean;
+  includeSourceMessageId: boolean;
+  onlyInjectWhenSnapshotExists: boolean;
+}
+
 export interface LTrackerSettings {
   schemaVersion: typeof SETTINGS_SCHEMA_VERSION;
   recentMessageLimit: number;
@@ -84,6 +97,7 @@ export interface LTrackerSettings {
   saveRawOutput: boolean;
   savePromptPreview: boolean;
   auto: LTrackerAutoSettings;
+  injection: LTrackerInjectionSettings;
 }
 
 export interface LTrackerError {
@@ -142,12 +156,21 @@ export interface LTrackerDiagnostics {
   latestAttachedMessageIndex: number | null;
   latestAttachedSnapshotAt: string | null;
   latestAttachedSnapshotStorageKey: string | null;
+  injectionEnabled: boolean;
+  lastInjectionAt: string | null;
+  lastInjectionMode: LTrackerInjectionMode | null;
+  lastInjectionFormat: LTrackerInjectionFormat | null;
+  lastInjectedChars: number;
+  lastInjectionSkippedReason: string | null;
+  lastInjectionSnapshotCreatedAt: string | null;
+  lastInjectionSourceMessageId: string | null;
 }
 
 export interface PermissionState {
   generation: boolean;
   chats: boolean;
   chatMutation: boolean;
+  contextHandler: boolean;
 }
 
 export interface FrontendState {
@@ -156,6 +179,7 @@ export interface FrontendState {
   chatId: string | null;
   snapshot: TrackerSnapshot | null;
   latestMessageSnapshot: MessageAttachedSnapshot | null;
+  injectionPreview: string | null;
   error: LTrackerError | null;
   permissions: PermissionState;
   settings: LTrackerSettings;

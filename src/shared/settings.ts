@@ -9,6 +9,7 @@ export const SETTINGS_LIMITS = {
   generationTimeoutMs: { min: 10_000, max: 180_000, default: 45_000 },
   autoDebounceMs: { min: 250, max: 30_000, default: 1_500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
+  maxInjectedChars: { min: 500, max: 20_000, default: 3_000 },
 } as const;
 
 export const DEFAULT_SETTINGS: LTrackerSettings = {
@@ -26,6 +27,16 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     triggerAfterUserMessages: false,
     attachSnapshotToMessage: true,
     onlyWhenChatActive: true,
+  },
+  injection: {
+    enabled: false,
+    mode: "latest_chat_snapshot",
+    format: "compact",
+    maxInjectedChars: SETTINGS_LIMITS.maxInjectedChars.default,
+    includeHeader: true,
+    includeTimestamp: true,
+    includeSourceMessageId: false,
+    onlyInjectWhenSnapshotExists: true,
   },
 };
 
@@ -49,6 +60,13 @@ function clampNumber(
 export function repairSettings(value: unknown): LTrackerSettings {
   const source = isRecord(value) ? value : {};
   const autoSource = isRecord(source.auto) ? source.auto : {};
+  const injectionSource = isRecord(source.injection) ? source.injection : {};
+  const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot"
+    ? injectionSource.mode
+    : DEFAULT_SETTINGS.injection.mode;
+  const format = injectionSource.format === "pretty_json" || injectionSource.format === "minimal" || injectionSource.format === "compact"
+    ? injectionSource.format
+    : DEFAULT_SETTINGS.injection.format;
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -103,6 +121,31 @@ export function repairSettings(value: unknown): LTrackerSettings {
       onlyWhenChatActive: typeof autoSource.onlyWhenChatActive === "boolean"
         ? autoSource.onlyWhenChatActive
         : DEFAULT_SETTINGS.auto.onlyWhenChatActive,
+    },
+    injection: {
+      enabled: typeof injectionSource.enabled === "boolean"
+        ? injectionSource.enabled
+        : DEFAULT_SETTINGS.injection.enabled,
+      mode,
+      format,
+      maxInjectedChars: clampNumber(
+        injectionSource.maxInjectedChars,
+        SETTINGS_LIMITS.maxInjectedChars.default,
+        SETTINGS_LIMITS.maxInjectedChars.min,
+        SETTINGS_LIMITS.maxInjectedChars.max,
+      ),
+      includeHeader: typeof injectionSource.includeHeader === "boolean"
+        ? injectionSource.includeHeader
+        : DEFAULT_SETTINGS.injection.includeHeader,
+      includeTimestamp: typeof injectionSource.includeTimestamp === "boolean"
+        ? injectionSource.includeTimestamp
+        : DEFAULT_SETTINGS.injection.includeTimestamp,
+      includeSourceMessageId: typeof injectionSource.includeSourceMessageId === "boolean"
+        ? injectionSource.includeSourceMessageId
+        : DEFAULT_SETTINGS.injection.includeSourceMessageId,
+      onlyInjectWhenSnapshotExists: typeof injectionSource.onlyInjectWhenSnapshotExists === "boolean"
+        ? injectionSource.onlyInjectWhenSnapshotExists
+        : DEFAULT_SETTINGS.injection.onlyInjectWhenSnapshotExists,
     },
   };
 }

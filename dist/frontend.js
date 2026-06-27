@@ -1,5 +1,5 @@
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.03";
+var EXTENSION_VERSION = "0.04";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -10,7 +10,8 @@ var SETTINGS_LIMITS = {
   maxMessageChars: { min: 500, max: 5e4, default: 8e3 },
   generationTimeoutMs: { min: 1e4, max: 18e4, default: 45e3 },
   autoDebounceMs: { min: 250, max: 3e4, default: 1500 },
-  skipFirstMessages: { min: 0, max: 100, default: 2 }
+  skipFirstMessages: { min: 0, max: 100, default: 2 },
+  maxInjectedChars: { min: 500, max: 2e4, default: 3e3 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -27,6 +28,16 @@ var DEFAULT_SETTINGS = {
     triggerAfterUserMessages: false,
     attachSnapshotToMessage: true,
     onlyWhenChatActive: true
+  },
+  injection: {
+    enabled: false,
+    mode: "latest_chat_snapshot",
+    format: "compact",
+    maxInjectedChars: SETTINGS_LIMITS.maxInjectedChars.default,
+    includeHeader: true,
+    includeTimestamp: true,
+    includeSourceMessageId: false,
+    onlyInjectWhenSnapshotExists: true
   }
 };
 
@@ -141,7 +152,8 @@ var STYLES = `
   flex-direction: column;
   gap: 5px;
 }
-.ltracker-field input[type="number"] {
+.ltracker-field input[type="number"],
+.ltracker-field select {
   border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
   border-radius: 7px;
   background: color-mix(in srgb, currentColor 6%, transparent);
@@ -155,6 +167,12 @@ var STYLES = `
   display: flex;
   gap: 8px;
   min-height: 34px;
+}
+.ltracker-note {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  margin: 8px 0 0;
+  opacity: 0.74;
 }
 .ltracker-details {
   margin-top: 8px;
@@ -202,7 +220,8 @@ function emptyState() {
     permissions: {
       generation: false,
       chats: false,
-      chatMutation: false
+      chatMutation: false,
+      contextHandler: false
     },
     settings: DEFAULT_SETTINGS,
     diagnostics: {
@@ -244,8 +263,17 @@ function emptyState() {
       latestAttachedMessageId: null,
       latestAttachedMessageIndex: null,
       latestAttachedSnapshotAt: null,
-      latestAttachedSnapshotStorageKey: null
-    }
+      latestAttachedSnapshotStorageKey: null,
+      injectionEnabled: false,
+      lastInjectionAt: null,
+      lastInjectionMode: null,
+      lastInjectionFormat: null,
+      lastInjectedChars: 0,
+      lastInjectionSkippedReason: null,
+      lastInjectionSnapshotCreatedAt: null,
+      lastInjectionSourceMessageId: null
+    },
+    injectionPreview: null
   };
 }
 function isRecord(value) {
@@ -262,6 +290,9 @@ function checked(value) {
 }
 function disabled(value) {
   return value ? " disabled" : "";
+}
+function selected(value) {
+  return value ? " selected" : "";
 }
 function labelForStatus(status) {
   if (status === "generating") return "generating";
@@ -350,6 +381,18 @@ function setup(ctx) {
       const input = tab.root.querySelector(`[data-setting="${name}"]`);
       return input ? input.checked : state.settings.auto[name];
     };
+    const injectionNumberValue = (name) => {
+      const input = tab.root.querySelector(`[data-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.injection[name];
+    };
+    const injectionBooleanValue = (name) => {
+      const input = tab.root.querySelector(`[data-setting="${name}"]`);
+      return input ? input.checked : state.settings.injection[name];
+    };
+    const selectValue = (name, fallback) => {
+      const input = tab.root.querySelector(`[data-setting="${name}"]`);
+      return input ? input.value : fallback;
+    };
     return {
       schemaVersion: SETTINGS_SCHEMA_VERSION,
       recentMessageLimit: numberValue("recentMessageLimit"),
@@ -365,6 +408,16 @@ function setup(ctx) {
         triggerAfterUserMessages: autoBooleanValue("triggerAfterUserMessages"),
         attachSnapshotToMessage: autoBooleanValue("attachSnapshotToMessage"),
         onlyWhenChatActive: autoBooleanValue("onlyWhenChatActive")
+      },
+      injection: {
+        enabled: injectionBooleanValue("enabled"),
+        mode: selectValue("mode", state.settings.injection.mode),
+        format: selectValue("format", state.settings.injection.format),
+        maxInjectedChars: injectionNumberValue("maxInjectedChars"),
+        includeHeader: injectionBooleanValue("includeHeader"),
+        includeTimestamp: injectionBooleanValue("includeTimestamp"),
+        includeSourceMessageId: injectionBooleanValue("includeSourceMessageId"),
+        onlyInjectWhenSnapshotExists: injectionBooleanValue("onlyInjectWhenSnapshotExists")
       }
     };
   }
@@ -408,10 +461,12 @@ function setup(ctx) {
     const error = state.error ?? diagnostics.lastError;
     const autoStatus = state.settings.auto.autoModeEnabled ? diagnostics.autoSubscriptionActive ? "Armed" : "Enabled, listener inactive" : "Disabled";
     const latestMessageSnapshotText = state.latestMessageSnapshot ? JSON.stringify(state.latestMessageSnapshot, null, 2) : "No message-attached tracker snapshot saved yet.";
+    const injectionPreviewText = state.injectionPreview ?? "No injection preview available. Generate a tracker and enable injection to preview cached context.";
     const permissionText = [
       state.permissions.generation ? "generation granted" : "generation missing",
       state.permissions.chats ? "chats granted" : "chats missing",
-      state.permissions.chatMutation ? "chat_mutation granted" : "chat_mutation missing"
+      state.permissions.chatMutation ? "chat_mutation granted" : "chat_mutation missing",
+      state.permissions.contextHandler ? "context_handler granted" : "context_handler missing"
     ].join(" / ");
     tab.root.innerHTML = `
       <section class="ltracker-shell">
@@ -494,6 +549,61 @@ function setup(ctx) {
         </section>
 
         <section class="ltracker-panel">
+          <span class="ltracker-label">Prompt Injection</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="enabled"${checked(state.settings.injection.enabled)}>
+              Enable LTracker injection
+            </label>
+            <label class="ltracker-field">
+              Mode
+              <select data-setting="mode">
+                <option value="latest_chat_snapshot"${selected(state.settings.injection.mode === "latest_chat_snapshot")}>Latest chat snapshot</option>
+                <option value="latest_message_snapshot"${selected(state.settings.injection.mode === "latest_message_snapshot")}>Latest message snapshot</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Format
+              <select data-setting="format">
+                <option value="compact"${selected(state.settings.injection.format === "compact")}>Compact</option>
+                <option value="pretty_json"${selected(state.settings.injection.format === "pretty_json")}>Pretty JSON</option>
+                <option value="minimal"${selected(state.settings.injection.format === "minimal")}>Minimal</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Max injected chars
+              <input type="number" min="500" max="20000" step="250" data-setting="maxInjectedChars" value="${escapeHtml(String(state.settings.injection.maxInjectedChars))}">
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="includeHeader"${checked(state.settings.injection.includeHeader)}>
+              Include header
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="includeTimestamp"${checked(state.settings.injection.includeTimestamp)}>
+              Include timestamp
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="includeSourceMessageId"${checked(state.settings.injection.includeSourceMessageId)}>
+              Include source message id
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="onlyInjectWhenSnapshotExists"${checked(state.settings.injection.onlyInjectWhenSnapshotExists)}>
+              Only inject when snapshot exists
+            </label>
+          </div>
+          <p class="ltracker-note">Injection uses cached snapshots only. It does not generate a tracker by itself, and no snapshot means nothing is injected.</p>
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="copy-injection-preview" ${disabled(!state.injectionPreview)}>
+              Copy Injection Preview
+            </button>
+          </div>
+          <details class="ltracker-details" open>
+            <summary>Current injection preview</summary>
+            <pre class="ltracker-text">${escapeHtml(injectionPreviewText)}</pre>
+          </details>
+        </section>
+
+        <section class="ltracker-panel">
           <span class="ltracker-label">Diagnostics</span>
           <div class="ltracker-grid">
             ${renderRow("Extension version", state.version)}
@@ -501,6 +611,14 @@ function setup(ctx) {
             ${renderRow("Current status", state.status)}
             ${renderRow("Auto mode", autoStatus)}
             ${renderRow("Permission status", permissionText)}
+            ${renderRow("Injection enabled", diagnostics.injectionEnabled ? "yes" : "no")}
+            ${renderRow("Last injection at", diagnostics.lastInjectionAt)}
+            ${renderRow("Last injection mode", diagnostics.lastInjectionMode)}
+            ${renderRow("Last injection format", diagnostics.lastInjectionFormat)}
+            ${renderRow("Last injected chars", diagnostics.lastInjectedChars)}
+            ${renderRow("Last injection skipped", diagnostics.lastInjectionSkippedReason)}
+            ${renderRow("Last injection snapshot", diagnostics.lastInjectionSnapshotCreatedAt)}
+            ${renderRow("Last injection source message", diagnostics.lastInjectionSourceMessageId)}
             ${renderRow("Last generation source", diagnostics.lastGenerationSource)}
             ${renderRow("Last generation started", diagnostics.lastGenerationStartedAt)}
             ${renderRow("Last generation completed", diagnostics.lastGenerationCompletedAt)}
@@ -596,6 +714,7 @@ function setup(ctx) {
         "message snapshot"
       );
     }
+    if (action === "copy-injection-preview") void copyText(state.injectionPreview, "injection preview");
   };
   tab.root.addEventListener("click", onClick);
   cleanups.push(() => tab.root.removeEventListener("click", onClick));

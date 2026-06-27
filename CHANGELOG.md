@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.04 - Context handler injection
+- Added optional cached tracker snapshot injection.
+- Added injection settings and drawer controls.
+- Added compact, minimal, and pretty JSON snapshot formatters.
+- Added injection diagnostics and preview.
+- Added safeguards so LTracker tracker-generation prompts do not receive LTracker injection.
+- Added tests for injection settings and snapshot formatting.
+
 ## 0.03 - Auto mode and message-attached snapshots
 - Added Auto Mode settings for enablement, debounce, first-message skipping, assistant/user triggers, active-chat-only behavior, and message snapshot attachment.
 - Added backend event subscriptions for generation completion, message-sent fallback, chat switching, and extension unload cleanup.
