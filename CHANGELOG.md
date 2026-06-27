@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.06 - Safe HTML template renderer
+- Added safe HTML template rendering for drawer previews.
+- Added basic zTracker-style template placeholders and each-blocks.
+- Added sanitizer for rendered tracker HTML.
+- Added rendered tracker preview section in the drawer.
+- Added renderer settings.
+- Added render diagnostics.
+- Added tests for template rendering, escaping, sanitization, fallback behavior, and renderer settings.
+
 ## 0.05 - Schema presets
 - Added tracker schema preset data model.
 - Converted the default tracker schema into a built-in preset.

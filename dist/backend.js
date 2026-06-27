@@ -258,6 +258,358 @@ function stringAtPath(value, path) {
   return typeof current === "string" ? current : null;
 }
 
+// src/shared/htmlTemplateRenderer.ts
+var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
+var EACH_BLOCK_PATTERN = new RegExp(`{{#each\\s+(${TEMPLATE_PATH})\\s*}}([\\s\\S]*?){{/each}}`, "g");
+var JSON_HELPER_PATTERN = new RegExp(`{{\\s*json\\s+(${TEMPLATE_PATH})\\s*}}`, "g");
+var VALUE_PATTERN = new RegExp(`{{\\s*(${TEMPLATE_PATH})\\s*}}`, "g");
+var ALLOWED_TAGS = /* @__PURE__ */ new Set([
+  "div",
+  "section",
+  "article",
+  "header",
+  "footer",
+  "main",
+  "span",
+  "p",
+  "br",
+  "hr",
+  "ul",
+  "ol",
+  "li",
+  "strong",
+  "b",
+  "em",
+  "i",
+  "small",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+  "details",
+  "summary",
+  "code",
+  "pre"
+]);
+var VOID_TAGS = /* @__PURE__ */ new Set(["br", "hr"]);
+var ALLOWED_ATTRIBUTES = /* @__PURE__ */ new Set(["class", "title", "aria-label", "data-ltracker-section"]);
+var DANGEROUS_TAGS = [
+  "script",
+  "iframe",
+  "object",
+  "embed",
+  "link",
+  "meta",
+  "form",
+  "input",
+  "button",
+  "textarea",
+  "select",
+  "svg",
+  "math"
+];
+var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
+  "color",
+  "background",
+  "border",
+  "border-radius",
+  "padding",
+  "margin",
+  "font-weight",
+  "font-style",
+  "text-align",
+  "display",
+  "gap",
+  "grid-template-columns",
+  "flex-direction",
+  "align-items",
+  "justify-content"
+]);
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function escapeHtml(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function truncateSafe2(value, maxChars) {
+  const chars = Array.from(value);
+  if (chars.length <= maxChars) return { value, truncated: false };
+  const suffix = "\n[truncated]";
+  const suffixChars = Array.from(suffix);
+  if (maxChars <= 0) return { value: "", truncated: true };
+  if (maxChars <= suffixChars.length) {
+    return { value: suffixChars.slice(0, maxChars).join(""), truncated: true };
+  }
+  const keep = Math.max(0, maxChars - suffixChars.length);
+  return { value: `${chars.slice(0, keep).join("")}${suffix}`, truncated: true };
+}
+function valueAtPath(source, path) {
+  let current = source;
+  for (const segment of path.split(".")) {
+    if (Array.isArray(current) && /^\d+$/.test(segment)) {
+      current = current[Number(segment)];
+    } else if (isRecord2(current)) {
+      current = current[segment];
+    } else {
+      return void 0;
+    }
+  }
+  return current;
+}
+function valueToText(value, placeholder) {
+  if (value === void 0 || value === null) return placeholder;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return JSON.stringify(value, null, 2) ?? placeholder;
+}
+function renderTemplateFragment(template, root, current, placeholder) {
+  const withJson = template.replace(JSON_HELPER_PATTERN, (_match, path) => {
+    const value = valueAtPath(current, path) ?? valueAtPath(root, path);
+    const text = value === void 0 ? placeholder : JSON.stringify(value, null, 2) ?? placeholder;
+    return escapeHtml(text);
+  });
+  return withJson.replace(VALUE_PATTERN, (_match, path) => {
+    const value = valueAtPath(current, path) ?? valueAtPath(root, path);
+    return escapeHtml(valueToText(value, placeholder));
+  });
+}
+function renderTemplate(template, snapshotData, placeholder) {
+  const expandedLoops = template.replace(EACH_BLOCK_PATTERN, (_match, path, body) => {
+    const value = valueAtPath(snapshotData, path);
+    if (!Array.isArray(value)) return "";
+    return value.map((item) => renderTemplateFragment(body, snapshotData, item, placeholder)).join("");
+  });
+  return renderTemplateFragment(expandedLoops, snapshotData, snapshotData, placeholder);
+}
+function primitiveToString2(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return null;
+}
+function recordSummary2(value) {
+  const preferred = ["name", "title", "status", "role", "emotional_state", "physical_state", "current_goal"];
+  const direct = preferred.map((key) => primitiveToString2(value[key])).filter((item) => Boolean(item));
+  if (direct.length > 0) return direct.join(" - ");
+  const fragments = Object.entries(value).map(([key, entry]) => {
+    const rendered = primitiveToString2(entry);
+    return rendered ? `${key}: ${rendered}` : null;
+  }).filter((item) => Boolean(item));
+  return fragments.length > 0 ? fragments.slice(0, 4).join("; ") : null;
+}
+function listFromUnknown2(value) {
+  const primitive = primitiveToString2(value);
+  if (primitive) return [primitive];
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const rendered = primitiveToString2(item);
+      if (rendered) return rendered;
+      return isRecord2(item) ? recordSummary2(item) : null;
+    }).filter((item) => Boolean(item));
+  }
+  if (isRecord2(value)) {
+    const summary = recordSummary2(value);
+    return summary ? [summary] : [];
+  }
+  return [];
+}
+function stringAt2(data, path) {
+  let current = data;
+  for (const key of path) {
+    if (!isRecord2(current)) return null;
+    current = current[key];
+  }
+  return primitiveToString2(current);
+}
+function formatTemplateTextFallback(data) {
+  const lines = [];
+  const scene = [
+    stringAt2(data, ["scene", "location"]),
+    stringAt2(data, ["scene", "date"]) ?? stringAt2(data, ["scene", "time"]),
+    stringAt2(data, ["scene", "mood"])
+  ].filter((item) => Boolean(item));
+  if (scene.length > 0) lines.push(`Scene: ${scene.join(", ")}`);
+  const present = listFromUnknown2(data.characters_present).map((item) => item.split(" - ")[0]?.trim() ?? item.trim()).filter(Boolean);
+  if (present.length > 0) lines.push(`Present characters: ${present.join("; ")}`);
+  const facts = listFromUnknown2(data.important_facts).slice(0, 8);
+  if (facts.length > 0) {
+    lines.push("Important facts:");
+    lines.push(...facts.map((item) => `- ${item}`));
+  }
+  const threads = listFromUnknown2(data.active_threads).slice(0, 8);
+  if (threads.length > 0) {
+    lines.push("Active threads:");
+    lines.push(...threads.map((item) => `- ${item}`));
+  }
+  const continuity = listFromUnknown2(data.unresolved_continuity).slice(0, 8);
+  if (continuity.length > 0) {
+    lines.push("Unresolved continuity:");
+    lines.push(...continuity.map((item) => `- ${item}`));
+  }
+  const pressure = listFromUnknown2(data.next_scene_pressure).slice(0, 4);
+  if (pressure.length > 0) {
+    lines.push("Next scene pressure:");
+    lines.push(...pressure.map((item) => `- ${item}`));
+  }
+  if (lines.length > 0) return lines.join("\n");
+  const fragments = Object.entries(data).map(([key, value]) => {
+    const list = listFromUnknown2(value);
+    return list.length > 0 ? `${key}: ${list.slice(0, 3).join("; ")}` : null;
+  }).filter((item) => Boolean(item));
+  return fragments.length > 0 ? fragments.slice(0, 8).join("\n") : "No tracker fields are available.";
+}
+function stripDangerousContainers(html, warnings) {
+  let result = html;
+  for (const tag of DANGEROUS_TAGS) {
+    const paired = new RegExp(`<\\s*${tag}\\b[^>]*>[\\s\\S]*?<\\s*/\\s*${tag}\\s*>`, "gi");
+    result = result.replace(paired, () => {
+      warnings.push(`Removed unsafe <${tag}> element.`);
+      return "";
+    });
+    const single = new RegExp(`<\\s*/?\\s*${tag}\\b[^>]*>`, "gi");
+    result = result.replace(single, () => {
+      warnings.push(`Removed unsafe <${tag}> tag.`);
+      return "";
+    });
+  }
+  return result;
+}
+function attributePairs(raw) {
+  const result = [];
+  const pattern = /([^\s=/"'<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let match;
+  while ((match = pattern.exec(raw)) !== null) {
+    const name = (match[1] ?? "").toLowerCase();
+    if (!name) continue;
+    result.push({ name, value: match[2] ?? match[3] ?? match[4] ?? "" });
+  }
+  return result;
+}
+function sanitizeStyle(value, warnings) {
+  const declarations = [];
+  for (const part of value.split(";")) {
+    const separator = part.indexOf(":");
+    if (separator <= 0) continue;
+    const property = part.slice(0, separator).trim().toLowerCase();
+    const rawValue = part.slice(separator + 1).trim();
+    const lowerValue = rawValue.toLowerCase();
+    if (!SAFE_STYLE_PROPERTIES.has(property)) {
+      warnings.push(`Removed unsupported style property ${property}.`);
+      continue;
+    }
+    if (lowerValue.includes("url(") || lowerValue.includes("expression") || lowerValue.includes("@") || /[<>{}]/.test(rawValue)) {
+      warnings.push(`Removed unsafe style value for ${property}.`);
+      continue;
+    }
+    if (!/^[\w\s#.,%()/-]+$/.test(rawValue)) {
+      warnings.push(`Removed unsupported style value for ${property}.`);
+      continue;
+    }
+    declarations.push(`${property}: ${rawValue}`);
+  }
+  return declarations.length > 0 ? declarations.join("; ") : null;
+}
+function sanitizeAttributes(raw, allowInlineStyles, warnings) {
+  const attributes = [];
+  for (const attribute of attributePairs(raw)) {
+    if (attribute.name.startsWith("on")) {
+      warnings.push(`Removed event attribute ${attribute.name}.`);
+      continue;
+    }
+    if (attribute.name === "href" || attribute.name === "src" || attribute.name === "srcdoc") {
+      warnings.push(`Removed URL-bearing attribute ${attribute.name}.`);
+      continue;
+    }
+    if (attribute.name === "style") {
+      if (!allowInlineStyles) {
+        warnings.push("Removed inline style attribute.");
+        continue;
+      }
+      const style = sanitizeStyle(attribute.value, warnings);
+      if (style) attributes.push(`style="${escapeHtml(style)}"`);
+      continue;
+    }
+    if (!ALLOWED_ATTRIBUTES.has(attribute.name)) {
+      warnings.push(`Removed unsupported attribute ${attribute.name}.`);
+      continue;
+    }
+    attributes.push(`${attribute.name}="${escapeHtml(attribute.value)}"`);
+  }
+  return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
+}
+function sanitizeHtml(html, options = {}) {
+  const warnings = [];
+  const withoutDangerousContainers = stripDangerousContainers(html, warnings);
+  const sanitized = withoutDangerousContainers.replace(
+    /<\s*(\/?)\s*([A-Za-z][A-Za-z0-9-]*)([^>]*)>/g,
+    (_match, closing, rawTag, rawAttributes) => {
+      const tag = rawTag.toLowerCase();
+      if (!ALLOWED_TAGS.has(tag)) {
+        warnings.push(`Removed unsupported <${tag}> tag.`);
+        return "";
+      }
+      if (closing) return `</${tag}>`;
+      if (VOID_TAGS.has(tag)) return `<${tag}>`;
+      return `<${tag}${sanitizeAttributes(rawAttributes, options.allowInlineStyles === true, warnings)}>`;
+    }
+  );
+  return { html: sanitized, warnings };
+}
+function renderHtmlTemplate(input, options = {}) {
+  const warnings = [];
+  const errors = [];
+  const placeholder = options.missingValuePlaceholder ?? "";
+  const maxRenderedChars = Math.max(1, options.maxRenderedChars ?? 5e4);
+  const textFallback = formatTemplateTextFallback(input.snapshotData);
+  try {
+    if (!input.template.trim()) {
+      return {
+        ok: true,
+        html: "",
+        textFallback,
+        errors,
+        warnings: ["No HTML template is stored for this preset; using the text fallback."],
+        usedFallback: true
+      };
+    }
+    const rendered = renderTemplate(input.template, input.snapshotData, placeholder);
+    const sanitized = sanitizeHtml(rendered, { allowInlineStyles: options.allowInlineStyles === true });
+    warnings.push(...sanitized.warnings);
+    const truncatedHtml = truncateSafe2(sanitized.html, maxRenderedChars);
+    if (truncatedHtml.truncated) warnings.push("Sanitized HTML preview was truncated.");
+    const truncatedFallback = truncateSafe2(textFallback, maxRenderedChars);
+    if (truncatedFallback.truncated) warnings.push("Text fallback preview was truncated.");
+    return {
+      ok: true,
+      html: truncatedHtml.value,
+      textFallback: truncatedFallback.value,
+      errors,
+      warnings,
+      usedFallback: false
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    errors.push(`Renderer failed safely: ${message}`);
+    const truncatedFallback = truncateSafe2(textFallback, maxRenderedChars);
+    if (truncatedFallback.truncated) warnings.push("Text fallback preview was truncated.");
+    return {
+      ok: false,
+      html: "",
+      textFallback: truncatedFallback.value,
+      errors,
+      warnings,
+      usedFallback: true
+    };
+  }
+}
+
 // src/shared/parser.ts
 function normalizeJsonText(raw) {
   return raw.trim().replace(/^\uFEFF/, "").replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
@@ -392,7 +744,7 @@ var DEFAULT_TRACKER_PRESET = {
     supportsSequentialGeneration: false
   }
 };
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringValue(value, fallback = "") {
@@ -405,7 +757,7 @@ function validOrigin(value) {
   return value === "built_in" || value === "user_imported" || value === "user_created";
 }
 function repairCapabilities(value) {
-  if (!isRecord2(value)) return void 0;
+  if (!isRecord3(value)) return void 0;
   const result = {};
   if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
   if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
@@ -427,13 +779,13 @@ function createPresetId(name, existingIds) {
   return `${base}_${Date.now()}`;
 }
 function validateJsonSchema(value) {
-  if (!isRecord2(value)) {
+  if (!isRecord3(value)) {
     return { ok: false, error: "JSON Schema must be a JSON object." };
   }
   return { ok: true, error: null };
 }
 function validateTrackerPreset(value) {
-  if (!isRecord2(value)) return { ok: false, error: "Preset must be a JSON object." };
+  if (!isRecord3(value)) return { ok: false, error: "Preset must be a JSON object." };
   if (typeof value.id !== "string" || !sanitizePresetId(value.id)) {
     return { ok: false, error: "Preset id is required." };
   }
@@ -457,7 +809,7 @@ function validateTrackerPreset(value) {
   return { ok: true, error: null };
 }
 function repairTrackerPreset(value) {
-  if (!isRecord2(value)) return null;
+  if (!isRecord3(value)) return null;
   const origin = validOrigin(value.origin) ? value.origin : null;
   if (!origin) return null;
   const preset = {
@@ -467,7 +819,7 @@ function repairTrackerPreset(value) {
     version: stringValue(value.version, "1.0"),
     createdAt: stringValue(value.createdAt, (/* @__PURE__ */ new Date()).toISOString()),
     updatedAt: stringValue(value.updatedAt, (/* @__PURE__ */ new Date()).toISOString()),
-    jsonSchema: isRecord2(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord3(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: stringValue(value.promptInstructions),
     origin
   };
@@ -497,7 +849,7 @@ function draftToPreset(draft, options) {
   return preset;
 }
 function importTrackerPresetEnvelope(value, existingIds, now) {
-  if (!isRecord2(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
+  if (!isRecord3(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
   if (value.kind !== PRESET_EXPORT_KIND) {
     return { ok: false, preset: null, error: "Import kind must be ltracker_schema_preset." };
   }
@@ -534,7 +886,7 @@ function resolveSelectedPreset(presets, selectedPresetId) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.05";
+var EXTENSION_VERSION = "0.06";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -546,7 +898,8 @@ var SETTINGS_LIMITS = {
   generationTimeoutMs: { min: 1e4, max: 18e4, default: 45e3 },
   autoDebounceMs: { min: 250, max: 3e4, default: 1500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
-  maxInjectedChars: { min: 500, max: 2e4, default: 3e3 }
+  maxInjectedChars: { min: 500, max: 2e4, default: 3e3 },
+  maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -573,9 +926,16 @@ var DEFAULT_SETTINGS = {
     includeTimestamp: true,
     includeSourceMessageId: false,
     onlyInjectWhenSnapshotExists: true
+  },
+  renderer: {
+    enabled: true,
+    previewSource: "latest_chat_snapshot",
+    missingValuePlaceholder: "",
+    maxRenderedChars: SETTINGS_LIMITS.maxRenderedChars.default,
+    allowInlineStyles: false
   }
 };
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null;
 }
 function clampNumber(value, fallback, min, max) {
@@ -584,11 +944,13 @@ function clampNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.round(numeric)));
 }
 function repairSettings(value) {
-  const source = isRecord3(value) ? value : {};
-  const autoSource = isRecord3(source.auto) ? source.auto : {};
-  const injectionSource = isRecord3(source.injection) ? source.injection : {};
+  const source = isRecord4(value) ? value : {};
+  const autoSource = isRecord4(source.auto) ? source.auto : {};
+  const injectionSource = isRecord4(source.injection) ? source.injection : {};
+  const rendererSource = isRecord4(source.renderer) ? source.renderer : {};
   const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot" ? injectionSource.mode : DEFAULT_SETTINGS.injection.mode;
   const format = injectionSource.format === "pretty_json" || injectionSource.format === "minimal" || injectionSource.format === "compact" ? injectionSource.format : DEFAULT_SETTINGS.injection.format;
+  const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot" ? rendererSource.previewSource : DEFAULT_SETTINGS.renderer.previewSource;
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -644,6 +1006,18 @@ function repairSettings(value) {
       includeTimestamp: typeof injectionSource.includeTimestamp === "boolean" ? injectionSource.includeTimestamp : DEFAULT_SETTINGS.injection.includeTimestamp,
       includeSourceMessageId: typeof injectionSource.includeSourceMessageId === "boolean" ? injectionSource.includeSourceMessageId : DEFAULT_SETTINGS.injection.includeSourceMessageId,
       onlyInjectWhenSnapshotExists: typeof injectionSource.onlyInjectWhenSnapshotExists === "boolean" ? injectionSource.onlyInjectWhenSnapshotExists : DEFAULT_SETTINGS.injection.onlyInjectWhenSnapshotExists
+    },
+    renderer: {
+      enabled: typeof rendererSource.enabled === "boolean" ? rendererSource.enabled : DEFAULT_SETTINGS.renderer.enabled,
+      previewSource,
+      missingValuePlaceholder: typeof rendererSource.missingValuePlaceholder === "string" ? rendererSource.missingValuePlaceholder : DEFAULT_SETTINGS.renderer.missingValuePlaceholder,
+      maxRenderedChars: clampNumber(
+        rendererSource.maxRenderedChars,
+        SETTINGS_LIMITS.maxRenderedChars.default,
+        SETTINGS_LIMITS.maxRenderedChars.min,
+        SETTINGS_LIMITS.maxRenderedChars.max
+      ),
+      allowInlineStyles: typeof rendererSource.allowInlineStyles === "boolean" ? rendererSource.allowInlineStyles : DEFAULT_SETTINGS.renderer.allowInlineStyles
     }
   };
 }
@@ -748,7 +1122,7 @@ var autoSubscriptionsActive = false;
 var contextHandlerRegistered = false;
 var internalTrackerGenerationDepth = 0;
 var disposed = false;
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null;
 }
 function nowIso() {
@@ -777,7 +1151,7 @@ function diagnosticError(error, fallbackStage) {
   return result;
 }
 function isFrontendMessage(payload) {
-  if (!isRecord4(payload) || typeof payload.type !== "string") return false;
+  if (!isRecord5(payload) || typeof payload.type !== "string") return false;
   if (![
     "ready",
     "refresh_state",
@@ -792,7 +1166,8 @@ function isFrontendMessage(payload) {
     "delete_preset",
     "reset_preset",
     "import_preset",
-    "validate_preset"
+    "validate_preset",
+    "render_template"
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if ([
@@ -807,12 +1182,14 @@ function isFrontendMessage(payload) {
     "delete_preset",
     "reset_preset",
     "import_preset",
-    "validate_preset"
+    "validate_preset",
+    "render_template"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
-  if (payload.type === "save_settings" && !isRecord4(payload.settings)) return false;
-  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord4(payload.preset)) return false;
+  if (payload.type === "save_settings" && !isRecord5(payload.settings)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord5(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
+  if (payload.type === "render_template" && "source" in payload && payload.source !== void 0 && payload.source !== "latest_chat_snapshot" && payload.source !== "latest_message_snapshot") return false;
   return true;
 }
 function permissionState() {
@@ -874,7 +1251,17 @@ function defaultDiagnostics(chatId) {
     lastPresetFallbackReason: null,
     lastPresetValidationError: null,
     lastPromptUsedPresetId: null,
-    lastPromptUsedPresetName: null
+    lastPromptUsedPresetName: null,
+    lastRenderAt: null,
+    lastRenderPresetId: null,
+    lastRenderPresetName: null,
+    lastRenderSnapshotCreatedAt: null,
+    lastRenderSource: null,
+    lastRenderStatus: null,
+    lastRenderWarnings: [],
+    lastRenderErrors: [],
+    lastSanitizedHtmlChars: 0,
+    lastFallbackTextChars: 0
   };
 }
 function stringOrNull(value) {
@@ -890,7 +1277,7 @@ function stringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 function recordOrNull(value) {
-  return isRecord4(value) && !Array.isArray(value) ? value : null;
+  return isRecord5(value) && !Array.isArray(value) ? value : null;
 }
 function sourceKindOrNull(value) {
   return value === "manual" || value === "auto" ? value : null;
@@ -904,8 +1291,14 @@ function injectionModeOrNull(value) {
 function injectionFormatOrNull(value) {
   return value === "compact" || value === "pretty_json" || value === "minimal" ? value : null;
 }
+function renderSourceOrNull(value) {
+  return value === "latest_chat_snapshot" || value === "latest_message_snapshot" ? value : null;
+}
+function renderStatusOrNull(value) {
+  return value === "rendered" || value === "fallback" || value === "no_template" || value === "no_snapshot" || value === "error" ? value : null;
+}
 function errorOrNull(value) {
-  if (!isRecord4(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
+  if (!isRecord5(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
   const error = {
     stage: value.stage,
     message: value.message,
@@ -915,7 +1308,7 @@ function errorOrNull(value) {
   return error;
 }
 function cancellationOrNull(value) {
-  if (!isRecord4(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
+  if (!isRecord5(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
   return {
     jobId: value.jobId,
     requestId: value.requestId,
@@ -925,7 +1318,7 @@ function cancellationOrNull(value) {
 }
 function repairDiagnostics(value, chatId) {
   const base = defaultDiagnostics(chatId);
-  if (!isRecord4(value)) return base;
+  if (!isRecord5(value)) return base;
   return {
     ...base,
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
@@ -969,7 +1362,17 @@ function repairDiagnostics(value, chatId) {
     lastPresetFallbackReason: stringOrNull(value.lastPresetFallbackReason),
     lastPresetValidationError: stringOrNull(value.lastPresetValidationError),
     lastPromptUsedPresetId: stringOrNull(value.lastPromptUsedPresetId),
-    lastPromptUsedPresetName: stringOrNull(value.lastPromptUsedPresetName)
+    lastPromptUsedPresetName: stringOrNull(value.lastPromptUsedPresetName),
+    lastRenderAt: stringOrNull(value.lastRenderAt),
+    lastRenderPresetId: stringOrNull(value.lastRenderPresetId),
+    lastRenderPresetName: stringOrNull(value.lastRenderPresetName),
+    lastRenderSnapshotCreatedAt: stringOrNull(value.lastRenderSnapshotCreatedAt),
+    lastRenderSource: renderSourceOrNull(value.lastRenderSource),
+    lastRenderStatus: renderStatusOrNull(value.lastRenderStatus),
+    lastRenderWarnings: stringArray(value.lastRenderWarnings),
+    lastRenderErrors: stringArray(value.lastRenderErrors),
+    lastSanitizedHtmlChars: typeof value.lastSanitizedHtmlChars === "number" && Number.isFinite(value.lastSanitizedHtmlChars) ? Math.max(0, Math.round(value.lastSanitizedHtmlChars)) : 0,
+    lastFallbackTextChars: typeof value.lastFallbackTextChars === "number" && Number.isFinite(value.lastFallbackTextChars) ? Math.max(0, Math.round(value.lastFallbackTextChars)) : 0
   };
 }
 async function getSettings(userId) {
@@ -1036,7 +1439,7 @@ async function loadActivePresetState(chatId, userId) {
     fallback: null,
     userId
   });
-  if (!isRecord4(raw) || typeof raw.selectedPresetId !== "string") {
+  if (!isRecord5(raw) || typeof raw.selectedPresetId !== "string") {
     return defaultActivePresetState();
   }
   return {
@@ -1124,7 +1527,7 @@ async function tryPersistDiagnostics(diagnostics, userId) {
     spindle.log.warn(`LTracker could not save diagnostics: ${errorMessage(error)}`);
   }
 }
-async function buildState(chatId, userId, status, error = null) {
+async function buildState(chatId, userId, status, error = null, renderPreview = null) {
   const settings = await getSettings(userId);
   const diagnostics = await loadDiagnostics(chatId, userId);
   const presetState = await resolveActivePreset(chatId, userId);
@@ -1148,6 +1551,7 @@ async function buildState(chatId, userId, status, error = null) {
     snapshot,
     latestMessageSnapshot,
     injectionPreview,
+    renderPreview,
     presets: presetState.presets,
     activePreset: presetState.activePreset,
     activePresetState: presetState.activePresetState,
@@ -1166,10 +1570,10 @@ async function buildState(chatId, userId, status, error = null) {
     }
   };
 }
-async function sendState(chatId, userId, status, error = null, requestId) {
+async function sendState(chatId, userId, status, error = null, requestId, renderPreview = null) {
   const message = {
     type: "state",
-    state: await buildState(chatId, userId, status, error)
+    state: await buildState(chatId, userId, status, error, renderPreview)
   };
   if (requestId) message.requestId = requestId;
   send(message, userId);
@@ -1210,7 +1614,7 @@ function normalizeMessages(messages) {
 }
 function normalizeGenerationText(result) {
   if (typeof result === "string" && result.trim()) return result;
-  if (!isRecord4(result)) {
+  if (!isRecord5(result)) {
     throw new Error("Lumiverse generation returned an unsupported response.");
   }
   for (const key of ["content", "text", "output", "response"]) {
@@ -1219,7 +1623,7 @@ function normalizeGenerationText(result) {
   }
   const message = result.message;
   if (typeof message === "string" && message.trim()) return message;
-  if (isRecord4(message) && typeof message.content === "string" && message.content.trim()) {
+  if (isRecord5(message) && typeof message.content === "string" && message.content.trim()) {
     return message.content;
   }
   throw new Error("Lumiverse generation completed without textual content.");
@@ -1367,11 +1771,11 @@ function targetUsersForChat(chatId, userId) {
   return [...usersByChat.get(chatId) ?? []];
 }
 function isChatMessage(value) {
-  return isRecord4(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
+  return isRecord5(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
 }
 function messageFromEventPayload(payload) {
   if (isChatMessage(payload)) return payload;
-  if (isRecord4(payload) && isChatMessage(payload.message)) return payload.message;
+  if (isRecord5(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
 }
 async function scheduleAutoForMessage(input) {
@@ -1527,14 +1931,14 @@ async function handleMessageSent(payload, userId) {
   }
 }
 function handleChatSwitched(payload, userId) {
-  if (!userId || !isRecord4(payload)) return;
+  if (!userId || !isRecord5(payload)) return;
   const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
   rememberActiveChat(userId, chatId);
 }
 function stringAtPath2(value, path) {
   let current = value;
   for (const segment of path) {
-    if (!isRecord4(current)) return null;
+    if (!isRecord5(current)) return null;
     current = current[segment];
   }
   return typeof current === "string" && current.trim() ? current : null;
@@ -1892,18 +2296,120 @@ async function clearSnapshot(chatId, userId, requestId) {
     stageError("storage", error);
   }
 }
+function textLength(value) {
+  return Array.from(value).length;
+}
+async function renderTemplatePreview(chatId, userId, requestId, requestedSource) {
+  const resolvedChatId = await resolveActiveChatId(chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  try {
+    const settings = await getSettings(userId);
+    const source = requestedSource ?? settings.renderer.previewSource;
+    const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+    const presetState = await resolveActivePreset(resolvedChatId, userId);
+    const snapshotSource = source === "latest_message_snapshot" ? await loadMessageSnapshot(resolvedChatId, diagnostics.latestAttachedMessageId, userId) : await loadSnapshot(resolvedChatId, userId);
+    const snapshot = snapshotSource && "snapshot" in snapshotSource ? snapshotSource.snapshot : snapshotSource;
+    if (!snapshot) {
+      const preview2 = {
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        snapshotCreatedAt: null,
+        source,
+        status: "no_snapshot",
+        html: "",
+        textFallback: "No tracker snapshot is available for the selected preview source.",
+        warnings: [],
+        errors: ["No tracker snapshot is available for the selected preview source."]
+      };
+      const updatedDiagnostics2 = {
+        ...diagnostics,
+        lastRenderAt: nowIso(),
+        lastRenderPresetId: preview2.presetId,
+        lastRenderPresetName: preview2.presetName,
+        lastRenderSnapshotCreatedAt: null,
+        lastRenderSource: source,
+        lastRenderStatus: preview2.status,
+        lastRenderWarnings: preview2.warnings,
+        lastRenderErrors: preview2.errors,
+        lastSanitizedHtmlChars: 0,
+        lastFallbackTextChars: textLength(preview2.textFallback)
+      };
+      await persistDiagnostics(updatedDiagnostics2, userId);
+      await sendState(resolvedChatId, userId, "idle", null, requestId, preview2);
+      return;
+    }
+    const template = presetState.activePreset.htmlTemplate ?? "";
+    const fallback = formatTemplateTextFallback(snapshot.data);
+    let preview;
+    if (!settings.renderer.enabled) {
+      preview = {
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        snapshotCreatedAt: snapshot.createdAt,
+        source,
+        status: "fallback",
+        html: "",
+        textFallback: fallback,
+        warnings: ["Renderer preview is disabled in settings; showing text fallback."],
+        errors: []
+      };
+    } else {
+      const result = renderHtmlTemplate({
+        template,
+        snapshotData: snapshot.data,
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name
+      }, {
+        missingValuePlaceholder: settings.renderer.missingValuePlaceholder,
+        maxRenderedChars: settings.renderer.maxRenderedChars,
+        allowInlineStyles: settings.renderer.allowInlineStyles
+      });
+      const status = !template.trim() ? "no_template" : result.ok ? "rendered" : "error";
+      preview = {
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        snapshotCreatedAt: snapshot.createdAt,
+        source,
+        status,
+        html: result.html,
+        textFallback: result.textFallback,
+        warnings: result.warnings,
+        errors: result.errors
+      };
+    }
+    const updatedDiagnostics = {
+      ...diagnostics,
+      lastRenderAt: nowIso(),
+      lastRenderPresetId: preview.presetId,
+      lastRenderPresetName: preview.presetName,
+      lastRenderSnapshotCreatedAt: preview.snapshotCreatedAt,
+      lastRenderSource: source,
+      lastRenderStatus: preview.status,
+      lastRenderWarnings: preview.warnings,
+      lastRenderErrors: preview.errors,
+      lastSanitizedHtmlChars: textLength(preview.html),
+      lastFallbackTextChars: textLength(preview.textFallback)
+    };
+    await persistDiagnostics(updatedDiagnostics, userId);
+    await sendState(resolvedChatId, userId, "idle", null, requestId, preview);
+  } catch (error) {
+    stageError("storage", error);
+  }
+}
 function normalizePresetDraft(value) {
   const draft = {
     name: typeof value.name === "string" ? value.name : "",
     description: typeof value.description === "string" ? value.description : "",
     version: typeof value.version === "string" ? value.version : "1.0",
-    jsonSchema: isRecord4(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord5(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: typeof value.promptInstructions === "string" ? value.promptInstructions : ""
   };
   if (typeof value.id === "string") draft.id = value.id;
   if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
   if (typeof value.notes === "string") draft.notes = value.notes;
-  if (isRecord4(value.capabilities)) {
+  if (isRecord5(value.capabilities)) {
     const capabilities = {};
     if (typeof value.capabilities.supportsHtmlTemplate === "boolean") {
       capabilities.supportsHtmlTemplate = value.capabilities.supportsHtmlTemplate;
@@ -2190,6 +2696,10 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "validate_preset") {
         await validatePreset(chatId, userId, payload.preset, payload.requestId);
+        return;
+      }
+      if (payload.type === "render_template") {
+        await renderTemplatePreview(chatId, userId, payload.requestId, payload.source);
         return;
       }
       await handleRefresh(payload, userId);

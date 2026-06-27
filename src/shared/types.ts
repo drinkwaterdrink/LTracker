@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.05";
+export const EXTENSION_VERSION = "0.06";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -9,6 +9,8 @@ export type TrackerGenerationSourceKind = "manual" | "auto";
 export type AutoTriggerEventType = "GENERATION_ENDED" | "MESSAGE_SENT";
 export type LTrackerInjectionMode = "latest_chat_snapshot" | "latest_message_snapshot";
 export type LTrackerInjectionFormat = "compact" | "pretty_json" | "minimal";
+export type LTrackerRenderSource = "latest_chat_snapshot" | "latest_message_snapshot";
+export type LTrackerRenderStatus = "rendered" | "fallback" | "no_template" | "no_snapshot" | "error";
 export type TrackerPresetOrigin = "built_in" | "user_imported" | "user_created";
 export type LTrackerErrorStage =
   | "active_chat"
@@ -134,6 +136,14 @@ export interface LTrackerInjectionSettings {
   onlyInjectWhenSnapshotExists: boolean;
 }
 
+export interface LTrackerRendererSettings {
+  enabled: boolean;
+  previewSource: LTrackerRenderSource;
+  missingValuePlaceholder: string;
+  maxRenderedChars: number;
+  allowInlineStyles: boolean;
+}
+
 export interface LTrackerSettings {
   schemaVersion: typeof SETTINGS_SCHEMA_VERSION;
   recentMessageLimit: number;
@@ -143,6 +153,7 @@ export interface LTrackerSettings {
   savePromptPreview: boolean;
   auto: LTrackerAutoSettings;
   injection: LTrackerInjectionSettings;
+  renderer: LTrackerRendererSettings;
 }
 
 export interface LTrackerError {
@@ -215,6 +226,16 @@ export interface LTrackerDiagnostics {
   lastPresetValidationError: string | null;
   lastPromptUsedPresetId: string | null;
   lastPromptUsedPresetName: string | null;
+  lastRenderAt: string | null;
+  lastRenderPresetId: string | null;
+  lastRenderPresetName: string | null;
+  lastRenderSnapshotCreatedAt: string | null;
+  lastRenderSource: LTrackerRenderSource | null;
+  lastRenderStatus: LTrackerRenderStatus | null;
+  lastRenderWarnings: string[];
+  lastRenderErrors: string[];
+  lastSanitizedHtmlChars: number;
+  lastFallbackTextChars: number;
 }
 
 export interface PermissionState {
@@ -231,6 +252,7 @@ export interface FrontendState {
   snapshot: TrackerSnapshot | null;
   latestMessageSnapshot: MessageAttachedSnapshot | null;
   injectionPreview: string | null;
+  renderPreview: RenderedTrackerPreview | null;
   presets: TrackerSchemaPreset[];
   activePreset: TrackerSchemaPreset;
   activePresetState: ActiveTrackerPresetState;
@@ -238,6 +260,18 @@ export interface FrontendState {
   permissions: PermissionState;
   settings: LTrackerSettings;
   diagnostics: LTrackerDiagnostics;
+}
+
+export interface RenderedTrackerPreview {
+  presetId: string;
+  presetName: string;
+  snapshotCreatedAt: string | null;
+  source: LTrackerRenderSource;
+  status: LTrackerRenderStatus;
+  html: string;
+  textFallback: string;
+  warnings: string[];
+  errors: string[];
 }
 
 export type FrontendMessage =
@@ -254,7 +288,8 @@ export type FrontendMessage =
   | { type: "delete_preset"; chatId: string | null; presetId: string; requestId: string }
   | { type: "reset_preset"; chatId: string | null; requestId: string }
   | { type: "import_preset"; chatId: string | null; importText: string; requestId: string }
-  | { type: "validate_preset"; chatId: string | null; preset: TrackerPresetDraft; requestId: string };
+  | { type: "validate_preset"; chatId: string | null; preset: TrackerPresetDraft; requestId: string }
+  | { type: "render_template"; chatId: string | null; source?: LTrackerRenderSource; requestId: string };
 
 export type BackendMessage =
   | { type: "state"; state: FrontendState; requestId?: string }

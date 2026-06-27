@@ -10,6 +10,7 @@ export const SETTINGS_LIMITS = {
   autoDebounceMs: { min: 250, max: 30_000, default: 1_500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
   maxInjectedChars: { min: 500, max: 20_000, default: 3_000 },
+  maxRenderedChars: { min: 1_000, max: 200_000, default: 50_000 },
 } as const;
 
 export const DEFAULT_SETTINGS: LTrackerSettings = {
@@ -38,6 +39,13 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     includeSourceMessageId: false,
     onlyInjectWhenSnapshotExists: true,
   },
+  renderer: {
+    enabled: true,
+    previewSource: "latest_chat_snapshot",
+    missingValuePlaceholder: "",
+    maxRenderedChars: SETTINGS_LIMITS.maxRenderedChars.default,
+    allowInlineStyles: false,
+  },
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -61,12 +69,16 @@ export function repairSettings(value: unknown): LTrackerSettings {
   const source = isRecord(value) ? value : {};
   const autoSource = isRecord(source.auto) ? source.auto : {};
   const injectionSource = isRecord(source.injection) ? source.injection : {};
+  const rendererSource = isRecord(source.renderer) ? source.renderer : {};
   const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot"
     ? injectionSource.mode
     : DEFAULT_SETTINGS.injection.mode;
   const format = injectionSource.format === "pretty_json" || injectionSource.format === "minimal" || injectionSource.format === "compact"
     ? injectionSource.format
     : DEFAULT_SETTINGS.injection.format;
+  const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot"
+    ? rendererSource.previewSource
+    : DEFAULT_SETTINGS.renderer.previewSource;
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -146,6 +158,24 @@ export function repairSettings(value: unknown): LTrackerSettings {
       onlyInjectWhenSnapshotExists: typeof injectionSource.onlyInjectWhenSnapshotExists === "boolean"
         ? injectionSource.onlyInjectWhenSnapshotExists
         : DEFAULT_SETTINGS.injection.onlyInjectWhenSnapshotExists,
+    },
+    renderer: {
+      enabled: typeof rendererSource.enabled === "boolean"
+        ? rendererSource.enabled
+        : DEFAULT_SETTINGS.renderer.enabled,
+      previewSource,
+      missingValuePlaceholder: typeof rendererSource.missingValuePlaceholder === "string"
+        ? rendererSource.missingValuePlaceholder
+        : DEFAULT_SETTINGS.renderer.missingValuePlaceholder,
+      maxRenderedChars: clampNumber(
+        rendererSource.maxRenderedChars,
+        SETTINGS_LIMITS.maxRenderedChars.default,
+        SETTINGS_LIMITS.maxRenderedChars.min,
+        SETTINGS_LIMITS.maxRenderedChars.max,
+      ),
+      allowInlineStyles: typeof rendererSource.allowInlineStyles === "boolean"
+        ? rendererSource.allowInlineStyles
+        : DEFAULT_SETTINGS.renderer.allowInlineStyles,
     },
   };
 }

@@ -1,6 +1,6 @@
 # LTracker
 
-Version: `0.05`
+Version: `0.06`
 
 LTracker is a Lumiverse Spindle extension that creates per-chat tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -19,7 +19,7 @@ LTracker is a Lumiverse Spindle extension that creates per-chat tracker snapshot
 - Optionally saves a storage-only tracker snapshot attached to the triggering message id.
 - Optionally injects the latest cached tracker snapshot into normal generation context through a context handler.
 - Provides Schema Presets for selecting, editing, importing, and exporting tracker schemas and prompt instructions.
-- Stores optional HTML template text for a future renderer while keeping it inert in `0.05`.
+- Renders sanitized HTML template previews in the LTracker drawer only.
 - Displays status, latest snapshot JSON, diagnostics, settings, and structured errors in the drawer.
 
 ## Auto Mode
@@ -36,7 +36,7 @@ Auto Mode includes:
 - Quiet-generation filtering so LTracker's own tracker calls do not recursively trigger auto mode.
 - Storage-only message-attached snapshots at `chats/{chatId}/messages/{messageId}/tracker-snapshot.json`.
 
-Message-attached snapshots do not mutate chat messages and do not add visible message widgets in `0.05`.
+Message-attached snapshots do not mutate chat messages and do not add visible message widgets in `0.06`.
 
 ## Context Handler Injection
 
@@ -68,13 +68,35 @@ Schema Presets let each chat choose the tracker shape and extraction instruction
 
 The drawer uses a zTracker-style three-box layout:
 
-- `Schema Box 1 - JSON Schema`: active in `0.05`; controls the requested tracker structure sent to the model.
-- `Schema Box 2 - HTML Template`: stored only in `0.05`; escaped in the drawer, never rendered as HTML, and never injected into chat messages.
-- `Prompt Box - AI Instructions`: active in `0.05`; guides tracker extraction while the backend keeps non-overridable rules for JSON-only output, exact names, no invention, unknown fields, and current/relevant state.
+- `Schema Box 1 - JSON Schema`: active since `0.05`; controls the requested tracker structure sent to the model.
+- `Schema Box 2 - HTML Template`: rendered only as a sanitized LTracker drawer preview in `0.06`; it is never inserted into chat messages.
+- `Prompt Box - AI Instructions`: active since `0.05`; guides tracker extraction while the backend keeps non-overridable rules for JSON-only output, exact names, no invention, unknown fields, and current/relevant state.
 
 The built-in `Default Scene Tracker` is read-only and reproduces the previous default tracker behavior. User-created and imported presets can be edited or deleted. Use Duplicate Preset to fork the built-in preset before customizing it.
 
 Preset export copies one `ltracker_schema_preset` JSON envelope. Import validates `kind`, `formatVersion`, and preset content, generates a new id on conflicts, marks imported presets as `user_imported`, and preserves any HTML template as plain text only.
+
+## Safe HTML Template Renderer
+
+The `0.06` renderer makes the stored HTML Template useful without making it dangerous. It renders the active preset's template against the latest tracker snapshot inside the LTracker drawer preview only.
+
+Supported template syntax:
+
+- `{{path.to.value}}` inserts an escaped tracker value, such as `{{scene.location}}`.
+- `{{json path.to.value}}` inserts escaped JSON text.
+- `{{#each array}}...{{/each}}` repeats a block for array items, allowing item fields like `{{name}}` inside the block.
+
+Renderer safety rules:
+
+- Rendered templates are sanitized before display.
+- Template values are escaped by default.
+- JavaScript is never executed.
+- Unsafe tags, event handler attributes, URL-bearing attributes, SVG, MathML, forms, buttons, and external resources are stripped.
+- Inline styles are stripped by default. If enabled, only a small property allowlist is kept.
+- Context-handler injection remains plain text and does not use rendered HTML.
+- No chat message mutation happens in `0.06`.
+
+The drawer preview can render the latest chat snapshot or the latest storage-only message snapshot. If no template or snapshot is available, LTracker shows a plain-text fallback similar to compact injection. Visible per-response tracker blocks and message widgets are planned for `0.08`, not `0.06`.
 
 ## Diagnostics
 
@@ -87,6 +109,7 @@ The drawer includes a diagnostics panel for manual debugging. It shows:
 - Latest message-attached snapshot id, index, timestamp, and storage key.
 - Injection enabled state, last injection timestamp, skipped reason, injected character count, snapshot timestamp, and source message id.
 - Selected preset id/name, fallback reason, validation error, and preset used for the last tracker prompt.
+- Last render timestamp, preset, source, status, snapshot timestamp, warning/error counts, sanitized HTML size, and fallback text size.
 - Number of messages read and source message ids/range.
 - Storage key used for the current chat snapshot.
 - Last raw model output, collapsed by default.
@@ -96,7 +119,7 @@ The drawer includes a diagnostics panel for manual debugging. It shows:
 - Build/type information when available.
 - Last cancelled job when a newer Generate Tracker request supersedes an older one.
 
-The drawer also includes buttons for Refresh State, Generate Tracker, Clear Current Chat Snapshot, Copy Latest Tracker JSON, Copy Last Prompt, Copy Last Raw Output, Copy Message Snapshot, and Copy Injection Preview. All displayed model output is escaped; LTracker does not render raw LLM HTML.
+The drawer also includes buttons for Refresh State, Generate Tracker, Clear Current Chat Snapshot, Render Latest Snapshot, Copy Latest Tracker JSON, Copy Last Prompt, Copy Last Raw Output, Copy Message Snapshot, Copy Injection Preview, Copy Sanitized HTML, Copy Text Fallback, and Copy Render Errors. All displayed model output is escaped; LTracker does not render raw LLM HTML.
 
 ## Generator Settings
 
@@ -124,6 +147,11 @@ Settings are stored in per-user extension storage at `settings.json` and repaire
 | `injection.includeTimestamp` | `true` | boolean |
 | `injection.includeSourceMessageId` | `false` | boolean |
 | `injection.onlyInjectWhenSnapshotExists` | `true` | boolean |
+| `renderer.enabled` | `true` | boolean |
+| `renderer.previewSource` | `latest_chat_snapshot` | `latest_chat_snapshot` or `latest_message_snapshot` |
+| `renderer.missingValuePlaceholder` | empty string | string |
+| `renderer.maxRenderedChars` | `50000` | `1000` to `200000` |
+| `renderer.allowInlineStyles` | `false` | boolean |
 
 Use Save Settings to persist changes or Reset Settings to restore defaults.
 
@@ -153,15 +181,16 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 | --- | --- | --- |
 | `generation` | Calls `spindle.generate.quiet()` for tracker extraction and listens for generation-completed events. | Generate requests show a clear missing-permission error; auto assistant triggers cannot run. |
 | `chats` | Resolves the user's active chat through `spindle.chats.getActive()` when the frontend does not supply one. | Generate requests fall back to the frontend-supplied chat id or show a clear missing-permission error. |
-| `chat_mutation` | Reads chat messages through `spindle.chat.getMessages()`. LTracker does not mutate chat message content in `0.05`. | Generate requests show a clear missing-permission error. |
+| `chat_mutation` | Reads chat messages through `spindle.chat.getMessages()`. LTracker does not mutate chat message content in `0.06`. | Generate requests show a clear missing-permission error. |
 | `context_handler` | Registers `spindle.registerContextHandler()` for optional cached tracker snapshot injection. | Injection stays unavailable and diagnostics show missing permission. |
 
 Drawer tabs, input-bar actions, frontend/backend messaging, logging, toasts, and user storage are treated as free-tier surfaces in the inspected `lumiverse-spindle-types@0.5.21` API.
 
 ## Known Limitations
 
-- No interceptor, World Books, Memory Cortex, custom HTML template renderer, connection-profile selection, per-field regeneration, cleanup/pending fields, or message-local widgets.
-- JSON Schema and prompt instructions are active for generation, but the HTML template box is storage-only until the `0.06` renderer phase.
+- No interceptor, World Books, Memory Cortex, connection-profile selection, per-field regeneration, cleanup/pending fields, visible per-response tracker blocks, or message-local widgets.
+- HTML template rendering is drawer-preview only. It is not used for chat messages, message widgets, or prompt injection.
+- The sanitizer is intentionally conservative and may strip rich formatting that a future renderer could support safely.
 - Auto Mode depends on Lumiverse event delivery and the user-scoped `userId` supplied by the host. If an event arrives without a known user, LTracker skips it.
 - Active-chat-only stale-job handling is best-effort when the drawer has not yet observed a chat switch.
 - Context handler payload and return types are loose in `lumiverse-spindle-types@0.5.21`; LTracker uses a conservative text-return adapter and fails to no-op if it cannot resolve user/chat context.
@@ -171,13 +200,12 @@ Drawer tabs, input-bar actions, frontend/backend messaging, logging, toasts, and
 
 ## Roadmap
 
-1. `0.06 Safe HTML Template Renderer`.
-2. `0.07 Connection Settings`.
-3. `0.08 Visible Per-Response Tracker Blocks / Message Widgets`.
-4. `0.09 Sequential + Partial Regeneration`.
-5. `0.10 Cleanup + Repair Mode`.
-6. `0.11 World Books, Character Exclusions, Import/Export polish, TOON/XML/native modes`.
+1. `0.07 Connection Settings`.
+2. `0.08 Visible Per-Response Tracker Blocks / Message Widgets`.
+3. `0.09 Sequential + Partial Regeneration`.
+4. `0.10 Cleanup + Repair Mode`.
+5. `0.11 World Books, Character Exclusions, Import/Export polish, TOON/XML/native modes`.
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.05`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.06`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

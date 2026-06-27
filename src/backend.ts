@@ -13,6 +13,10 @@ import {
   shouldSkipContextForInternalGeneration,
   toContextHandlerResult,
 } from "./shared/contextInjection";
+import {
+  formatTemplateTextFallback,
+  renderHtmlTemplate,
+} from "./shared/htmlTemplateRenderer";
 import { parseTrackerJson } from "./shared/parser";
 import {
   canModifyPreset,
@@ -61,9 +65,12 @@ import {
   type LTrackerErrorStage,
   type LTrackerInjectionFormat,
   type LTrackerInjectionMode,
+  type LTrackerRenderSource,
+  type LTrackerRenderStatus,
   type LTrackerSettings,
   type MessageAttachedSnapshot,
   type PermissionState,
+  type RenderedTrackerPreview,
   type TrackerPresetDraft,
   type TrackerGenerationSourceKind,
   type TrackerSnapshot,
@@ -173,6 +180,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "reset_preset",
     "import_preset",
     "validate_preset",
+    "render_template",
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if (
@@ -189,6 +197,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "reset_preset",
       "import_preset",
       "validate_preset",
+      "render_template",
     ].includes(payload.type)
     && typeof payload.requestId !== "string"
   ) return false;
@@ -196,6 +205,13 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
   if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
+  if (
+    payload.type === "render_template"
+    && "source" in payload
+    && payload.source !== undefined
+    && payload.source !== "latest_chat_snapshot"
+    && payload.source !== "latest_message_snapshot"
+  ) return false;
   return true;
 }
 
@@ -261,6 +277,16 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastPresetValidationError: null,
     lastPromptUsedPresetId: null,
     lastPromptUsedPresetName: null,
+    lastRenderAt: null,
+    lastRenderPresetId: null,
+    lastRenderPresetName: null,
+    lastRenderSnapshotCreatedAt: null,
+    lastRenderSource: null,
+    lastRenderStatus: null,
+    lastRenderWarnings: [],
+    lastRenderErrors: [],
+    lastSanitizedHtmlChars: 0,
+    lastFallbackTextChars: 0,
   };
 }
 
@@ -298,6 +324,20 @@ function injectionModeOrNull(value: unknown): LTrackerInjectionMode | null {
 
 function injectionFormatOrNull(value: unknown): LTrackerInjectionFormat | null {
   return value === "compact" || value === "pretty_json" || value === "minimal" ? value : null;
+}
+
+function renderSourceOrNull(value: unknown): LTrackerRenderSource | null {
+  return value === "latest_chat_snapshot" || value === "latest_message_snapshot" ? value : null;
+}
+
+function renderStatusOrNull(value: unknown): LTrackerRenderStatus | null {
+  return value === "rendered"
+    || value === "fallback"
+    || value === "no_template"
+    || value === "no_snapshot"
+    || value === "error"
+    ? value
+    : null;
 }
 
 function errorOrNull(value: unknown): LTrackerError | null {
@@ -377,6 +417,20 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastPresetValidationError: stringOrNull(value.lastPresetValidationError),
     lastPromptUsedPresetId: stringOrNull(value.lastPromptUsedPresetId),
     lastPromptUsedPresetName: stringOrNull(value.lastPromptUsedPresetName),
+    lastRenderAt: stringOrNull(value.lastRenderAt),
+    lastRenderPresetId: stringOrNull(value.lastRenderPresetId),
+    lastRenderPresetName: stringOrNull(value.lastRenderPresetName),
+    lastRenderSnapshotCreatedAt: stringOrNull(value.lastRenderSnapshotCreatedAt),
+    lastRenderSource: renderSourceOrNull(value.lastRenderSource),
+    lastRenderStatus: renderStatusOrNull(value.lastRenderStatus),
+    lastRenderWarnings: stringArray(value.lastRenderWarnings),
+    lastRenderErrors: stringArray(value.lastRenderErrors),
+    lastSanitizedHtmlChars: typeof value.lastSanitizedHtmlChars === "number" && Number.isFinite(value.lastSanitizedHtmlChars)
+      ? Math.max(0, Math.round(value.lastSanitizedHtmlChars))
+      : 0,
+    lastFallbackTextChars: typeof value.lastFallbackTextChars === "number" && Number.isFinite(value.lastFallbackTextChars)
+      ? Math.max(0, Math.round(value.lastFallbackTextChars))
+      : 0,
   };
 }
 
@@ -577,6 +631,7 @@ async function buildState(
   userId: string,
   status?: FrontendState["status"],
   error: LTrackerError | null = null,
+  renderPreview: RenderedTrackerPreview | null = null,
 ): Promise<FrontendState> {
   const settings = await getSettings(userId);
   const diagnostics = await loadDiagnostics(chatId, userId);
@@ -601,6 +656,7 @@ async function buildState(
     snapshot,
     latestMessageSnapshot,
     injectionPreview,
+    renderPreview,
     presets: presetState.presets,
     activePreset: presetState.activePreset,
     activePresetState: presetState.activePresetState,
@@ -626,10 +682,11 @@ async function sendState(
   status?: FrontendState["status"],
   error: LTrackerError | null = null,
   requestId?: string,
+  renderPreview: RenderedTrackerPreview | null = null,
 ): Promise<void> {
   const message: BackendMessage = {
     type: "state",
-    state: await buildState(chatId, userId, status, error),
+    state: await buildState(chatId, userId, status, error, renderPreview),
   };
   if (requestId) message.requestId = requestId;
   send(message, userId);
@@ -1493,6 +1550,125 @@ async function clearSnapshot(chatId: string | null, userId: string, requestId: s
   }
 }
 
+function textLength(value: string): number {
+  return Array.from(value).length;
+}
+
+async function renderTemplatePreview(
+  chatId: string | null,
+  userId: string,
+  requestId: string,
+  requestedSource?: LTrackerRenderSource,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+
+  try {
+    const settings = await getSettings(userId);
+    const source = requestedSource ?? settings.renderer.previewSource;
+    const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+    const presetState = await resolveActivePreset(resolvedChatId, userId);
+    const snapshotSource = source === "latest_message_snapshot"
+      ? await loadMessageSnapshot(resolvedChatId, diagnostics.latestAttachedMessageId, userId)
+      : await loadSnapshot(resolvedChatId, userId);
+    const snapshot = snapshotSource && "snapshot" in snapshotSource
+      ? snapshotSource.snapshot
+      : snapshotSource;
+
+    if (!snapshot) {
+      const preview: RenderedTrackerPreview = {
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        snapshotCreatedAt: null,
+        source,
+        status: "no_snapshot",
+        html: "",
+        textFallback: "No tracker snapshot is available for the selected preview source.",
+        warnings: [],
+        errors: ["No tracker snapshot is available for the selected preview source."],
+      };
+      const updatedDiagnostics: LTrackerDiagnostics = {
+        ...diagnostics,
+        lastRenderAt: nowIso(),
+        lastRenderPresetId: preview.presetId,
+        lastRenderPresetName: preview.presetName,
+        lastRenderSnapshotCreatedAt: null,
+        lastRenderSource: source,
+        lastRenderStatus: preview.status,
+        lastRenderWarnings: preview.warnings,
+        lastRenderErrors: preview.errors,
+        lastSanitizedHtmlChars: 0,
+        lastFallbackTextChars: textLength(preview.textFallback),
+      };
+      await persistDiagnostics(updatedDiagnostics, userId);
+      await sendState(resolvedChatId, userId, "idle", null, requestId, preview);
+      return;
+    }
+
+    const template = presetState.activePreset.htmlTemplate ?? "";
+    const fallback = formatTemplateTextFallback(snapshot.data);
+    let preview: RenderedTrackerPreview;
+    if (!settings.renderer.enabled) {
+      preview = {
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        snapshotCreatedAt: snapshot.createdAt,
+        source,
+        status: "fallback",
+        html: "",
+        textFallback: fallback,
+        warnings: ["Renderer preview is disabled in settings; showing text fallback."],
+        errors: [],
+      };
+    } else {
+      const result = renderHtmlTemplate({
+        template,
+        snapshotData: snapshot.data,
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+      }, {
+        missingValuePlaceholder: settings.renderer.missingValuePlaceholder,
+        maxRenderedChars: settings.renderer.maxRenderedChars,
+        allowInlineStyles: settings.renderer.allowInlineStyles,
+      });
+      const status: LTrackerRenderStatus = !template.trim()
+        ? "no_template"
+        : result.ok ? "rendered" : "error";
+      preview = {
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        snapshotCreatedAt: snapshot.createdAt,
+        source,
+        status,
+        html: result.html,
+        textFallback: result.textFallback,
+        warnings: result.warnings,
+        errors: result.errors,
+      };
+    }
+
+    const updatedDiagnostics: LTrackerDiagnostics = {
+      ...diagnostics,
+      lastRenderAt: nowIso(),
+      lastRenderPresetId: preview.presetId,
+      lastRenderPresetName: preview.presetName,
+      lastRenderSnapshotCreatedAt: preview.snapshotCreatedAt,
+      lastRenderSource: source,
+      lastRenderStatus: preview.status,
+      lastRenderWarnings: preview.warnings,
+      lastRenderErrors: preview.errors,
+      lastSanitizedHtmlChars: textLength(preview.html),
+      lastFallbackTextChars: textLength(preview.textFallback),
+    };
+    await persistDiagnostics(updatedDiagnostics, userId);
+    await sendState(resolvedChatId, userId, "idle", null, requestId, preview);
+  } catch (error) {
+    stageError("storage", error);
+  }
+}
+
 function normalizePresetDraft(value: TrackerPresetDraft): TrackerPresetDraft {
   const draft: TrackerPresetDraft = {
     name: typeof value.name === "string" ? value.name : "",
@@ -1840,6 +2016,10 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "validate_preset") {
         await validatePreset(chatId, userId, payload.preset, payload.requestId);
+        return;
+      }
+      if (payload.type === "render_template") {
+        await renderTemplatePreview(chatId, userId, payload.requestId, payload.source);
         return;
       }
       await handleRefresh(payload, userId);

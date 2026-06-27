@@ -70,7 +70,7 @@ function exportTrackerPreset(preset) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.05";
+var EXTENSION_VERSION = "0.06";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -82,7 +82,8 @@ var SETTINGS_LIMITS = {
   generationTimeoutMs: { min: 1e4, max: 18e4, default: 45e3 },
   autoDebounceMs: { min: 250, max: 3e4, default: 1500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
-  maxInjectedChars: { min: 500, max: 2e4, default: 3e3 }
+  maxInjectedChars: { min: 500, max: 2e4, default: 3e3 },
+  maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -109,6 +110,13 @@ var DEFAULT_SETTINGS = {
     includeTimestamp: true,
     includeSourceMessageId: false,
     onlyInjectWhenSnapshotExists: true
+  },
+  renderer: {
+    enabled: true,
+    previewSource: "latest_chat_snapshot",
+    missingValuePlaceholder: "",
+    maxRenderedChars: SETTINGS_LIMITS.maxRenderedChars.default,
+    allowInlineStyles: false
   }
 };
 
@@ -198,6 +206,17 @@ var STYLES = `
   word-break: break-word;
   font-size: 0.82rem;
   line-height: 1.45;
+}
+.ltracker-render-preview {
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 8px;
+  margin-top: 8px;
+  max-height: 52vh;
+  overflow: auto;
+  padding: 10px;
+}
+.ltracker-render-placeholder {
+  opacity: 0.72;
 }
 .ltracker-grid {
   display: grid;
@@ -363,9 +382,20 @@ function emptyState() {
       lastPresetFallbackReason: null,
       lastPresetValidationError: null,
       lastPromptUsedPresetId: null,
-      lastPromptUsedPresetName: null
+      lastPromptUsedPresetName: null,
+      lastRenderAt: null,
+      lastRenderPresetId: null,
+      lastRenderPresetName: null,
+      lastRenderSnapshotCreatedAt: null,
+      lastRenderSource: null,
+      lastRenderStatus: null,
+      lastRenderWarnings: [],
+      lastRenderErrors: [],
+      lastSanitizedHtmlChars: 0,
+      lastFallbackTextChars: 0
     },
     injectionPreview: null,
+    renderPreview: null,
     presets: [DEFAULT_TRACKER_PRESET],
     activePreset: DEFAULT_TRACKER_PRESET,
     activePresetState: {
@@ -487,8 +517,24 @@ function setup(ctx) {
       const input = tab.root.querySelector(`[data-setting="${name}"]`);
       return input ? input.checked : state.settings.injection[name];
     };
+    const rendererNumberValue = (name) => {
+      const input = tab.root.querySelector(`[data-renderer-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.renderer[name];
+    };
+    const rendererBooleanValue = (name) => {
+      const input = tab.root.querySelector(`[data-renderer-setting="${name}"]`);
+      return input ? input.checked : state.settings.renderer[name];
+    };
+    const rendererTextValue = (name) => {
+      const input = tab.root.querySelector(`[data-renderer-setting="${name}"]`);
+      return input ? input.value : state.settings.renderer[name];
+    };
     const selectValue = (name, fallback) => {
       const input = tab.root.querySelector(`[data-setting="${name}"]`);
+      return input ? input.value : fallback;
+    };
+    const rendererSelectValue = (name, fallback) => {
+      const input = tab.root.querySelector(`[data-renderer-setting="${name}"]`);
       return input ? input.value : fallback;
     };
     return {
@@ -516,6 +562,13 @@ function setup(ctx) {
         includeTimestamp: injectionBooleanValue("includeTimestamp"),
         includeSourceMessageId: injectionBooleanValue("includeSourceMessageId"),
         onlyInjectWhenSnapshotExists: injectionBooleanValue("onlyInjectWhenSnapshotExists")
+      },
+      renderer: {
+        enabled: rendererBooleanValue("enabled"),
+        previewSource: rendererSelectValue("previewSource", state.settings.renderer.previewSource),
+        missingValuePlaceholder: rendererTextValue("missingValuePlaceholder"),
+        maxRenderedChars: rendererNumberValue("maxRenderedChars"),
+        allowInlineStyles: rendererBooleanValue("allowInlineStyles")
       }
     };
   }
@@ -659,6 +712,18 @@ function setup(ctx) {
       requestId: requestId("preset-validate")
     });
   }
+  function selectedRenderSource() {
+    const input = tab.root.querySelector('[data-renderer-setting="previewSource"]');
+    return input?.value === "latest_message_snapshot" ? "latest_message_snapshot" : "latest_chat_snapshot";
+  }
+  function renderTemplatePreview() {
+    send({
+      type: "render_template",
+      chatId: activeChatId(),
+      source: selectedRenderSource(),
+      requestId: requestId("render-template")
+    });
+  }
   async function copyText(value, label) {
     if (!value) return;
     try {
@@ -685,10 +750,18 @@ function setup(ctx) {
     const autoStatus = state.settings.auto.autoModeEnabled ? diagnostics.autoSubscriptionActive ? "Armed" : "Enabled, listener inactive" : "Disabled";
     const latestMessageSnapshotText = state.latestMessageSnapshot ? JSON.stringify(state.latestMessageSnapshot, null, 2) : "No message-attached tracker snapshot saved yet.";
     const injectionPreviewText = state.injectionPreview ?? "No injection preview available. Generate a tracker and enable injection to preview cached context.";
+    const renderPreview = state.renderPreview;
+    const renderStatus = renderPreview?.status ?? "not rendered";
+    const renderSnapshotAt = renderPreview?.snapshotCreatedAt ?? "None";
+    const renderHasTemplate = state.activePreset.htmlTemplate?.trim() ? "yes" : "no";
+    const renderHtmlPreview = renderPreview?.html ? `<div class="ltracker-render-preview">${renderPreview.html}</div>` : `<div class="ltracker-render-preview ltracker-render-placeholder">${escapeHtml("No sanitized HTML preview yet. Render a snapshot to preview the active template.")}</div>`;
+    const renderTextFallback = renderPreview?.textFallback ?? "No text fallback preview yet. Render a snapshot to create one.";
+    const renderWarningsText = renderPreview?.warnings.length ? renderPreview.warnings.join("\n") : "None";
+    const renderErrorsText = renderPreview?.errors.length ? renderPreview.errors.join("\n") : "None";
     const activePreset = state.activePreset;
     const activePresetIsBuiltIn = activePreset.origin === "built_in";
     const presetSchemaText = JSON.stringify(activePreset.jsonSchema, null, 2);
-    const presetHtmlWarning = activePreset.htmlTemplate?.trim() ? "HTML template is stored only. Rendering arrives in 0.06." : "HTML template is optional and stored only in 0.05.";
+    const presetHtmlWarning = activePreset.htmlTemplate?.trim() ? "Templates are sanitized and only rendered in the drawer preview in version 0.06. They are not inserted into chat messages." : activePresetIsBuiltIn ? "This built-in preset has no HTML template. Duplicate it before adding one." : "HTML template is optional. In 0.06 it is sanitized and rendered only in the drawer preview.";
     const presetOptions = state.presets.map((preset) => {
       return `<option value="${escapeHtml(preset.id)}"${selected(preset.id === activePreset.id)}>${escapeHtml(preset.name)} (${escapeHtml(preset.origin)})</option>`;
     }).join("");
@@ -834,8 +907,74 @@ function setup(ctx) {
         </section>
 
         <section class="ltracker-panel">
+          <span class="ltracker-label">Rendered Tracker Preview</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-check">
+              <input type="checkbox" data-renderer-setting="enabled"${checked(state.settings.renderer.enabled)}>
+              Enable drawer renderer
+            </label>
+            <label class="ltracker-field">
+              Preview source
+              <select data-renderer-setting="previewSource">
+                <option value="latest_chat_snapshot"${selected(state.settings.renderer.previewSource === "latest_chat_snapshot")}>Latest chat snapshot</option>
+                <option value="latest_message_snapshot"${selected(state.settings.renderer.previewSource === "latest_message_snapshot")}>Latest message snapshot</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Missing value placeholder
+              <input type="text" data-renderer-setting="missingValuePlaceholder" value="${escapeHtml(state.settings.renderer.missingValuePlaceholder)}">
+            </label>
+            <label class="ltracker-field">
+              Max rendered chars
+              <input type="number" min="1000" max="200000" step="1000" data-renderer-setting="maxRenderedChars" value="${escapeHtml(String(state.settings.renderer.maxRenderedChars))}">
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-renderer-setting="allowInlineStyles"${checked(state.settings.renderer.allowInlineStyles)}>
+              Allow sanitized inline styles
+            </label>
+          </div>
+          <p class="ltracker-note">HTML templates render only in this drawer preview. They never mutate chat messages and are not used for context injection.</p>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Active preset", activePreset.name)}
+            ${renderRow("Has HTML template", renderHasTemplate)}
+            ${renderRow("Latest snapshot timestamp", renderSnapshotAt)}
+            ${renderRow("Render status", renderStatus)}
+          </div>
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
+              Render Latest Snapshot
+            </button>
+            <button class="ltracker-button" type="button" data-action="copy-render-html" ${disabled(!renderPreview?.html)}>
+              Copy Sanitized HTML
+            </button>
+            <button class="ltracker-button" type="button" data-action="copy-render-fallback" ${disabled(!renderPreview?.textFallback)}>
+              Copy Text Fallback
+            </button>
+            <button class="ltracker-button" type="button" data-action="copy-render-errors" ${disabled(!renderPreview || renderPreview.errors.length === 0 && renderPreview.warnings.length === 0)}>
+              Copy Render Errors
+            </button>
+          </div>
+          <details class="ltracker-details" open>
+            <summary>Sanitized rendered HTML preview</summary>
+            ${renderHtmlPreview}
+          </details>
+          <details class="ltracker-details">
+            <summary>Plain-text fallback preview</summary>
+            <pre class="ltracker-text">${escapeHtml(renderTextFallback)}</pre>
+          </details>
+          <details class="ltracker-details">
+            <summary>Render warnings</summary>
+            <pre class="ltracker-text">${escapeHtml(renderWarningsText)}</pre>
+          </details>
+          <details class="ltracker-details">
+            <summary>Render errors</summary>
+            <pre class="ltracker-text ltracker-error">${escapeHtml(renderErrorsText)}</pre>
+          </details>
+        </section>
+
+        <section class="ltracker-panel">
           <span class="ltracker-label">Schema Presets</span>
-          <p class="ltracker-note">zTracker-style layout: Schema Box 1 is active JSON Schema, Schema Box 2 stores an inert HTML Template for 0.06, and Prompt Box instructions guide tracker extraction.</p>
+          <p class="ltracker-note">zTracker-style layout: Schema Box 1 is active JSON Schema, Schema Box 2 is sanitized drawer-preview HTML, and Prompt Box instructions guide tracker extraction.</p>
           <div class="ltracker-settings">
             <label class="ltracker-field">
               Selected preset
@@ -864,7 +1003,7 @@ function setup(ctx) {
               <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml(presetSchemaText)}</textarea>
             </label>
             <label class="ltracker-field ltracker-field-wide">
-              Schema Box 2 - HTML Template (Stored only - rendering arrives in 0.06)
+              Schema Box 2 - HTML Template (Sanitized drawer preview only)
               <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.htmlTemplate ?? "")}</textarea>
             </label>
             <label class="ltracker-field ltracker-field-wide">
@@ -882,6 +1021,9 @@ function setup(ctx) {
           </div>
           <p class="ltracker-note">${escapeHtml(presetHtmlWarning)}</p>
           <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
+              Render With Latest Snapshot
+            </button>
             <button class="ltracker-button" type="button" data-action="save-preset-new">Save As New Preset</button>
             <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate Preset</button>
             <button class="ltracker-button" type="button" data-action="update-preset" ${disabled(activePresetIsBuiltIn)}>Update Current Preset</button>
@@ -915,6 +1057,16 @@ function setup(ctx) {
             ${renderRow("Last preset validation error", diagnostics.lastPresetValidationError)}
             ${renderRow("Last prompt preset id", diagnostics.lastPromptUsedPresetId)}
             ${renderRow("Last prompt preset name", diagnostics.lastPromptUsedPresetName)}
+            ${renderRow("Last render at", diagnostics.lastRenderAt)}
+            ${renderRow("Last render preset id", diagnostics.lastRenderPresetId)}
+            ${renderRow("Last render preset name", diagnostics.lastRenderPresetName)}
+            ${renderRow("Last render snapshot", diagnostics.lastRenderSnapshotCreatedAt)}
+            ${renderRow("Last render source", diagnostics.lastRenderSource)}
+            ${renderRow("Last render status", diagnostics.lastRenderStatus)}
+            ${renderRow("Last sanitized HTML chars", diagnostics.lastSanitizedHtmlChars)}
+            ${renderRow("Last fallback text chars", diagnostics.lastFallbackTextChars)}
+            ${renderRow("Last render warnings", diagnostics.lastRenderWarnings.join(", "))}
+            ${renderRow("Last render errors", diagnostics.lastRenderErrors.join(", "))}
             ${renderRow("Last generation source", diagnostics.lastGenerationSource)}
             ${renderRow("Last generation started", diagnostics.lastGenerationStartedAt)}
             ${renderRow("Last generation completed", diagnostics.lastGenerationCompletedAt)}
@@ -1011,6 +1163,16 @@ function setup(ctx) {
       );
     }
     if (action === "copy-injection-preview") void copyText(state.injectionPreview, "injection preview");
+    if (action === "render-template") renderTemplatePreview();
+    if (action === "copy-render-html") void copyText(state.renderPreview?.html ?? null, "sanitized HTML");
+    if (action === "copy-render-fallback") void copyText(state.renderPreview?.textFallback ?? null, "text fallback");
+    if (action === "copy-render-errors") {
+      const renderLog = state.renderPreview ? [
+        ...state.renderPreview.errors.map((item) => `error: ${item}`),
+        ...state.renderPreview.warnings.map((item) => `warning: ${item}`)
+      ].join("\n") : null;
+      void copyText(renderLog, "render errors");
+    }
     if (action === "save-preset-new") savePresetAsNew();
     if (action === "duplicate-preset") duplicatePreset();
     if (action === "update-preset") updatePreset();

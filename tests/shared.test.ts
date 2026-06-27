@@ -6,6 +6,11 @@ import {
   shouldSkipContextForInternalGeneration,
 } from "../src/shared/contextInjection";
 import {
+  formatTemplateTextFallback,
+  renderHtmlTemplate,
+  sanitizeHtml,
+} from "../src/shared/htmlTemplateRenderer";
+import {
   isQuietGenerationType,
   shouldScheduleAutoTracker,
 } from "../src/shared/auto";
@@ -39,7 +44,7 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.05",
+  extensionVersion: "0.06",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -68,7 +73,7 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.05",
+  extensionVersion: "0.06",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
@@ -485,4 +490,164 @@ test("buildTrackerPrompt includes selected preset schema and instructions", () =
   assert.match(joined, /ritual pressure/);
   assert.match(joined, /Return JSON only/);
   assert.doesNotMatch(joined, /<section>Do not render me<\/section>/);
+});
+
+test("renderHtmlTemplate replaces nested path values", () => {
+  const result = renderHtmlTemplate({
+    template: "<section>{{scene.location}} at {{scene.time}}</section>",
+    snapshotData: sampleSnapshot.data,
+    presetId: "custom",
+    presetName: "Custom",
+  });
+  assert.equal(result.ok, true);
+  assert.match(result.html, /Grand Meridian Court at late afternoon/);
+});
+
+test("renderHtmlTemplate replaces missing paths with placeholder", () => {
+  const result = renderHtmlTemplate({
+    template: "<p>{{scene.weather}}</p>",
+    snapshotData: sampleSnapshot.data,
+    presetId: "custom",
+    presetName: "Custom",
+  }, { missingValuePlaceholder: "unknown" });
+  assert.match(result.html, /unknown/);
+});
+
+test("renderHtmlTemplate escapes inserted values", () => {
+  const result = renderHtmlTemplate({
+    template: "<p>{{danger}}</p>",
+    snapshotData: { danger: "<script>alert(1)</script>" },
+    presetId: "custom",
+    presetName: "Custom",
+  });
+  assert.doesNotMatch(result.html, /<script>/);
+  assert.match(result.html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test("renderHtmlTemplate json helper escapes JSON text", () => {
+  const result = renderHtmlTemplate({
+    template: "<pre>{{json scene}}</pre>",
+    snapshotData: { scene: { location: "<Court>" } },
+    presetId: "custom",
+    presetName: "Custom",
+  });
+  assert.match(result.html, /&quot;location&quot;/);
+  assert.match(result.html, /&lt;Court&gt;/);
+});
+
+test("renderHtmlTemplate supports each blocks", () => {
+  const result = renderHtmlTemplate({
+    template: "<ul>{{#each characters_present}}<li>{{name}}: {{emotional_state}}</li>{{/each}}</ul>",
+    snapshotData: sampleSnapshot.data,
+    presetId: "custom",
+    presetName: "Custom",
+  });
+  assert.match(result.html, /<li>Aleister Crowley: confused<\/li>/);
+  assert.match(result.html, /<li>Sable Mareth: assessing him<\/li>/);
+});
+
+test("sanitizeHtml strips unsafe script tags", () => {
+  const sanitized = sanitizeHtml("<section>safe</section><script>alert(1)</script>");
+  assert.equal(sanitized.html, "<section>safe</section>");
+  assert.doesNotMatch(sanitized.html, /alert/);
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("script")));
+});
+
+test("sanitizeHtml strips event handler attributes", () => {
+  const sanitized = sanitizeHtml("<div onclick=\"alert(1)\" class=\"ok\">Safe</div>");
+  assert.equal(sanitized.html, "<div class=\"ok\">Safe</div>");
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("event attribute")));
+});
+
+test("sanitizeHtml strips URL-bearing attributes", () => {
+  const sanitized = sanitizeHtml("<p href=\"x\" src=\"x\" srcdoc=\"x\" title=\"ok\">Safe</p>");
+  assert.equal(sanitized.html, "<p title=\"ok\">Safe</p>");
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("href")));
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("src")));
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("srcdoc")));
+});
+
+test("sanitizeHtml strips unknown tags", () => {
+  const sanitized = sanitizeHtml("<blink>loud</blink><section>safe</section>");
+  assert.equal(sanitized.html, "loud<section>safe</section>");
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("blink")));
+});
+
+test("sanitizeHtml strips inline style by default", () => {
+  const sanitized = sanitizeHtml("<div style=\"color: red\" class=\"ok\">Safe</div>");
+  assert.equal(sanitized.html, "<div class=\"ok\">Safe</div>");
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("inline style")));
+});
+
+test("sanitizeHtml keeps only safe inline styles when enabled", () => {
+  const sanitized = sanitizeHtml(
+    "<div style=\"color: red; background-image: url(x); padding: 4px; position: fixed\">Safe</div>",
+    { allowInlineStyles: true },
+  );
+  assert.equal(sanitized.html, "<div style=\"color: red; padding: 4px\">Safe</div>");
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("background-image")));
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("position")));
+});
+
+test("renderHtmlTemplate returns fallback when no template exists", () => {
+  const result = renderHtmlTemplate({
+    template: "",
+    snapshotData: sampleSnapshot.data,
+    presetId: "custom",
+    presetName: "Custom",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.usedFallback, true);
+  assert.equal(result.html, "");
+  assert.match(result.textFallback, /Scene:/);
+});
+
+test("formatTemplateTextFallback includes tracker continuity fields", () => {
+  const fallback = formatTemplateTextFallback(sampleSnapshot.data);
+  assert.match(fallback, /Present characters: Aleister Crowley; Sable Mareth/);
+  assert.match(fallback, /Scholarship packet/);
+});
+
+test("repairSettings repairs renderer settings with defaults and clamping", () => {
+  const settings = repairSettings({
+    renderer: {
+      enabled: false,
+      previewSource: "latest_message_snapshot",
+      missingValuePlaceholder: "unknown",
+      maxRenderedChars: "999999",
+      allowInlineStyles: true,
+    },
+  });
+  assert.equal(settings.renderer.enabled, false);
+  assert.equal(settings.renderer.previewSource, "latest_message_snapshot");
+  assert.equal(settings.renderer.missingValuePlaceholder, "unknown");
+  assert.equal(settings.renderer.maxRenderedChars, 200_000);
+  assert.equal(settings.renderer.allowInlineStyles, true);
+
+  const repaired = repairSettings({ renderer: { previewSource: "bad", maxRenderedChars: 5 } });
+  assert.equal(repaired.renderer.previewSource, DEFAULT_SETTINGS.renderer.previewSource);
+  assert.equal(repaired.renderer.maxRenderedChars, 1_000);
+});
+
+test("renderHtmlTemplate truncates large rendered output", () => {
+  const result = renderHtmlTemplate({
+    template: `<p>${"x".repeat(200)}</p>`,
+    snapshotData: sampleSnapshot.data,
+    presetId: "custom",
+    presetName: "Custom",
+  }, { maxRenderedChars: 40 });
+  assert.ok(result.html.length <= 40);
+  assert.ok(result.warnings.some((warning) => warning.includes("truncated")));
+});
+
+test("renderHtmlTemplate reports errors instead of throwing", () => {
+  const result = renderHtmlTemplate({
+    template: "<pre>{{json unsafe}}</pre>",
+    snapshotData: { unsafe: BigInt(7) },
+    presetId: "custom",
+    presetName: "Custom",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.usedFallback, true);
+  assert.ok(result.errors.some((error) => error.includes("Renderer failed safely")));
 });
