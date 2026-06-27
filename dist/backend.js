@@ -228,7 +228,7 @@ function emptyDecision(skippedReason) {
 
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
-var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.08 while the Lumiverse context handler return contract is being verified.";
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.09 while the Lumiverse context handler return contract is being verified.";
 
 // src/shared/htmlTemplateRenderer.ts
 var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
@@ -585,6 +585,7 @@ function renderHtmlTemplate(input, options = {}) {
 // src/shared/messageDisplay.ts
 var MESSAGE_LOCAL_UI_SUPPORTED = true;
 var MESSAGE_LOCAL_UI_FALLBACK_REASON = null;
+var MESSAGE_WIDGET_PLACEMENT_REASON = "lumiverse-spindle-types@0.5.21 exposes ctx.messages.renderWidget() as a below-message widget surface and does not expose a top-placement option.";
 function snapshotForDisplay(input) {
   if (input.settings.source === "latest_chat_snapshot" && input.latestChatSnapshot) return input.latestChatSnapshot;
   return input.attachedSnapshot?.snapshot ?? null;
@@ -596,6 +597,17 @@ function metadataFromSnapshot(attachedSnapshot, snapshot) {
     presetVersion: attachedSnapshot?.presetVersion ?? snapshot?.presetVersion ?? null,
     snapshotCreatedAt: snapshot?.createdAt ?? null,
     attachedAt: attachedSnapshot?.attachedAt ?? null
+  };
+}
+function generationMetadataFromSnapshot(snapshot, input) {
+  return {
+    generationStartedAt: input.activeJobStartedAt ?? snapshot?.generationStartedAt ?? null,
+    generationCompletedAt: snapshot?.generationCompletedAt ?? null,
+    generationDurationMs: typeof snapshot?.generationDurationMs === "number" && Number.isFinite(snapshot.generationDurationMs) ? Math.max(0, Math.round(snapshot.generationDurationMs)) : null,
+    generationCancelledAt: snapshot?.generationCancelledAt ?? null,
+    generationStatus: snapshot?.generationStatus ?? null,
+    isRegenerating: input.isRegenerating === true,
+    activeJobId: input.activeJobId ?? null
   };
 }
 function injectionSettings(settings) {
@@ -619,53 +631,83 @@ function displayJson(messageId, messageIndex, attachedSnapshot, snapshot, settin
     presetId: attachedSnapshot?.presetId ?? snapshot.presetId ?? null,
     presetName: attachedSnapshot?.presetName ?? snapshot.presetName ?? null,
     presetVersion: attachedSnapshot?.presetVersion ?? snapshot.presetVersion ?? null,
+    generationStartedAt: snapshot.generationStartedAt ?? null,
+    generationCompletedAt: snapshot.generationCompletedAt ?? null,
+    generationDurationMs: snapshot.generationDurationMs ?? null,
+    generationCancelledAt: snapshot.generationCancelledAt ?? null,
+    generationStatus: snapshot.generationStatus ?? null,
     data: snapshot.data
   }, null, 2), settings.maxRenderedChars);
 }
 function safeScriptJson(value) {
   return JSON.stringify(value).replace(/</g, "\\u003C");
 }
+function formatDurationMs(durationMs) {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 0) return null;
+  if (durationMs < 1e3) return `${Math.round(durationMs)}ms`;
+  const seconds = durationMs / 1e3;
+  return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+}
+function currentRunningDuration(startedAt) {
+  if (!startedAt) return null;
+  const startedMs = Date.parse(startedAt);
+  if (!Number.isFinite(startedMs)) return null;
+  return formatDurationMs(Date.now() - startedMs);
+}
 function buildWidgetHtml(rendered, settings) {
-  const titleParts = [
-    "LTracker",
+  const duration = settings.showGenerationDuration ? formatDurationMs(rendered.generationDurationMs) : null;
+  const runningSince = rendered.isRegenerating ? rendered.generationStartedAt : null;
+  const actionLabel = rendered.isRegenerating ? "Cancel tracker generation" : "Regenerate tracker";
+  const meta = [
     settings.showPresetName && rendered.presetName ? rendered.presetName : null,
     settings.showTimestamp && rendered.snapshotCreatedAt ? rendered.snapshotCreatedAt : null
-  ].filter((item) => Boolean(item));
-  const meta = [
-    rendered.messageIndex !== null ? `message #${rendered.messageIndex}` : null,
-    `id ${rendered.messageId}`
   ].filter((item) => Boolean(item)).join(" / ");
   const body = rendered.html || `<pre class="ltr-pre">${escapeHtml(rendered.textFallback)}</pre>`;
-  const copyButtons = settings.showCopyButton ? `
-      <div class="ltr-actions">
-        <button type="button" data-copy="json">Copy JSON</button>
-        <button type="button" data-copy="html">Copy HTML</button>
-        <button type="button" data-copy="text">Copy Text</button>
-      </div>
+  const regenerateButton = settings.showWidgetRegenerateButton ? `
+      <button
+        class="ltr-icon-button${rendered.isRegenerating ? " ltr-spinning" : ""}"
+        type="button"
+        data-ltracker-action="regenerate"
+        data-message-id="${escapeHtml(rendered.messageId)}"
+        data-job-id="${escapeHtml(rendered.activeJobId ?? "")}"
+        title="${escapeHtml(actionLabel)}"
+        aria-label="${escapeHtml(actionLabel)}"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d="M17.7 6.3A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.67 4.22 1.76L13 11h8V3l-3.3 3.3Z"/>
+        </svg>
+      </button>
       <script>
       (() => {
-        const payloads = {
-          json: ${safeScriptJson(rendered.json)},
-          html: ${safeScriptJson(rendered.html)},
-          text: ${safeScriptJson(rendered.textFallback)}
-        };
-        document.addEventListener("click", async (event) => {
-          const button = event.target && event.target.closest ? event.target.closest("[data-copy]") : null;
+        const messageId = ${safeScriptJson(rendered.messageId)};
+        const jobId = ${safeScriptJson(rendered.activeJobId ?? "")};
+        document.addEventListener("click", (event) => {
+          const button = event.target && event.target.closest ? event.target.closest("[data-ltracker-action='regenerate']") : null;
           if (!button) return;
-          const value = payloads[button.dataset.copy] || "";
-          if (!value || !navigator.clipboard) return;
-          const original = button.textContent;
-          try {
-            await navigator.clipboard.writeText(value);
-            button.textContent = "Copied";
-            setTimeout(() => { button.textContent = original; }, 1200);
-          } catch {
-            button.textContent = "Copy failed";
-            setTimeout(() => { button.textContent = original; }, 1200);
-          }
+          window.parent.postMessage({
+            type: "ltracker_widget_action",
+            action: "toggle_regenerate",
+            messageId,
+            jobId
+          }, "*");
         });
+        const elapsed = document.querySelector("[data-elapsed]");
+        const startedAt = ${safeScriptJson(runningSince ?? "")};
+        if (elapsed && startedAt) {
+          const started = Date.parse(startedAt);
+          const tick = () => {
+            const ms = Date.now() - started;
+            elapsed.textContent = ms < 1000 ? Math.max(0, Math.round(ms)) + "ms" : (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + "s";
+          };
+          tick();
+          const timer = setInterval(tick, 250);
+          window.addEventListener("pagehide", () => clearInterval(timer), { once: true });
+        }
       })();
       <\/script>` : "";
+  const elapsedMarkup = settings.showGenerationDuration ? rendered.isRegenerating && rendered.generationStartedAt ? `<span class="ltr-pill" data-elapsed>${escapeHtml(currentRunningDuration(rendered.generationStartedAt) ?? "0ms")}</span>` : duration ? `<span class="ltr-pill">${escapeHtml(duration)}</span>` : "" : "";
+  const statusMarkup = rendered.isRegenerating ? `<span class="ltr-pill">generating</span>` : "";
+  const metaMarkup = meta ? `<span class="ltr-meta">${escapeHtml(meta)}</span>` : "";
   const open = settings.collapsedByDefault ? "" : " open";
   return `<!doctype html>
 <html>
@@ -673,16 +715,26 @@ function buildWidgetHtml(rendered, settings) {
   <meta charset="utf-8">
   <style>
     :root { color-scheme: light dark; }
-    body { margin: 0; color: inherit; font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    .ltr-card { border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 8px; padding: 8px 10px; background: color-mix(in srgb, currentColor 5%, transparent); }
+    body { margin: 0; color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .ltr-card { border: 1px solid color-mix(in srgb, currentColor 15%, transparent); border-radius: 8px; padding: 6px 8px; background: color-mix(in srgb, currentColor 4%, transparent); }
+    details { min-width: 0; }
     summary { cursor: pointer; list-style-position: outside; }
-    .ltr-summary { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+    .ltr-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; width: 100%; }
+    .ltr-head { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px 7px; align-items: center; }
     .ltr-title { font-weight: 700; }
-    .ltr-meta { opacity: .72; font-size: 12px; }
-    .ltr-body { margin-top: 8px; overflow-wrap: anywhere; }
-    .ltr-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .ltr-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-    button { border: 1px solid color-mix(in srgb, currentColor 24%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 8%, transparent); color: inherit; cursor: pointer; min-height: 28px; padding: 4px 8px; font: inherit; }
+    .ltr-meta { opacity: .7; overflow-wrap: anywhere; }
+    .ltr-pill { border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 999px; padding: 1px 6px; opacity: .78; }
+    .ltr-icon-button { width: 26px; height: 26px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 999px; background: color-mix(in srgb, currentColor 7%, transparent); color: inherit; cursor: pointer; padding: 0; }
+    .ltr-icon-button svg { width: 15px; height: 15px; }
+    .ltr-icon-button:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+    .ltr-spinning svg { animation: ltr-spin .9s linear infinite; }
+    .ltr-body { margin-top: 7px; overflow-wrap: anywhere; }
+    .ltr-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    @keyframes ltr-spin { to { transform: rotate(360deg); } }
+    @media (max-width: 520px) {
+      .ltr-card { padding: 5px 7px; }
+      .ltr-meta { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -690,12 +742,16 @@ function buildWidgetHtml(rendered, settings) {
     <details${open}>
       <summary>
         <span class="ltr-summary">
-          <span class="ltr-title">${escapeHtml(titleParts.join(" - "))}</span>
-          <span class="ltr-meta">${escapeHtml(meta)}</span>
+          <span class="ltr-head">
+            <span class="ltr-title">LTracker</span>
+            ${metaMarkup}
+            ${elapsedMarkup}
+            ${statusMarkup}
+          </span>
+          ${regenerateButton}
         </span>
       </summary>
       <div class="ltr-body">${body}</div>
-      ${copyButtons}
     </details>
   </section>
 </body>
@@ -704,12 +760,14 @@ function buildWidgetHtml(rendered, settings) {
 function renderMessageTracker(input) {
   const snapshot = snapshotForDisplay(input);
   const metadata = metadataFromSnapshot(input.attachedSnapshot, snapshot);
+  const generationMetadata = generationMetadataFromSnapshot(snapshot, input);
   if (!snapshot) {
     const textFallback2 = "No tracker snapshot is available for this message.";
     const base2 = {
       messageId: input.messageId,
       messageIndex: input.messageIndex,
       ...metadata,
+      ...generationMetadata,
       renderMode: input.settings.renderMode,
       html: "",
       textFallback: textFallback2,
@@ -755,6 +813,7 @@ function renderMessageTracker(input) {
     messageId: input.messageId,
     messageIndex: input.messageIndex,
     ...metadata,
+    ...generationMetadata,
     renderMode: input.settings.renderMode,
     html,
     textFallback,
@@ -770,6 +829,7 @@ function renderMessageTracker(input) {
 function buildMessageTrackerHistory(input) {
   return input.index.map((entry, index) => {
     const snapshot = input.snapshots[index] ?? null;
+    const activeJob = input.activeWidgetJobs?.[entry.messageId] ?? null;
     return {
       indexEntry: entry,
       snapshot,
@@ -779,7 +839,10 @@ function buildMessageTrackerHistory(input) {
         attachedSnapshot: snapshot,
         latestChatSnapshot: input.latestChatSnapshot,
         preset: input.preset,
-        settings: input.settings
+        settings: input.settings,
+        isRegenerating: Boolean(activeJob),
+        activeJobId: activeJob?.jobId ?? null,
+        activeJobStartedAt: activeJob?.startedAt ?? null
       })
     };
   });
@@ -841,7 +904,12 @@ function normalizeTrackerSnapshotPresetMetadata(snapshot) {
     ...snapshot,
     presetId: snapshot.presetId ?? null,
     presetName: snapshot.presetName ?? null,
-    presetVersion: snapshot.presetVersion ?? null
+    presetVersion: snapshot.presetVersion ?? null,
+    generationStartedAt: snapshot.generationStartedAt ?? null,
+    generationCompletedAt: snapshot.generationCompletedAt ?? null,
+    generationDurationMs: typeof snapshot.generationDurationMs === "number" && Number.isFinite(snapshot.generationDurationMs) ? Math.max(0, Math.round(snapshot.generationDurationMs)) : null,
+    generationCancelledAt: snapshot.generationCancelledAt ?? null,
+    generationStatus: snapshot.generationStatus === "completed" || snapshot.generationStatus === "cancelled" || snapshot.generationStatus === "failed" ? snapshot.generationStatus : null
   };
 }
 function normalizeMessageAttachedSnapshotPresetMetadata(snapshot) {
@@ -1131,7 +1199,7 @@ function resolveSelectedPreset(presets, selectedPresetId) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.08";
+var EXTENSION_VERSION = "0.09";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1185,10 +1253,12 @@ var DEFAULT_SETTINGS = {
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
-    collapsedByDefault: false,
+    collapsedByDefault: true,
     showTimestamp: true,
     showPresetName: true,
-    showCopyButton: true,
+    showDebugCopyButtonsInHistory: true,
+    showWidgetRegenerateButton: true,
+    showGenerationDuration: true,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default
   }
 };
@@ -1288,7 +1358,9 @@ function repairSettings(value) {
       collapsedByDefault: typeof messageDisplaySource.collapsedByDefault === "boolean" ? messageDisplaySource.collapsedByDefault : DEFAULT_SETTINGS.messageDisplay.collapsedByDefault,
       showTimestamp: typeof messageDisplaySource.showTimestamp === "boolean" ? messageDisplaySource.showTimestamp : DEFAULT_SETTINGS.messageDisplay.showTimestamp,
       showPresetName: typeof messageDisplaySource.showPresetName === "boolean" ? messageDisplaySource.showPresetName : DEFAULT_SETTINGS.messageDisplay.showPresetName,
-      showCopyButton: typeof messageDisplaySource.showCopyButton === "boolean" ? messageDisplaySource.showCopyButton : DEFAULT_SETTINGS.messageDisplay.showCopyButton,
+      showDebugCopyButtonsInHistory: typeof messageDisplaySource.showDebugCopyButtonsInHistory === "boolean" ? messageDisplaySource.showDebugCopyButtonsInHistory : typeof messageDisplaySource.showCopyButton === "boolean" ? messageDisplaySource.showCopyButton : DEFAULT_SETTINGS.messageDisplay.showDebugCopyButtonsInHistory,
+      showWidgetRegenerateButton: typeof messageDisplaySource.showWidgetRegenerateButton === "boolean" ? messageDisplaySource.showWidgetRegenerateButton : DEFAULT_SETTINGS.messageDisplay.showWidgetRegenerateButton,
+      showGenerationDuration: typeof messageDisplaySource.showGenerationDuration === "boolean" ? messageDisplaySource.showGenerationDuration : DEFAULT_SETTINGS.messageDisplay.showGenerationDuration,
       maxRenderedChars: clampNumber(
         messageDisplaySource.maxRenderedChars,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
@@ -1447,7 +1519,9 @@ function isFrontendMessage(payload) {
     "reset_preset",
     "import_preset",
     "validate_preset",
-    "render_template"
+    "render_template",
+    "regenerate_message_tracker",
+    "cancel_tracker_generation"
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if ([
@@ -1463,12 +1537,16 @@ function isFrontendMessage(payload) {
     "reset_preset",
     "import_preset",
     "validate_preset",
-    "render_template"
+    "render_template",
+    "regenerate_message_tracker",
+    "cancel_tracker_generation"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
   if (payload.type === "save_settings" && !isRecord6(payload.settings)) return false;
   if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord6(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
+  if (payload.type === "regenerate_message_tracker" && typeof payload.messageId !== "string") return false;
+  if (payload.type === "cancel_tracker_generation" && typeof payload.jobId !== "string") return false;
   if (payload.type === "render_template" && "source" in payload && payload.source !== void 0 && payload.source !== "latest_chat_snapshot" && payload.source !== "latest_message_snapshot") return false;
   return true;
 }
@@ -1553,7 +1631,16 @@ function defaultDiagnostics(chatId) {
     lastMessageDisplayError: null,
     messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
     messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
-    messageSnapshotIndexCount: 0
+    messageSnapshotIndexCount: 0,
+    lastWidgetRegenerateMessageId: null,
+    lastWidgetRegenerateStartedAt: null,
+    lastWidgetRegenerateCompletedAt: null,
+    lastWidgetRegenerateDurationMs: null,
+    lastWidgetRegenerateCancelledAt: null,
+    lastWidgetRegenerateError: null,
+    activeWidgetRegenerationCount: 0,
+    messageWidgetPlacementResolved: "host_default",
+    messageWidgetPlacementReason: MESSAGE_WIDGET_PLACEMENT_REASON
   };
 }
 function stringOrNull2(value) {
@@ -1594,6 +1681,9 @@ function messageDisplayModeOrNull(value) {
 }
 function messageDisplayPlacementOrNull(value) {
   return value === "top" || value === "bottom" ? value : null;
+}
+function messageWidgetPlacementResolved(value) {
+  return value === "top" || value === "bottom" || value === "host_default" || value === "unsupported" ? value : MESSAGE_LOCAL_UI_SUPPORTED ? "host_default" : "unsupported";
 }
 function errorOrNull(value) {
   if (!isRecord6(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
@@ -1682,7 +1772,16 @@ function repairDiagnostics(value, chatId) {
     lastMessageDisplayError: stringOrNull2(value.lastMessageDisplayError),
     messageLocalUiSupported: typeof value.messageLocalUiSupported === "boolean" ? value.messageLocalUiSupported : MESSAGE_LOCAL_UI_SUPPORTED,
     messageLocalUiFallbackReason: stringOrNull2(value.messageLocalUiFallbackReason) ?? MESSAGE_LOCAL_UI_FALLBACK_REASON,
-    messageSnapshotIndexCount: typeof value.messageSnapshotIndexCount === "number" && Number.isFinite(value.messageSnapshotIndexCount) ? Math.max(0, Math.round(value.messageSnapshotIndexCount)) : 0
+    messageSnapshotIndexCount: typeof value.messageSnapshotIndexCount === "number" && Number.isFinite(value.messageSnapshotIndexCount) ? Math.max(0, Math.round(value.messageSnapshotIndexCount)) : 0,
+    lastWidgetRegenerateMessageId: stringOrNull2(value.lastWidgetRegenerateMessageId),
+    lastWidgetRegenerateStartedAt: stringOrNull2(value.lastWidgetRegenerateStartedAt),
+    lastWidgetRegenerateCompletedAt: stringOrNull2(value.lastWidgetRegenerateCompletedAt),
+    lastWidgetRegenerateDurationMs: numberOrNull(value.lastWidgetRegenerateDurationMs),
+    lastWidgetRegenerateCancelledAt: stringOrNull2(value.lastWidgetRegenerateCancelledAt),
+    lastWidgetRegenerateError: stringOrNull2(value.lastWidgetRegenerateError),
+    activeWidgetRegenerationCount: typeof value.activeWidgetRegenerationCount === "number" && Number.isFinite(value.activeWidgetRegenerationCount) ? Math.max(0, Math.round(value.activeWidgetRegenerationCount)) : 0,
+    messageWidgetPlacementResolved: messageWidgetPlacementResolved(value.messageWidgetPlacementResolved),
+    messageWidgetPlacementReason: stringOrNull2(value.messageWidgetPlacementReason) ?? MESSAGE_WIDGET_PLACEMENT_REASON
   };
 }
 async function getSettings(userId) {
@@ -1832,6 +1931,24 @@ async function saveMessageSnapshotIndex(chatId, index, userId) {
     userId
   });
 }
+function activeWidgetJobsForChat(chatId) {
+  if (!chatId) return {};
+  const job = activeJobs.get(chatId);
+  if (!job || job.sourceKind !== "widget" || !job.sourceMessageId) return {};
+  return {
+    [job.sourceMessageId]: {
+      jobId: job.jobId,
+      startedAt: job.startedAt
+    }
+  };
+}
+function resolveMessageWidgetPlacement(requested) {
+  if (!MESSAGE_LOCAL_UI_SUPPORTED) {
+    return { resolved: "unsupported", reason: MESSAGE_LOCAL_UI_FALLBACK_REASON ?? MESSAGE_WIDGET_PLACEMENT_REASON };
+  }
+  if (requested === "bottom") return { resolved: "host_default", reason: null };
+  return { resolved: "host_default", reason: MESSAGE_WIDGET_PLACEMENT_REASON };
+}
 async function loadDiagnostics(chatId, userId) {
   if (!chatId) return defaultDiagnostics(null);
   const raw = await spindle.userStorage.getJson(diagnosticsPath(chatId), {
@@ -1862,6 +1979,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
   const diagnostics = await loadDiagnostics(chatId, userId);
   const presetState = await resolveActivePreset(chatId, userId);
   const snapshot = await loadSnapshot(chatId, userId);
+  const activeWidgetJobs = activeWidgetJobsForChat(chatId);
   const messageSnapshotIndex = await loadMessageSnapshotIndex(chatId, userId);
   const historySnapshots = await Promise.all(
     messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId))
@@ -1871,7 +1989,8 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     snapshots: historySnapshots,
     latestChatSnapshot: snapshot,
     preset: presetState.activePreset,
-    settings: settings.messageDisplay
+    settings: settings.messageDisplay,
+    activeWidgetJobs
   });
   const latestMessageSnapshot = await loadMessageSnapshot(
     chatId,
@@ -1880,6 +1999,8 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
   );
   const messageDisplayMode = !settings.messageDisplay.enabled ? "disabled" : MESSAGE_LOCAL_UI_SUPPORTED ? "message_widget" : "drawer_history";
   const messageDisplayHydratedCount = settings.messageDisplay.enabled ? messageSnapshotHistory.filter((entry) => entry.snapshot !== null).length : 0;
+  const placement = resolveMessageWidgetPlacement(settings.messageDisplay.placement);
+  const activeWidgetRegenerationCount = Object.keys(activeWidgetJobs).length;
   const injectionPreview = CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? buildInjectionDecision({
     settings,
     chatSnapshot: snapshot,
@@ -1920,7 +2041,10 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       lastMessageDisplayHydratedAt: messageDisplayHydratedCount > 0 ? nowIso() : diagnostics.lastMessageDisplayHydratedAt,
       messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
       messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
-      messageSnapshotIndexCount: messageSnapshotIndex.length
+      messageSnapshotIndexCount: messageSnapshotIndex.length,
+      activeWidgetRegenerationCount,
+      messageWidgetPlacementResolved: placement.resolved,
+      messageWidgetPlacementReason: placement.reason
     }
   };
 }
@@ -1957,6 +2081,15 @@ async function readChatMessages(chatId) {
 async function getRecentMessages(chatId, settings) {
   const messages = await readChatMessages(chatId);
   return messages.slice(-settings.recentMessageLimit);
+}
+async function getMessagesForTrigger(chatId, settings, trigger) {
+  if (trigger.kind !== "widget") return getRecentMessages(chatId, settings);
+  const messages = await readChatMessages(chatId);
+  const targetIndex = messages.findIndex((message) => message.id === trigger.sourceMessageId);
+  if (targetIndex < 0) {
+    throw new LTrackerStageError("read_messages", "The selected message was not found for regeneration.");
+  }
+  return messages.slice(0, targetIndex + 1).slice(-settings.recentMessageLimit);
 }
 function normalizeMessages(messages) {
   return messages.filter((message) => message.content.trim().length > 0).map((message) => ({
@@ -2083,6 +2216,14 @@ function createAutoTrigger(input) {
     sourceMessageIndex: input.message.index_in_chat,
     generationId: input.generationId ?? null,
     generationType: input.generationType ?? null
+  };
+}
+function createWidgetTrigger(input) {
+  return {
+    kind: "widget",
+    requestId: input.requestId,
+    sourceMessageId: input.message.id,
+    sourceMessageIndex: input.message.index_in_chat
   };
 }
 async function markAutoSkipped(chatId, userId, trigger, reason, eventAt = null) {
@@ -2330,6 +2471,14 @@ async function generateTracker(chatId, userId, trigger) {
     );
     return;
   }
+  if (trigger.kind === "widget" && activeJobs.has(resolvedChatId)) {
+    const running = activeJobs.get(resolvedChatId);
+    if (running?.sourceKind === "widget" && running.sourceMessageId === trigger.sourceMessageId) {
+      running.cancelReason = "Widget regeneration was cancelled.";
+      running.controller.abort();
+      return;
+    }
+  }
   const existing = activeJobs.get(resolvedChatId);
   const lastCancellation = existing ? {
     jobId: existing.jobId,
@@ -2338,21 +2487,27 @@ async function generateTracker(chatId, userId, trigger) {
     createdAt: nowIso()
   } : null;
   existing?.controller.abort();
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
   const job = {
     controller: new AbortController(),
     jobId: newJobId(),
     requestId,
-    sourceKind: trigger.kind
+    sourceKind: trigger.kind,
+    startedAt
   };
+  if (trigger.kind === "auto" || trigger.kind === "widget") {
+    job.sourceMessageId = trigger.sourceMessageId;
+    job.sourceMessageIndex = trigger.sourceMessageIndex;
+  }
   activeJobs.set(resolvedChatId, job);
-  const startedAtMs = Date.now();
   let diagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
     status: "generating",
     lastJobId: job.jobId,
     lastRequestId: requestId,
     lastGenerationSource: trigger.kind,
-    lastGenerationStartedAt: new Date(startedAtMs).toISOString(),
+    lastGenerationStartedAt: startedAt,
     lastGenerationCompletedAt: null,
     lastGenerationDurationMs: null,
     lastMessagesRead: 0,
@@ -2363,7 +2518,7 @@ async function generateTracker(chatId, userId, trigger) {
     lastPromptPreview: null,
     lastError: null,
     lastCancellation,
-    lastAutoTriggeredAt: trigger.kind === "auto" ? new Date(startedAtMs).toISOString() : null,
+    lastAutoTriggeredAt: trigger.kind === "auto" ? startedAt : null,
     selectedPresetId: presetState.activePreset.id,
     selectedPresetName: presetState.activePreset.name,
     lastPresetFallbackReason: presetState.fallbackReason,
@@ -2381,11 +2536,23 @@ async function generateTracker(chatId, userId, trigger) {
       lastAutoGenerationId: trigger.generationId
     };
   }
+  if (trigger.kind === "widget") {
+    diagnostics = {
+      ...diagnostics,
+      lastWidgetRegenerateMessageId: trigger.sourceMessageId,
+      lastWidgetRegenerateStartedAt: startedAt,
+      lastWidgetRegenerateCompletedAt: null,
+      lastWidgetRegenerateDurationMs: null,
+      lastWidgetRegenerateCancelledAt: null,
+      lastWidgetRegenerateError: null,
+      activeWidgetRegenerationCount: 1
+    };
+  }
   await tryPersistDiagnostics(diagnostics, userId);
   await sendState(resolvedChatId, userId, "generating", null, requestId);
   try {
     stage = "read_messages";
-    const rawMessages = await getRecentMessages(resolvedChatId, settings);
+    const rawMessages = await getMessagesForTrigger(resolvedChatId, settings, trigger);
     const transcriptMessages = normalizeMessages(rawMessages);
     if (transcriptMessages.length === 0) {
       throw new LTrackerStageError("read_messages", "This chat has no readable messages to track.");
@@ -2443,10 +2610,17 @@ async function generateTracker(chatId, userId, trigger) {
       presetId: presetState.activePreset.id,
       presetName: presetState.activePreset.name,
       presetVersion: presetState.activePreset.version,
+      generationStartedAt: startedAt,
+      generationCompletedAt: completedAt,
+      generationDurationMs: completedAtMs - startedAtMs,
+      generationCancelledAt: null,
+      generationStatus: "completed",
       data
     };
     stage = "storage";
-    await saveSnapshot(snapshot, userId);
+    if (trigger.kind !== "widget") {
+      await saveSnapshot(snapshot, userId);
+    }
     diagnostics = {
       ...diagnostics,
       status: "idle",
@@ -2455,7 +2629,7 @@ async function generateTracker(chatId, userId, trigger) {
       lastParsedTracker: data,
       lastError: null
     };
-    if (trigger.kind === "auto" && settings.auto.attachSnapshotToMessage) {
+    if (trigger.kind === "auto" && settings.auto.attachSnapshotToMessage || trigger.kind === "widget") {
       const attachedAt = nowIso();
       const storageKey = messageSnapshotPath(resolvedChatId, trigger.sourceMessageId);
       const attachedSnapshot = {
@@ -2480,27 +2654,55 @@ async function generateTracker(chatId, userId, trigger) {
         latestAttachedSnapshotStorageKey: storageKey,
         messageSnapshotIndexCount: index.length
       };
+      if (trigger.kind === "widget") {
+        diagnostics = {
+          ...diagnostics,
+          lastWidgetRegenerateMessageId: trigger.sourceMessageId,
+          lastWidgetRegenerateCompletedAt: completedAt,
+          lastWidgetRegenerateDurationMs: completedAtMs - startedAtMs,
+          lastWidgetRegenerateCancelledAt: null,
+          lastWidgetRegenerateError: null,
+          activeWidgetRegenerationCount: 0
+        };
+      }
     }
     await persistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "idle", null, requestId);
   } catch (error) {
     if (!isCurrentJob(resolvedChatId, job.jobId)) return;
-    if (trigger.kind === "auto" && job.controller.signal.aborted && job.cancelReason) {
+    if (job.controller.signal.aborted && job.cancelReason) {
       const completedAtMs2 = Date.now();
+      const cancelledAt = new Date(completedAtMs2).toISOString();
       diagnostics = {
         ...diagnostics,
         status: "idle",
-        lastGenerationCompletedAt: new Date(completedAtMs2).toISOString(),
+        lastGenerationCompletedAt: cancelledAt,
         lastGenerationDurationMs: completedAtMs2 - startedAtMs,
         lastCancellation: {
           jobId: job.jobId,
           requestId,
           reason: job.cancelReason,
-          createdAt: nowIso()
+          createdAt: cancelledAt
         },
-        lastAutoSkippedReason: job.cancelReason,
         lastError: null
       };
+      if (trigger.kind === "auto") {
+        diagnostics = {
+          ...diagnostics,
+          lastAutoSkippedReason: job.cancelReason
+        };
+      }
+      if (trigger.kind === "widget") {
+        diagnostics = {
+          ...diagnostics,
+          lastWidgetRegenerateMessageId: trigger.sourceMessageId,
+          lastWidgetRegenerateCompletedAt: null,
+          lastWidgetRegenerateDurationMs: completedAtMs2 - startedAtMs,
+          lastWidgetRegenerateCancelledAt: cancelledAt,
+          lastWidgetRegenerateError: null,
+          activeWidgetRegenerationCount: 0
+        };
+      }
       await tryPersistDiagnostics(diagnostics, userId);
       await sendState(resolvedChatId, userId, "idle", null, requestId);
       return;
@@ -2514,6 +2716,17 @@ async function generateTracker(chatId, userId, trigger) {
       lastGenerationDurationMs: completedAtMs - startedAtMs,
       lastError: currentError
     };
+    if (trigger.kind === "widget") {
+      diagnostics = {
+        ...diagnostics,
+        lastWidgetRegenerateMessageId: trigger.sourceMessageId,
+        lastWidgetRegenerateCompletedAt: new Date(completedAtMs).toISOString(),
+        lastWidgetRegenerateDurationMs: completedAtMs - startedAtMs,
+        lastWidgetRegenerateCancelledAt: null,
+        lastWidgetRegenerateError: currentError.message,
+        activeWidgetRegenerationCount: 0
+      };
+    }
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "error", currentError, requestId);
   } finally {
@@ -2833,6 +3046,38 @@ async function handleRefresh(payload, userId) {
   rememberActiveChat(userId, resolvedChatId);
   await sendState(resolvedChatId, userId, void 0, null);
 }
+async function regenerateMessageTracker(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const messages = await readChatMessages(resolvedChatId);
+  const message = messages.find((item) => item.id === payload.messageId);
+  if (!message) {
+    throw new LTrackerStageError("read_messages", "The selected message was not found for regeneration.");
+  }
+  if (message.is_user) {
+    throw new LTrackerStageError("read_messages", "Message tracker regeneration is only available for assistant messages.");
+  }
+  await generateTracker(resolvedChatId, userId, createWidgetTrigger({
+    requestId: payload.requestId,
+    message
+  }));
+}
+async function cancelTrackerGeneration(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const job = activeJobs.get(resolvedChatId);
+  if (!job || job.jobId !== payload.jobId) {
+    await sendState(resolvedChatId, userId, void 0, null, payload.requestId);
+    return;
+  }
+  job.cancelReason = job.sourceKind === "widget" ? "Widget regeneration was cancelled." : "Tracker generation was cancelled.";
+  job.controller.abort();
+  await sendState(resolvedChatId, userId, "generating", null, payload.requestId);
+}
 function disposeBackend() {
   if (disposed) return;
   disposed = true;
@@ -2945,6 +3190,14 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "render_template") {
         await renderTemplatePreview(chatId, userId, payload.requestId, payload.source);
+        return;
+      }
+      if (payload.type === "regenerate_message_tracker") {
+        await regenerateMessageTracker(payload, userId);
+        return;
+      }
+      if (payload.type === "cancel_tracker_generation") {
+        await cancelTrackerGeneration(payload, userId);
         return;
       }
       await handleRefresh(payload, userId);

@@ -70,6 +70,17 @@ export function normalizeTrackerSnapshotPresetMetadata(snapshot: TrackerSnapshot
     presetId: snapshot.presetId ?? null,
     presetName: snapshot.presetName ?? null,
     presetVersion: snapshot.presetVersion ?? null,
+    generationStartedAt: snapshot.generationStartedAt ?? null,
+    generationCompletedAt: snapshot.generationCompletedAt ?? null,
+    generationDurationMs: typeof snapshot.generationDurationMs === "number" && Number.isFinite(snapshot.generationDurationMs)
+      ? Math.max(0, Math.round(snapshot.generationDurationMs))
+      : null,
+    generationCancelledAt: snapshot.generationCancelledAt ?? null,
+    generationStatus: snapshot.generationStatus === "completed"
+      || snapshot.generationStatus === "cancelled"
+      || snapshot.generationStatus === "failed"
+      ? snapshot.generationStatus
+      : null,
   };
 }
 

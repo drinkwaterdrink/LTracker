@@ -19,6 +19,7 @@ import {
 import {
   buildMessageTrackerHistory,
   claimMessageWidget,
+  formatDurationMs,
   renderMessageTracker,
 } from "../src/shared/messageDisplay";
 import {
@@ -64,7 +65,7 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.08",
+  extensionVersion: "0.09",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -72,6 +73,11 @@ const sampleSnapshot: TrackerSnapshot = {
   presetId: DEFAULT_TRACKER_PRESET.id,
   presetName: DEFAULT_TRACKER_PRESET.name,
   presetVersion: DEFAULT_TRACKER_PRESET.version,
+  generationStartedAt: "2003-09-22T16:17:57.600Z",
+  generationCompletedAt: "2003-09-22T16:18:00.000Z",
+  generationDurationMs: 2400,
+  generationCancelledAt: null,
+  generationStatus: "completed",
   data: {
     scene: {
       location: "Grand Meridian Court",
@@ -96,7 +102,7 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.08",
+  extensionVersion: "0.09",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
@@ -313,7 +319,41 @@ test("message snapshot index repairs, sorts, and updates by message id", () => {
   assert.equal(updated[1]?.storageKey, "key-3b");
 });
 
-test("snapshots preserve preset metadata and older snapshots normalize to null metadata", () => {
+test("message-specific regeneration updates only the target message index entry", () => {
+  const original = repairMessageSnapshotIndex([
+    {
+      messageId: "m1",
+      messageIndex: 1,
+      createdAt: "2003-09-22T16:18:00.000Z",
+      presetId: "preset-a",
+      presetName: "Preset A",
+      storageKey: "key-1",
+    },
+    {
+      messageId: "m2",
+      messageIndex: 2,
+      createdAt: "2003-09-22T16:19:00.000Z",
+      presetId: "preset-a",
+      presetName: "Preset A",
+      storageKey: "key-2",
+    },
+  ]);
+  const updated = upsertMessageSnapshotIndexEntry(original, {
+    messageId: "m2",
+    messageIndex: 2,
+    createdAt: "2003-09-22T16:20:00.000Z",
+    presetId: "preset-b",
+    presetName: "Preset B",
+    storageKey: "key-2-new",
+  });
+
+  assert.deepEqual(updated.map((entry) => entry.messageId), ["m1", "m2"]);
+  assert.deepEqual(updated[0], original[0]);
+  assert.equal(updated[1]?.presetName, "Preset B");
+  assert.equal(updated[1]?.storageKey, "key-2-new");
+});
+
+test("snapshots preserve preset metadata and older snapshots normalize missing metadata", () => {
   assert.equal(sampleSnapshot.presetId, DEFAULT_TRACKER_PRESET.id);
   assert.equal(sampleMessageSnapshot.presetName, DEFAULT_TRACKER_PRESET.name);
 
@@ -329,6 +369,11 @@ test("snapshots preserve preset metadata and older snapshots normalize to null m
   assert.equal(olderSnapshot.presetId, null);
   assert.equal(olderSnapshot.presetName, null);
   assert.equal(olderSnapshot.presetVersion, null);
+  assert.equal(olderSnapshot.generationStartedAt, null);
+  assert.equal(olderSnapshot.generationCompletedAt, null);
+  assert.equal(olderSnapshot.generationDurationMs, null);
+  assert.equal(olderSnapshot.generationCancelledAt, null);
+  assert.equal(olderSnapshot.generationStatus, null);
 
   const olderAttached = normalizeMessageAttachedSnapshotPresetMetadata({
     ...sampleMessageSnapshot,
@@ -721,6 +766,79 @@ test("renderMessageTracker selects HTML template rendering when available", () =
   assert.match(rendered.json, /"messageId": "m2"/);
 });
 
+test("renderMessageTracker widget is compact and omits copy buttons by default", () => {
+  const rendered = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: DEFAULT_SETTINGS.messageDisplay,
+  });
+
+  assert.doesNotMatch(rendered.widgetHtml, /Copy JSON/);
+  assert.doesNotMatch(rendered.widgetHtml, /Copy HTML/);
+  assert.doesNotMatch(rendered.widgetHtml, /Copy Text/);
+  assert.match(rendered.widgetHtml, /class="ltr-icon-button"/);
+  assert.match(rendered.widgetHtml, /title="Regenerate tracker"/);
+  assert.match(rendered.widgetHtml, /aria-label="Regenerate tracker"/);
+  assert.doesNotMatch(rendered.widgetHtml, />\s*Regenerate tracker\s*</);
+});
+
+test("renderMessageTracker widget shows generation duration when available", () => {
+  const rendered = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: DEFAULT_SETTINGS.messageDisplay,
+  });
+
+  assert.equal(formatDurationMs(sampleSnapshot.generationDurationMs), "2.4s");
+  assert.match(rendered.widgetHtml, /2\.4s/);
+  assert.equal(rendered.generationDurationMs, 2400);
+  assert.equal(rendered.generationStatus, "completed");
+});
+
+test("renderMessageTracker widget can hide regenerate control", () => {
+  const rendered = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      showWidgetRegenerateButton: false,
+    },
+  });
+
+  assert.doesNotMatch(rendered.widgetHtml, /Regenerate tracker/);
+  assert.doesNotMatch(rendered.widgetHtml, /ltracker_widget_action/);
+});
+
+test("renderMessageTracker widget exposes cancel state while regenerating", () => {
+  const rendered = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: DEFAULT_SETTINGS.messageDisplay,
+    isRegenerating: true,
+    activeJobId: "job-widget-1",
+    activeJobStartedAt: "2003-09-22T16:19:00.000Z",
+  });
+
+  assert.equal(rendered.isRegenerating, true);
+  assert.equal(rendered.activeJobId, "job-widget-1");
+  assert.match(rendered.widgetHtml, /title="Cancel tracker generation"/);
+  assert.match(rendered.widgetHtml, /aria-label="Cancel tracker generation"/);
+  assert.match(rendered.widgetHtml, /ltr-spinning/);
+  assert.match(rendered.widgetHtml, /job-widget-1/);
+});
+
 test("renderMessageTracker falls back to compact text when HTML template is absent", () => {
   const rendered = renderMessageTracker({
     messageId: "m2",
@@ -799,6 +917,33 @@ test("buildMessageTrackerHistory creates a persistent drawer history model", () 
   assert.match(history[0]?.rendered.widgetHtml ?? "", /LTracker/);
 });
 
+test("cancelled widget regeneration preserves the existing message snapshot in history", () => {
+  const history = buildMessageTrackerHistory({
+    index: [
+      {
+        messageId: "m2",
+        messageIndex: 7,
+        createdAt: sampleMessageSnapshot.attachedAt,
+        presetId: sampleMessageSnapshot.presetId,
+        presetName: sampleMessageSnapshot.presetName,
+        storageKey: messageSnapshotPath(sampleMessageSnapshot.chatId, sampleMessageSnapshot.messageId),
+      },
+    ],
+    snapshots: [sampleMessageSnapshot],
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: DEFAULT_SETTINGS.messageDisplay,
+    activeWidgetJobs: {
+      m2: { jobId: "job-widget-1", startedAt: "2003-09-22T16:19:00.000Z" },
+    },
+  });
+
+  assert.equal(history.length, 1);
+  assert.equal(history[0]?.snapshot, sampleMessageSnapshot);
+  assert.equal(history[0]?.rendered.isRegenerating, true);
+  assert.match(history[0]?.rendered.textFallback ?? "", /Grand Meridian Court/);
+});
+
 test("formatTemplateTextFallback includes tracker continuity fields", () => {
   const fallback = formatTemplateTextFallback(sampleSnapshot.data);
   assert.match(fallback, /Present characters: Aleister Crowley; Sable Mareth/);
@@ -836,7 +981,9 @@ test("repairSettings repairs message display settings with defaults and clamping
       collapsedByDefault: true,
       showTimestamp: false,
       showPresetName: false,
-      showCopyButton: false,
+      showDebugCopyButtonsInHistory: false,
+      showWidgetRegenerateButton: false,
+      showGenerationDuration: false,
       maxRenderedChars: "999999",
     },
   });
@@ -847,7 +994,9 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(settings.messageDisplay.collapsedByDefault, true);
   assert.equal(settings.messageDisplay.showTimestamp, false);
   assert.equal(settings.messageDisplay.showPresetName, false);
-  assert.equal(settings.messageDisplay.showCopyButton, false);
+  assert.equal(settings.messageDisplay.showDebugCopyButtonsInHistory, false);
+  assert.equal(settings.messageDisplay.showWidgetRegenerateButton, false);
+  assert.equal(settings.messageDisplay.showGenerationDuration, false);
   assert.equal(settings.messageDisplay.maxRenderedChars, 200_000);
 
   const repaired = repairSettings({
@@ -862,6 +1011,24 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(repaired.messageDisplay.source, DEFAULT_SETTINGS.messageDisplay.source);
   assert.equal(repaired.messageDisplay.renderMode, DEFAULT_SETTINGS.messageDisplay.renderMode);
   assert.equal(repaired.messageDisplay.maxRenderedChars, 1_000);
+});
+
+test("repairSettings migrates old showCopyButton into drawer history debug copies", () => {
+  const hidden = repairSettings({
+    messageDisplay: {
+      showCopyButton: false,
+    },
+  });
+  assert.equal(hidden.messageDisplay.showDebugCopyButtonsInHistory, false);
+  assert.equal(hidden.messageDisplay.showWidgetRegenerateButton, DEFAULT_SETTINGS.messageDisplay.showWidgetRegenerateButton);
+  assert.equal(hidden.messageDisplay.showGenerationDuration, DEFAULT_SETTINGS.messageDisplay.showGenerationDuration);
+
+  const visible = repairSettings({
+    messageDisplay: {
+      showCopyButton: true,
+    },
+  });
+  assert.equal(visible.messageDisplay.showDebugCopyButtonsInHistory, true);
 });
 
 test("renderHtmlTemplate truncates large rendered output", () => {
@@ -889,7 +1056,7 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
 
 test("context handler hotfix is disabled by default", () => {
   assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
-  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.08/);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.09/);
 });
 
 test("context handler guard never mutates a frozen context object when disabled", async () => {
@@ -995,17 +1162,73 @@ test("README settings reference covers the major setting groups", () => {
   for (const text of [
     "Settings Reference",
     "recentMessageLimit",
+    "maxMessageChars",
     "generationTimeoutMs",
-    "autoDebounceMs",
-    "attachSnapshotToMessage",
+    "saveRawOutput",
+    "savePromptPreview",
+    "auto.autoModeEnabled",
+    "auto.autoDebounceMs",
+    "auto.skipFirstMessages",
+    "auto.triggerAfterAssistantMessages",
+    "auto.triggerAfterUserMessages",
+    "auto.attachSnapshotToMessage",
+    "auto.onlyWhenChatActive",
     "injection.enabled",
+    "injection.mode",
     "injection.format",
+    "injection.maxInjectedChars",
+    "injection.includeHeader",
+    "injection.includeTimestamp",
+    "injection.includeSourceMessageId",
+    "injection.onlyInjectWhenSnapshotExists",
+    "renderer.enabled",
+    "renderer.previewSource",
     "renderer.missingValuePlaceholder",
+    "renderer.maxRenderedChars",
     "renderer.allowInlineStyles",
     "messageDisplay.enabled",
+    "messageDisplay.placement",
+    "messageDisplay.source",
     "messageDisplay.renderMode",
+    "messageDisplay.collapsedByDefault",
+    "messageDisplay.showTimestamp",
+    "messageDisplay.showPresetName",
+    "messageDisplay.showDebugCopyButtonsInHistory",
+    "messageDisplay.showWidgetRegenerateButton",
+    "messageDisplay.showGenerationDuration",
     "messageDisplay.maxRenderedChars",
+    "debounce",
+    "missing value placeholder",
+    "include header",
+    "compact",
+    "minimal",
+    "pretty_json",
+    "drawer renderer",
+    "message display",
+    "message-attached snapshot",
+    "latest chat snapshot",
+    "collapsed by default",
+    "sanitized inline styles",
+    "copy buttons",
+    "top vs bottom",
   ]) {
-    assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
+});
+
+test("drawer UI keeps detailed setting explanations out of the app surface", () => {
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  for (const phrase of [
+    "Debounce is the wait",
+    "Placement is a preference",
+    "zTracker-style layout",
+    "Mode chooses chat-wide",
+    "Detailed setting documentation",
+    "When to increase",
+    "When to decrease",
+  ]) {
+    assert.doesNotMatch(frontend, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(frontend, /Current Lumiverse widget API renders below messages/);
+  assert.match(frontend, /Context handler disabled reason/);
 });

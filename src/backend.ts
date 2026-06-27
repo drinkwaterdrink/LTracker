@@ -26,6 +26,7 @@ import {
   buildMessageTrackerHistory,
   MESSAGE_LOCAL_UI_FALLBACK_REASON,
   MESSAGE_LOCAL_UI_SUPPORTED,
+  MESSAGE_WIDGET_PLACEMENT_REASON,
 } from "./shared/messageDisplay";
 import {
   normalizeMessageAttachedSnapshotPresetMetadata,
@@ -84,6 +85,7 @@ import {
   type LTrackerInjectionMode,
   type LTrackerMessageDisplayMode,
   type LTrackerMessageDisplayPlacement,
+  type LTrackerMessageWidgetPlacementResolved,
   type LTrackerRenderSource,
   type LTrackerRenderStatus,
   type LTrackerSettings,
@@ -107,6 +109,9 @@ interface ActiveJob {
   jobId: string;
   requestId: string;
   sourceKind: TrackerGenerationSourceKind;
+  startedAt: string;
+  sourceMessageId?: string;
+  sourceMessageIndex?: number | null;
   cancelReason?: string;
 }
 
@@ -201,6 +206,8 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "import_preset",
     "validate_preset",
     "render_template",
+    "regenerate_message_tracker",
+    "cancel_tracker_generation",
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if (
@@ -218,6 +225,8 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "import_preset",
       "validate_preset",
       "render_template",
+      "regenerate_message_tracker",
+      "cancel_tracker_generation",
     ].includes(payload.type)
     && typeof payload.requestId !== "string"
   ) return false;
@@ -225,6 +234,8 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
   if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
+  if (payload.type === "regenerate_message_tracker" && typeof payload.messageId !== "string") return false;
+  if (payload.type === "cancel_tracker_generation" && typeof payload.jobId !== "string") return false;
   if (
     payload.type === "render_template"
     && "source" in payload
@@ -319,6 +330,15 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
     messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
     messageSnapshotIndexCount: 0,
+    lastWidgetRegenerateMessageId: null,
+    lastWidgetRegenerateStartedAt: null,
+    lastWidgetRegenerateCompletedAt: null,
+    lastWidgetRegenerateDurationMs: null,
+    lastWidgetRegenerateCancelledAt: null,
+    lastWidgetRegenerateError: null,
+    activeWidgetRegenerationCount: 0,
+    messageWidgetPlacementResolved: "host_default",
+    messageWidgetPlacementReason: MESSAGE_WIDGET_PLACEMENT_REASON,
   };
 }
 
@@ -378,6 +398,12 @@ function messageDisplayModeOrNull(value: unknown): LTrackerMessageDisplayMode | 
 
 function messageDisplayPlacementOrNull(value: unknown): LTrackerMessageDisplayPlacement | null {
   return value === "top" || value === "bottom" ? value : null;
+}
+
+function messageWidgetPlacementResolved(value: unknown): LTrackerMessageWidgetPlacementResolved {
+  return value === "top" || value === "bottom" || value === "host_default" || value === "unsupported"
+    ? value
+    : MESSAGE_LOCAL_UI_SUPPORTED ? "host_default" : "unsupported";
 }
 
 function errorOrNull(value: unknown): LTrackerError | null {
@@ -491,6 +517,17 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     messageSnapshotIndexCount: typeof value.messageSnapshotIndexCount === "number" && Number.isFinite(value.messageSnapshotIndexCount)
       ? Math.max(0, Math.round(value.messageSnapshotIndexCount))
       : 0,
+    lastWidgetRegenerateMessageId: stringOrNull(value.lastWidgetRegenerateMessageId),
+    lastWidgetRegenerateStartedAt: stringOrNull(value.lastWidgetRegenerateStartedAt),
+    lastWidgetRegenerateCompletedAt: stringOrNull(value.lastWidgetRegenerateCompletedAt),
+    lastWidgetRegenerateDurationMs: numberOrNull(value.lastWidgetRegenerateDurationMs),
+    lastWidgetRegenerateCancelledAt: stringOrNull(value.lastWidgetRegenerateCancelledAt),
+    lastWidgetRegenerateError: stringOrNull(value.lastWidgetRegenerateError),
+    activeWidgetRegenerationCount: typeof value.activeWidgetRegenerationCount === "number" && Number.isFinite(value.activeWidgetRegenerationCount)
+      ? Math.max(0, Math.round(value.activeWidgetRegenerationCount))
+      : 0,
+    messageWidgetPlacementResolved: messageWidgetPlacementResolved(value.messageWidgetPlacementResolved),
+    messageWidgetPlacementReason: stringOrNull(value.messageWidgetPlacementReason) ?? MESSAGE_WIDGET_PLACEMENT_REASON,
   };
 }
 
@@ -684,6 +721,28 @@ async function saveMessageSnapshotIndex(
   });
 }
 
+function activeWidgetJobsForChat(chatId: string | null): Record<string, { jobId: string; startedAt: string | null }> {
+  if (!chatId) return {};
+  const job = activeJobs.get(chatId);
+  if (!job || job.sourceKind !== "widget" || !job.sourceMessageId) return {};
+  return {
+    [job.sourceMessageId]: {
+      jobId: job.jobId,
+      startedAt: job.startedAt,
+    },
+  };
+}
+
+function resolveMessageWidgetPlacement(
+  requested: LTrackerMessageDisplayPlacement,
+): { resolved: LTrackerMessageWidgetPlacementResolved; reason: string | null } {
+  if (!MESSAGE_LOCAL_UI_SUPPORTED) {
+    return { resolved: "unsupported", reason: MESSAGE_LOCAL_UI_FALLBACK_REASON ?? MESSAGE_WIDGET_PLACEMENT_REASON };
+  }
+  if (requested === "bottom") return { resolved: "host_default", reason: null };
+  return { resolved: "host_default", reason: MESSAGE_WIDGET_PLACEMENT_REASON };
+}
+
 async function loadDiagnostics(chatId: string | null, userId: string): Promise<LTrackerDiagnostics> {
   if (!chatId) return defaultDiagnostics(null);
   const raw = await spindle.userStorage.getJson<unknown>(diagnosticsPath(chatId), {
@@ -723,6 +782,7 @@ async function buildState(
   const diagnostics = await loadDiagnostics(chatId, userId);
   const presetState = await resolveActivePreset(chatId, userId);
   const snapshot = await loadSnapshot(chatId, userId);
+  const activeWidgetJobs = activeWidgetJobsForChat(chatId);
   const messageSnapshotIndex = await loadMessageSnapshotIndex(chatId, userId);
   const historySnapshots = await Promise.all(
     messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId)),
@@ -733,6 +793,7 @@ async function buildState(
     latestChatSnapshot: snapshot,
     preset: presetState.activePreset,
     settings: settings.messageDisplay,
+    activeWidgetJobs,
   });
   const latestMessageSnapshot = await loadMessageSnapshot(
     chatId,
@@ -745,6 +806,8 @@ async function buildState(
   const messageDisplayHydratedCount = settings.messageDisplay.enabled
     ? messageSnapshotHistory.filter((entry) => entry.snapshot !== null).length
     : 0;
+  const placement = resolveMessageWidgetPlacement(settings.messageDisplay.placement);
+  const activeWidgetRegenerationCount = Object.keys(activeWidgetJobs).length;
   const injectionPreview = CONTEXT_HANDLER_EXPERIMENTAL_ENABLED
     ? buildInjectionDecision({
         settings,
@@ -792,6 +855,9 @@ async function buildState(
       messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
       messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
       messageSnapshotIndexCount: messageSnapshotIndex.length,
+      activeWidgetRegenerationCount,
+      messageWidgetPlacementResolved: placement.resolved,
+      messageWidgetPlacementReason: placement.reason,
     },
   };
 }
@@ -840,6 +906,20 @@ async function readChatMessages(chatId: string): Promise<ChatMessageDTO[]> {
 async function getRecentMessages(chatId: string, settings: LTrackerSettings): Promise<ChatMessageDTO[]> {
   const messages = await readChatMessages(chatId);
   return messages.slice(-settings.recentMessageLimit);
+}
+
+async function getMessagesForTrigger(
+  chatId: string,
+  settings: LTrackerSettings,
+  trigger: TrackerTriggerSource,
+): Promise<ChatMessageDTO[]> {
+  if (trigger.kind !== "widget") return getRecentMessages(chatId, settings);
+  const messages = await readChatMessages(chatId);
+  const targetIndex = messages.findIndex((message) => message.id === trigger.sourceMessageId);
+  if (targetIndex < 0) {
+    throw new LTrackerStageError("read_messages", "The selected message was not found for regeneration.");
+  }
+  return messages.slice(0, targetIndex + 1).slice(-settings.recentMessageLimit);
 }
 
 function normalizeMessages(messages: ChatMessageDTO[]): TranscriptMessage[] {
@@ -1003,6 +1083,18 @@ function createAutoTrigger(input: {
     sourceMessageIndex: input.message.index_in_chat,
     generationId: input.generationId ?? null,
     generationType: input.generationType ?? null,
+  };
+}
+
+function createWidgetTrigger(input: {
+  requestId: string;
+  message: ChatMessageDTO;
+}): TrackerTriggerSource {
+  return {
+    kind: "widget",
+    requestId: input.requestId,
+    sourceMessageId: input.message.id,
+    sourceMessageIndex: input.message.index_in_chat,
   };
 }
 
@@ -1468,6 +1560,14 @@ async function generateTracker(
     );
     return;
   }
+  if (trigger.kind === "widget" && activeJobs.has(resolvedChatId)) {
+    const running = activeJobs.get(resolvedChatId);
+    if (running?.sourceKind === "widget" && running.sourceMessageId === trigger.sourceMessageId) {
+      running.cancelReason = "Widget regeneration was cancelled.";
+      running.controller.abort();
+      return;
+    }
+  }
 
   const existing = activeJobs.get(resolvedChatId);
   const lastCancellation: LTrackerCancellation | null = existing
@@ -1480,22 +1580,28 @@ async function generateTracker(
     : null;
   existing?.controller.abort();
 
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
   const job: ActiveJob = {
     controller: new AbortController(),
     jobId: newJobId(),
     requestId,
     sourceKind: trigger.kind,
+    startedAt,
   };
+  if (trigger.kind === "auto" || trigger.kind === "widget") {
+    job.sourceMessageId = trigger.sourceMessageId;
+    job.sourceMessageIndex = trigger.sourceMessageIndex;
+  }
   activeJobs.set(resolvedChatId, job);
 
-  const startedAtMs = Date.now();
   let diagnostics: LTrackerDiagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
     status: "generating" as const,
     lastJobId: job.jobId,
     lastRequestId: requestId,
     lastGenerationSource: trigger.kind,
-    lastGenerationStartedAt: new Date(startedAtMs).toISOString(),
+    lastGenerationStartedAt: startedAt,
     lastGenerationCompletedAt: null,
     lastGenerationDurationMs: null,
     lastMessagesRead: 0,
@@ -1506,7 +1612,7 @@ async function generateTracker(
     lastPromptPreview: null,
     lastError: null,
     lastCancellation,
-    lastAutoTriggeredAt: trigger.kind === "auto" ? new Date(startedAtMs).toISOString() : null,
+    lastAutoTriggeredAt: trigger.kind === "auto" ? startedAt : null,
     selectedPresetId: presetState.activePreset.id,
     selectedPresetName: presetState.activePreset.name,
     lastPresetFallbackReason: presetState.fallbackReason,
@@ -1524,13 +1630,25 @@ async function generateTracker(
       lastAutoGenerationId: trigger.generationId,
     };
   }
+  if (trigger.kind === "widget") {
+    diagnostics = {
+      ...diagnostics,
+      lastWidgetRegenerateMessageId: trigger.sourceMessageId,
+      lastWidgetRegenerateStartedAt: startedAt,
+      lastWidgetRegenerateCompletedAt: null,
+      lastWidgetRegenerateDurationMs: null,
+      lastWidgetRegenerateCancelledAt: null,
+      lastWidgetRegenerateError: null,
+      activeWidgetRegenerationCount: 1,
+    };
+  }
 
   await tryPersistDiagnostics(diagnostics, userId);
   await sendState(resolvedChatId, userId, "generating", null, requestId);
 
   try {
     stage = "read_messages";
-    const rawMessages = await getRecentMessages(resolvedChatId, settings);
+    const rawMessages = await getMessagesForTrigger(resolvedChatId, settings, trigger);
     const transcriptMessages = normalizeMessages(rawMessages);
     if (transcriptMessages.length === 0) {
       throw new LTrackerStageError("read_messages", "This chat has no readable messages to track.");
@@ -1601,11 +1719,18 @@ async function generateTracker(
       presetId: presetState.activePreset.id,
       presetName: presetState.activePreset.name,
       presetVersion: presetState.activePreset.version,
+      generationStartedAt: startedAt,
+      generationCompletedAt: completedAt,
+      generationDurationMs: completedAtMs - startedAtMs,
+      generationCancelledAt: null,
+      generationStatus: "completed",
       data,
     };
 
     stage = "storage";
-    await saveSnapshot(snapshot, userId);
+    if (trigger.kind !== "widget") {
+      await saveSnapshot(snapshot, userId);
+    }
 
     diagnostics = {
       ...diagnostics,
@@ -1616,7 +1741,7 @@ async function generateTracker(
       lastError: null,
     };
 
-    if (trigger.kind === "auto" && settings.auto.attachSnapshotToMessage) {
+    if ((trigger.kind === "auto" && settings.auto.attachSnapshotToMessage) || trigger.kind === "widget") {
       const attachedAt = nowIso();
       const storageKey = messageSnapshotPath(resolvedChatId, trigger.sourceMessageId);
       const attachedSnapshot: MessageAttachedSnapshot = {
@@ -1641,28 +1766,56 @@ async function generateTracker(
         latestAttachedSnapshotStorageKey: storageKey,
         messageSnapshotIndexCount: index.length,
       };
+      if (trigger.kind === "widget") {
+        diagnostics = {
+          ...diagnostics,
+          lastWidgetRegenerateMessageId: trigger.sourceMessageId,
+          lastWidgetRegenerateCompletedAt: completedAt,
+          lastWidgetRegenerateDurationMs: completedAtMs - startedAtMs,
+          lastWidgetRegenerateCancelledAt: null,
+          lastWidgetRegenerateError: null,
+          activeWidgetRegenerationCount: 0,
+        };
+      }
     }
 
     await persistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "idle", null, requestId);
   } catch (error) {
     if (!isCurrentJob(resolvedChatId, job.jobId)) return;
-    if (trigger.kind === "auto" && job.controller.signal.aborted && job.cancelReason) {
+    if (job.controller.signal.aborted && job.cancelReason) {
       const completedAtMs = Date.now();
+      const cancelledAt = new Date(completedAtMs).toISOString();
       diagnostics = {
         ...diagnostics,
         status: "idle",
-        lastGenerationCompletedAt: new Date(completedAtMs).toISOString(),
+        lastGenerationCompletedAt: cancelledAt,
         lastGenerationDurationMs: completedAtMs - startedAtMs,
         lastCancellation: {
           jobId: job.jobId,
           requestId,
           reason: job.cancelReason,
-          createdAt: nowIso(),
+          createdAt: cancelledAt,
         },
-        lastAutoSkippedReason: job.cancelReason,
         lastError: null,
       };
+      if (trigger.kind === "auto") {
+        diagnostics = {
+          ...diagnostics,
+          lastAutoSkippedReason: job.cancelReason,
+        };
+      }
+      if (trigger.kind === "widget") {
+        diagnostics = {
+          ...diagnostics,
+          lastWidgetRegenerateMessageId: trigger.sourceMessageId,
+          lastWidgetRegenerateCompletedAt: null,
+          lastWidgetRegenerateDurationMs: completedAtMs - startedAtMs,
+          lastWidgetRegenerateCancelledAt: cancelledAt,
+          lastWidgetRegenerateError: null,
+          activeWidgetRegenerationCount: 0,
+        };
+      }
       await tryPersistDiagnostics(diagnostics, userId);
       await sendState(resolvedChatId, userId, "idle", null, requestId);
       return;
@@ -1676,6 +1829,17 @@ async function generateTracker(
       lastGenerationDurationMs: completedAtMs - startedAtMs,
       lastError: currentError,
     };
+    if (trigger.kind === "widget") {
+      diagnostics = {
+        ...diagnostics,
+        lastWidgetRegenerateMessageId: trigger.sourceMessageId,
+        lastWidgetRegenerateCompletedAt: new Date(completedAtMs).toISOString(),
+        lastWidgetRegenerateDurationMs: completedAtMs - startedAtMs,
+        lastWidgetRegenerateCancelledAt: null,
+        lastWidgetRegenerateError: currentError.message,
+        activeWidgetRegenerationCount: 0,
+      };
+    }
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "error", currentError, requestId);
   } finally {
@@ -2058,6 +2222,48 @@ async function handleRefresh(
   await sendState(resolvedChatId, userId, undefined, null);
 }
 
+async function regenerateMessageTracker(
+  payload: Extract<FrontendMessage, { type: "regenerate_message_tracker" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const messages = await readChatMessages(resolvedChatId);
+  const message = messages.find((item) => item.id === payload.messageId);
+  if (!message) {
+    throw new LTrackerStageError("read_messages", "The selected message was not found for regeneration.");
+  }
+  if (message.is_user) {
+    throw new LTrackerStageError("read_messages", "Message tracker regeneration is only available for assistant messages.");
+  }
+  await generateTracker(resolvedChatId, userId, createWidgetTrigger({
+    requestId: payload.requestId,
+    message,
+  }));
+}
+
+async function cancelTrackerGeneration(
+  payload: Extract<FrontendMessage, { type: "cancel_tracker_generation" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const job = activeJobs.get(resolvedChatId);
+  if (!job || job.jobId !== payload.jobId) {
+    await sendState(resolvedChatId, userId, undefined, null, payload.requestId);
+    return;
+  }
+  job.cancelReason = job.sourceKind === "widget"
+    ? "Widget regeneration was cancelled."
+    : "Tracker generation was cancelled.";
+  job.controller.abort();
+  await sendState(resolvedChatId, userId, "generating", null, payload.requestId);
+}
+
 function disposeBackend(): void {
   if (disposed) return;
   disposed = true;
@@ -2176,6 +2382,14 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "render_template") {
         await renderTemplatePreview(chatId, userId, payload.requestId, payload.source);
+        return;
+      }
+      if (payload.type === "regenerate_message_tracker") {
+        await regenerateMessageTracker(payload, userId);
+        return;
+      }
+      if (payload.type === "cancel_tracker_generation") {
+        await cancelTrackerGeneration(payload, userId);
         return;
       }
       await handleRefresh(payload, userId);

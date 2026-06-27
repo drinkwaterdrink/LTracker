@@ -1,11 +1,11 @@
-export const EXTENSION_VERSION = "0.08";
+export const EXTENSION_VERSION = "0.09";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
 
 export type TrackerStatus = "idle" | "generating" | "error";
 export type TranscriptRole = "user" | "assistant";
-export type TrackerGenerationSourceKind = "manual" | "auto";
+export type TrackerGenerationSourceKind = "manual" | "auto" | "widget";
 export type AutoTriggerEventType = "GENERATION_ENDED" | "MESSAGE_SENT";
 export type LTrackerInjectionMode = "latest_chat_snapshot" | "latest_message_snapshot";
 export type LTrackerInjectionFormat = "compact" | "pretty_json" | "minimal";
@@ -15,6 +15,7 @@ export type LTrackerMessageDisplayPlacement = "top" | "bottom";
 export type LTrackerMessageDisplaySource = "message_attached_snapshot" | "latest_chat_snapshot";
 export type LTrackerMessageDisplayRenderMode = "html_template" | "compact_text" | "pretty_json";
 export type LTrackerMessageDisplayMode = "message_widget" | "drawer_history" | "disabled";
+export type LTrackerMessageWidgetPlacementResolved = "top" | "bottom" | "host_default" | "unsupported";
 export type TrackerPresetOrigin = "built_in" | "user_imported" | "user_created";
 export type LTrackerErrorStage =
   | "active_chat"
@@ -91,6 +92,11 @@ export interface TrackerSnapshot {
   presetId: string | null;
   presetName: string | null;
   presetVersion: string | null;
+  generationStartedAt?: string | null;
+  generationCompletedAt?: string | null;
+  generationDurationMs?: number | null;
+  generationCancelledAt?: string | null;
+  generationStatus?: "completed" | "cancelled" | "failed" | null;
   data: Record<string, unknown>;
 }
 
@@ -109,7 +115,14 @@ export interface AutoTrackerTriggerSource {
   generationType: string | null;
 }
 
-export type TrackerTriggerSource = ManualTrackerTriggerSource | AutoTrackerTriggerSource;
+export interface WidgetTrackerTriggerSource {
+  kind: "widget";
+  requestId: string;
+  sourceMessageId: string;
+  sourceMessageIndex: number | null;
+}
+
+export type TrackerTriggerSource = ManualTrackerTriggerSource | AutoTrackerTriggerSource | WidgetTrackerTriggerSource;
 
 export interface MessageAttachedSnapshot {
   schemaVersion: typeof STORAGE_SCHEMA_VERSION;
@@ -120,7 +133,7 @@ export interface MessageAttachedSnapshot {
   presetId: string | null;
   presetName: string | null;
   presetVersion: string | null;
-  trigger: AutoTrackerTriggerSource;
+  trigger: AutoTrackerTriggerSource | WidgetTrackerTriggerSource;
   snapshot: TrackerSnapshot;
   attachedAt: string;
 }
@@ -171,7 +184,9 @@ export interface LTrackerMessageDisplaySettings {
   collapsedByDefault: boolean;
   showTimestamp: boolean;
   showPresetName: boolean;
-  showCopyButton: boolean;
+  showDebugCopyButtonsInHistory: boolean;
+  showWidgetRegenerateButton: boolean;
+  showGenerationDuration: boolean;
   maxRenderedChars: number;
 }
 
@@ -280,6 +295,15 @@ export interface LTrackerDiagnostics {
   messageLocalUiSupported: boolean;
   messageLocalUiFallbackReason: string | null;
   messageSnapshotIndexCount: number;
+  lastWidgetRegenerateMessageId: string | null;
+  lastWidgetRegenerateStartedAt: string | null;
+  lastWidgetRegenerateCompletedAt: string | null;
+  lastWidgetRegenerateDurationMs: number | null;
+  lastWidgetRegenerateCancelledAt: string | null;
+  lastWidgetRegenerateError: string | null;
+  activeWidgetRegenerationCount: number;
+  messageWidgetPlacementResolved: LTrackerMessageWidgetPlacementResolved;
+  messageWidgetPlacementReason: string | null;
 }
 
 export interface PermissionState {
@@ -327,6 +351,13 @@ export interface RenderedMessageTracker {
   presetVersion: string | null;
   snapshotCreatedAt: string | null;
   attachedAt: string | null;
+  generationStartedAt: string | null;
+  generationCompletedAt: string | null;
+  generationDurationMs: number | null;
+  generationCancelledAt: string | null;
+  generationStatus: "completed" | "cancelled" | "failed" | null;
+  isRegenerating: boolean;
+  activeJobId: string | null;
   renderMode: LTrackerMessageDisplayRenderMode;
   html: string;
   textFallback: string;
@@ -357,7 +388,9 @@ export type FrontendMessage =
   | { type: "reset_preset"; chatId: string | null; requestId: string }
   | { type: "import_preset"; chatId: string | null; importText: string; requestId: string }
   | { type: "validate_preset"; chatId: string | null; preset: TrackerPresetDraft; requestId: string }
-  | { type: "render_template"; chatId: string | null; source?: LTrackerRenderSource; requestId: string };
+  | { type: "render_template"; chatId: string | null; source?: LTrackerRenderSource; requestId: string }
+  | { type: "regenerate_message_tracker"; chatId: string | null; messageId: string; requestId: string }
+  | { type: "cancel_tracker_generation"; chatId: string | null; jobId: string; requestId: string };
 
 export type BackendMessage =
   | { type: "state"; state: FrontendState; requestId?: string }

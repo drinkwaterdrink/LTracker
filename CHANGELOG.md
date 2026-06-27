@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.09 - Message widget UX polish
+- Removed bulky setting explanations from the drawer UI and moved detailed setting documentation to README.
+- Audited message widget placement and resolved top/bottom behavior according to official Lumiverse APIs.
+- Made message tracker widgets more compact.
+- Removed copy buttons from message widgets by default.
+- Added icon-only per-message tracker regeneration control.
+- Added cancellation support for in-progress tracker regeneration where supported.
+- Added generation duration metadata and display.
+- Added message widget and regeneration diagnostics.
+- Added tests for setting migration, compact widgets, regeneration, cancellation, elapsed time, and README setting coverage.
+
 ## 0.08 - Visible message tracker blocks
 - Added persistent message-attached tracker display groundwork.
 - Added message snapshot index storage.

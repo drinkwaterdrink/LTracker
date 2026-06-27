@@ -52,10 +52,12 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
-    collapsedByDefault: false,
+    collapsedByDefault: true,
     showTimestamp: true,
     showPresetName: true,
-    showCopyButton: true,
+    showDebugCopyButtonsInHistory: true,
+    showWidgetRegenerateButton: true,
+    showGenerationDuration: true,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
   },
 };
@@ -217,9 +219,17 @@ export function repairSettings(value: unknown): LTrackerSettings {
       showPresetName: typeof messageDisplaySource.showPresetName === "boolean"
         ? messageDisplaySource.showPresetName
         : DEFAULT_SETTINGS.messageDisplay.showPresetName,
-      showCopyButton: typeof messageDisplaySource.showCopyButton === "boolean"
-        ? messageDisplaySource.showCopyButton
-        : DEFAULT_SETTINGS.messageDisplay.showCopyButton,
+      showDebugCopyButtonsInHistory: typeof messageDisplaySource.showDebugCopyButtonsInHistory === "boolean"
+        ? messageDisplaySource.showDebugCopyButtonsInHistory
+        : typeof messageDisplaySource.showCopyButton === "boolean"
+          ? messageDisplaySource.showCopyButton
+          : DEFAULT_SETTINGS.messageDisplay.showDebugCopyButtonsInHistory,
+      showWidgetRegenerateButton: typeof messageDisplaySource.showWidgetRegenerateButton === "boolean"
+        ? messageDisplaySource.showWidgetRegenerateButton
+        : DEFAULT_SETTINGS.messageDisplay.showWidgetRegenerateButton,
+      showGenerationDuration: typeof messageDisplaySource.showGenerationDuration === "boolean"
+        ? messageDisplaySource.showGenerationDuration
+        : DEFAULT_SETTINGS.messageDisplay.showGenerationDuration,
       maxRenderedChars: clampNumber(
         messageDisplaySource.maxRenderedChars,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
