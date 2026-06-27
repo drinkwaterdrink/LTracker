@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12 - Message control bar and generation UX
+- Replaced bulky message tracker indicators with a compact message control pill.
+- Hid swipe key/index text by default behind a debug setting.
+- Added optional generate button for visible assistant messages without trackers.
+- Moved regenerate, edit/view, and delete into the expanded tracker header as small icon-only controls.
+- Removed large bottom action buttons from inline tracker displays.
+- Made regenerate feedback instant with spinner/elapsed timer state before backend completion.
+- Made the regenerate icon act as stop/cancel while a tracker job is running.
+- Added compact/comfortable control density settings.
+- Added native toolbar support detection with safe fallback to an in-message control pill.
+- Added diagnostics for message control rendering and inline actions.
+- Updated README roadmap and template capability model.
+
 ## 0.11 - Render fidelity and embedded tracker tags
 - Expanded sanitized inline style support for richer zTracker-like HTML templates in message displays.
 - Added render-warning deduplication and warning caps so noisy templates stay inspectable in diagnostics.

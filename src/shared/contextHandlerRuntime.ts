@@ -1,6 +1,6 @@
 export const CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 export const CONTEXT_HANDLER_DISABLED_REASON =
-  "Context handler injection is disabled in 0.11 while the Lumiverse context handler return contract is being verified.";
+  "Context handler injection is disabled in 0.12 while the Lumiverse context handler return contract is being verified.";
 
 export interface ContextHandlerRuntimeInput {
   context: unknown;

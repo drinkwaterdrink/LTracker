@@ -7,6 +7,8 @@ import {
   exportTrackerPreset,
 } from "./shared/presets";
 import {
+  MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+  MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
   MESSAGE_WIDGET_ID,
   renderMessageTracker,
 } from "./shared/messageDisplay";
@@ -17,6 +19,7 @@ import type {
   FrontendMessage,
   FrontendState,
   LTrackerError,
+  LTrackerInlineAction,
   LTrackerMessageDisplayPlacement,
   LTrackerMountPointStrategy,
   LTrackerRenderSource,
@@ -391,7 +394,7 @@ function emptyState(): FrontendState {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection is disabled in 0.11 while the Lumiverse context handler return contract is being verified.",
+      contextHandlerDisabledReason: "Context handler injection is disabled in 0.12 while the Lumiverse context handler return contract is being verified.",
       lastContextHandlerError: null,
       messageDisplayEnabled: false,
       messageDisplayMode: null,
@@ -438,10 +441,22 @@ function emptyState(): FrontendState {
       lastTagInterceptMessageId: null,
       lastTagInterceptSwipeKey: null,
       lastTagInterceptError: null,
+      lastMessageControlRenderAt: null,
+      lastMessageControlMessageId: null,
+      lastMessageControlSwipeKey: null,
+      lastMessageControlState: null,
+      lastGenerateButtonMessageId: null,
+      lastGenerateButtonClickedAt: null,
+      lastInlineActionClicked: null,
+      lastInlineActionAt: null,
+      lastInlineActionError: null,
+      nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
+      nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
     },
     injectionPreview: null,
     renderPreview: null,
     messageSnapshotHistory: [],
+    messageControlCandidates: [],
     presets: [DEFAULT_TRACKER_PRESET],
     activePreset: DEFAULT_TRACKER_PRESET,
     activePresetState: {
@@ -528,6 +543,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const domInjections = new Map<string, { element: Element; cleanup: () => void }>();
   const domSignatures = new Map<string, string>();
   const embeddedTagEntries = new Map<string, MessageTrackerHistoryEntry>();
+  const optimisticJobs = new Map<string, { startedAt: string; jobId: string | null }>();
   let settingsAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
   let settingsSaveStatus: "idle" | "saving" | "saved" | "failed" = "saved";
 
@@ -568,6 +584,56 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   function trackerEntryKey(messageId: string, swipeKey: string): string {
     return `${messageId}:${swipeKey}`;
+  }
+
+  function stateActiveJob(messageId: string, swipeKey: string): { jobId: string; startedAt: string } | null {
+    return state.diagnostics.activeTrackerJobs.find((job) => job.messageId === messageId && job.swipeKey === swipeKey) ?? null;
+  }
+
+  function activeJobFor(messageId: string, swipeKey: string): { isActive: boolean; jobId: string | null; startedAt: string | null } {
+    const key = trackerEntryKey(messageId, swipeKey);
+    const optimistic = optimisticJobs.get(key) ?? null;
+    const active = stateActiveJob(messageId, swipeKey);
+    return {
+      isActive: Boolean(optimistic || active),
+      jobId: active?.jobId ?? optimistic?.jobId ?? null,
+      startedAt: optimistic?.startedAt ?? active?.startedAt ?? null,
+    };
+  }
+
+  function beginOptimisticJob(messageId: string, swipeKey: string): void {
+    optimisticJobs.set(trackerEntryKey(messageId, swipeKey), {
+      startedAt: new Date().toISOString(),
+      jobId: null,
+    });
+  }
+
+  function endOptimisticJob(messageId: string, swipeKey: string): void {
+    optimisticJobs.delete(trackerEntryKey(messageId, swipeKey));
+  }
+
+  function syncOptimisticJobsFromState(nextState: FrontendState): void {
+    const activeKeys = new Set(nextState.diagnostics.activeTrackerJobs.map((job) => trackerEntryKey(job.messageId, job.swipeKey)));
+    for (const key of Array.from(optimisticJobs.keys())) {
+      if (activeKeys.has(key) || nextState.status !== "generating") optimisticJobs.delete(key);
+    }
+  }
+
+  function noteInlineAction(action: LTrackerInlineAction, messageId: string, swipeKey: string, error: string | null = null): void {
+    const now = new Date().toISOString();
+    localDiagnostics({
+      lastInlineActionClicked: action,
+      lastInlineActionAt: now,
+      lastInlineActionError: error,
+      lastMessageControlMessageId: messageId,
+      lastMessageControlSwipeKey: swipeKey,
+    });
+    if (action === "generate") {
+      localDiagnostics({
+        lastGenerateButtonMessageId: messageId,
+        lastGenerateButtonClickedAt: now,
+      });
+    }
   }
 
   function settingsSaveStatusLabel(): string {
@@ -615,7 +681,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   function rerenderHistoryEntry(entry: MessageTrackerHistoryEntry): MessageTrackerHistoryEntry {
-    if (!entry.snapshot) return entry;
+    const active = activeJobFor(entry.indexEntry.messageId, entry.indexEntry.swipeKey);
+    const wasRegenerating = entry.rendered.isRegenerating;
+    const chatId = entry.snapshot?.chatId ?? state.chatId ?? activeChatId() ?? "";
     return {
       ...entry,
       rendered: renderMessageTracker({
@@ -626,7 +694,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         preset: state.activePreset,
         settings: state.settings.messageDisplay,
         swipeIdentity: {
-          chatId: entry.snapshot.chatId,
+          chatId,
           messageId: entry.indexEntry.messageId,
           swipeKey: entry.indexEntry.swipeKey,
           swipeIndex: entry.indexEntry.swipeIndex,
@@ -634,9 +702,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           swipeContentHash: entry.indexEntry.swipeContentHash,
           swipeKeySource: entry.indexEntry.swipeKeySource,
         },
-        isRegenerating: entry.rendered.isRegenerating,
-        activeJobId: entry.rendered.activeJobId,
-        activeJobStartedAt: entry.rendered.isRegenerating ? entry.rendered.generationStartedAt : null,
+        isRegenerating: active.isActive || wasRegenerating,
+        activeJobId: active.jobId ?? entry.rendered.activeJobId,
+        activeJobStartedAt: active.startedAt ?? (wasRegenerating ? entry.rendered.generationStartedAt : null),
       }),
     };
   }
@@ -646,10 +714,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const entries = new Map<string, MessageTrackerHistoryEntry>();
     for (const entry of state.messageSnapshotHistory) {
       if (active && entry.snapshot?.chatId && entry.snapshot.chatId !== active) continue;
-      entries.set(trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey), entry);
+      entries.set(trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey), rerenderHistoryEntry(entry));
     }
     for (const [key, entry] of embeddedTagEntries) {
       if (active && entry.snapshot?.chatId && entry.snapshot.chatId !== active) continue;
+      entries.set(key, rerenderHistoryEntry(entry));
+    }
+    for (const entry of state.messageControlCandidates) {
+      const key = trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey);
+      if (entries.has(key)) continue;
       entries.set(key, rerenderHistoryEntry(entry));
     }
     return Array.from(entries.values());
@@ -663,12 +736,30 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   function activeWidgetJobId(messageId: string, swipeKey: string): string | null {
-    return findHistoryEntry(messageId, swipeKey)?.rendered.activeJobId ?? null;
+    const active = activeJobFor(messageId, swipeKey);
+    return active.jobId ?? findHistoryEntry(messageId, swipeKey)?.rendered.activeJobId ?? null;
+  }
+
+  function generateMessageTracker(messageId: string, swipeKey: string): void {
+    beginOptimisticJob(messageId, swipeKey);
+    noteInlineAction("generate", messageId, swipeKey);
+    hydrateMessageWidgets();
+    send({
+      type: "generate_message_tracker",
+      chatId: activeChatId(),
+      messageId,
+      swipeKey,
+      requestId: requestId("widget-generate"),
+    });
   }
 
   function toggleMessageRegeneration(messageId: string, swipeKey: string, jobId: string | null = null): void {
-    const activeJobId = jobId || activeWidgetJobId(messageId, swipeKey);
-    if (activeJobId) {
+    const active = activeJobFor(messageId, swipeKey);
+    const activeJobId = jobId || active.jobId || activeWidgetJobId(messageId, swipeKey);
+    if (active.isActive || activeJobId) {
+      endOptimisticJob(messageId, swipeKey);
+      noteInlineAction("cancel", messageId, swipeKey);
+      hydrateMessageWidgets();
       send({
         type: "cancel_tracker_generation",
         chatId: activeChatId(),
@@ -679,6 +770,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       });
       return;
     }
+    beginOptimisticJob(messageId, swipeKey);
+    noteInlineAction("regenerate", messageId, swipeKey);
+    hydrateMessageWidgets();
     send({
       type: "regenerate_message_tracker",
       chatId: activeChatId(),
@@ -692,12 +786,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (
       !isRecord(payload)
       || payload.type !== "ltracker_widget_action"
-      || payload.action !== "toggle_regenerate"
+      || (payload.action !== "toggle_regenerate" && payload.action !== "generate")
       || payload.messageId !== expectedMessageId
     ) return;
     if ("swipeKey" in payload && payload.swipeKey !== expectedSwipeKey) return;
     const jobId = typeof payload.jobId === "string" && payload.jobId ? payload.jobId : null;
-    toggleMessageRegeneration(expectedMessageId, expectedSwipeKey, jobId);
+    if (payload.action === "generate") generateMessageTracker(expectedMessageId, expectedSwipeKey);
+    else toggleMessageRegeneration(expectedMessageId, expectedSwipeKey, jobId);
   }
 
   function cleanupMessageWidgets(keepKeys: Set<string> = new Set()): void {
@@ -720,8 +815,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   function markInjectedTrackerGenerating(root: Element): void {
     const startedAt = new Date().toISOString();
-    const button = root.querySelector<HTMLElement>("[data-ltracker-dom-action='toggle_regenerate']");
+    const button = root.querySelector<HTMLElement>("[data-ltracker-dom-action='toggle_regenerate'], [data-ltracker-dom-action='generate']");
     button?.classList.add("ltd-spinning");
+    button?.setAttribute("data-ltracker-dom-action", "toggle_regenerate");
     button?.setAttribute("title", "Cancel tracker generation");
     button?.setAttribute("aria-label", "Cancel tracker generation");
     const status = root.querySelector<HTMLElement>("[data-ltracker-status]");
@@ -757,50 +853,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!messageId || !swipeKey) return;
     const action = target.dataset.ltrackerDomAction;
     const entry = findHistoryEntry(messageId, swipeKey);
+    if (action === "generate") {
+      markInjectedTrackerGenerating(tracker);
+      generateMessageTracker(messageId, swipeKey);
+    }
     if (action === "toggle_regenerate") {
       markInjectedTrackerGenerating(tracker);
       toggleMessageRegeneration(messageId, swipeKey, entry?.rendered.activeJobId ?? null);
     }
     if (action === "edit" && entry) {
+      noteInlineAction("edit", messageId, swipeKey);
       openTrackerEditor(entry);
     }
     if (action === "delete") {
+      noteInlineAction("delete", messageId, swipeKey);
       void deleteMessageTracker(messageId, swipeKey);
     }
   }
 
   function renderInlineTrackerHtml(entry: MessageTrackerHistoryEntry): string {
-    if (state.settings.messageDisplay.displayMode !== "inline_button_popover") {
-      return entry.rendered.domHtml;
-    }
-    const rendered = entry.rendered;
-    const open = state.settings.messageDisplay.collapsedByDefault ? "" : " open";
-    const status = rendered.isRegenerating ? "generating" : rendered.generationStatus ?? "ready";
-    const body = rendered.html || `<pre class="ltr-pre">${escapeHtml(rendered.textFallback)}</pre>`;
-    const button = (action: string, label: string, enabled: boolean): string => enabled
-      ? `<button class="ltracker-button" type="button" data-ltracker-dom-action="${escapeHtml(action)}">${escapeHtml(label)}</button>`
-      : "";
-    return `
-      <section class="ltracker-dom-popover" data-ltracker-message-id="${escapeHtml(entry.indexEntry.messageId)}" data-ltracker-swipe-key="${escapeHtml(entry.indexEntry.swipeKey)}">
-        <details${open}>
-          <summary>
-            <span class="ltracker-dom-popover-button">
-              <strong>LTracker</strong>
-              <span>${escapeHtml(status)}</span>
-              <span>swipe ${escapeHtml(entry.indexEntry.swipeKey)}</span>
-            </span>
-          </summary>
-          <div class="ltracker-dom-popover-panel">
-            ${body}
-            <div class="ltracker-copy-actions" style="margin-top: 8px;">
-              ${button("toggle_regenerate", rendered.isRegenerating ? "Cancel" : "Regenerate", state.settings.messageDisplay.showWidgetRegenerateButton)}
-              ${button("edit", "Edit/View", state.settings.messageDisplay.showEditButton)}
-              ${button("delete", "Delete", state.settings.messageDisplay.showDeleteButton)}
-            </div>
-          </div>
-        </details>
-      </section>
-    `;
+    return entry.rendered.domHtml;
   }
 
   function queryMountPoint(root: Element, selector: string): Element | null {
@@ -850,9 +922,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     let injectedAny = false;
     let hydratedCount = 0;
     for (const entry of allRenderableEntries()) {
-      if (!entry.snapshot) continue;
+      const html = renderInlineTrackerHtml(entry);
+      if (!html.trim()) continue;
       const key = trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey);
-      keepKeys.add(key);
       const messageElement = ctx.dom.findMessageElement(entry.indexEntry.messageId);
       const requestedPlacement = state.settings.messageDisplay.placement;
       localDiagnostics({
@@ -860,15 +932,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         lastPlacementRenderAttemptAt: new Date().toISOString(),
       });
       if (!messageElement) continue;
+      keepKeys.add(key);
       const mount = resolveTrackerMountPoint(messageElement);
       const target = mount.target;
       const position = positionForPlacement(requestedPlacement);
-      const html = renderInlineTrackerHtml(entry);
       const signature = [
         entry.rendered.renderMode,
         entry.rendered.snapshotCreatedAt,
         entry.rendered.presetId,
         entry.rendered.swipeKey,
+        entry.rendered.isRegenerating ? "generating" : "idle",
+        entry.rendered.generationStartedAt,
+        entry.rendered.activeJobId,
+        entry.rendered.controlState.generationStatus,
         state.settings.messageDisplay.displayMode,
         html,
       ].join("\n");
@@ -897,6 +973,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           lastDomInjectionAt: new Date().toISOString(),
           lastDomInjectionError: null,
           lastMessageDisplayError: null,
+          lastMessageControlRenderAt: new Date().toISOString(),
+          lastMessageControlMessageId: entry.indexEntry.messageId,
+          lastMessageControlSwipeKey: entry.indexEntry.swipeKey,
+          lastMessageControlState: entry.rendered.controlState.generationStatus,
+          nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
+          nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
         });
         injectedAny = true;
         hydratedCount += 1;
@@ -937,7 +1019,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
     const keepKeys = new Set<string>();
     for (const entry of allRenderableEntries()) {
-      if (!entry.snapshot) continue;
+      if (!entry.rendered.widgetHtml.trim()) continue;
       const key = `${entry.indexEntry.messageId}:${entry.indexEntry.swipeKey}:${MESSAGE_WIDGET_ID}`;
       keepKeys.add(key);
       const signature = [
@@ -1169,6 +1251,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         | "allowInlineStyles"
         | "deduplicateRenderWarnings"
         | "showRenderWarningsInDiagnosticsOnly"
+        | "showDebugSwipeKey"
+        | "showGenerateButtonForMissingTracker"
+        | "showExpandedHeaderActions"
+        | "showBottomActionsInInlineTracker"
         | "collapsedByDefault"
         | "compactCollapsedHeader"
         | "showTimestamp"
@@ -1193,7 +1279,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       return input ? input.value as T : fallback;
     };
     const messageDisplaySelectValue = <T extends string>(
-      name: keyof Pick<LTrackerSettings["messageDisplay"], "attachmentMode" | "displayMode" | "placement" | "source" | "renderMode">,
+      name: keyof Pick<LTrackerSettings["messageDisplay"], "attachmentMode" | "displayMode" | "placement" | "source" | "renderMode" | "controlDensity" | "controlPlacement">,
       fallback: T,
     ): T => {
       const input = tab.root.querySelector<HTMLSelectElement>(`[data-message-display-setting="${name}"]`);
@@ -1244,6 +1330,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         allowInlineStyles: messageDisplayBooleanValue("allowInlineStyles"),
         deduplicateRenderWarnings: messageDisplayBooleanValue("deduplicateRenderWarnings"),
         showRenderWarningsInDiagnosticsOnly: messageDisplayBooleanValue("showRenderWarningsInDiagnosticsOnly"),
+        showDebugSwipeKey: messageDisplayBooleanValue("showDebugSwipeKey"),
+        showGenerateButtonForMissingTracker: messageDisplayBooleanValue("showGenerateButtonForMissingTracker"),
+        controlDensity: messageDisplaySelectValue("controlDensity", state.settings.messageDisplay.controlDensity),
+        controlPlacement: messageDisplaySelectValue("controlPlacement", state.settings.messageDisplay.controlPlacement),
+        showExpandedHeaderActions: messageDisplayBooleanValue("showExpandedHeaderActions"),
+        showBottomActionsInInlineTracker: messageDisplayBooleanValue("showBottomActionsInInlineTracker"),
         collapsedByDefault: messageDisplayBooleanValue("collapsedByDefault"),
         compactCollapsedHeader: messageDisplayBooleanValue("compactCollapsedHeader"),
         showTimestamp: messageDisplayBooleanValue("showTimestamp"),
@@ -1958,6 +2050,36 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               Keep warning details in diagnostics
             </label>
             <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showDebugSwipeKey"${checked(state.settings.messageDisplay.showDebugSwipeKey)}>
+              Show debug swipe key
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showGenerateButtonForMissingTracker"${checked(state.settings.messageDisplay.showGenerateButtonForMissingTracker)}>
+              Missing tracker generate icon
+            </label>
+            <label class="ltracker-field">
+              Control density
+              <select data-message-display-setting="controlDensity">
+                <option value="compact"${selected(state.settings.messageDisplay.controlDensity === "compact")}>Compact</option>
+                <option value="comfortable"${selected(state.settings.messageDisplay.controlDensity === "comfortable")}>Comfortable</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Control placement
+              <select data-message-display-setting="controlPlacement">
+                <option value="message_header"${selected(state.settings.messageDisplay.controlPlacement === "message_header")}>Message header</option>
+                <option value="inside_tracker_header"${selected(state.settings.messageDisplay.controlPlacement === "inside_tracker_header")}>Inside tracker header</option>
+              </select>
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showExpandedHeaderActions"${checked(state.settings.messageDisplay.showExpandedHeaderActions)}>
+              Expanded header actions
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showBottomActionsInInlineTracker"${checked(state.settings.messageDisplay.showBottomActionsInInlineTracker)}>
+              Bottom inline actions
+            </label>
+            <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="collapsedByDefault"${checked(state.settings.messageDisplay.collapsedByDefault)}>
               Collapsed by default
             </label>
@@ -2091,6 +2213,17 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
             ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
             ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
+            ${renderRow("Last message control render", diagnostics.lastMessageControlRenderAt)}
+            ${renderRow("Last message control message", diagnostics.lastMessageControlMessageId)}
+            ${renderRow("Last message control swipe", diagnostics.lastMessageControlSwipeKey)}
+            ${renderRow("Last message control state", diagnostics.lastMessageControlState)}
+            ${renderRow("Last generate button message", diagnostics.lastGenerateButtonMessageId)}
+            ${renderRow("Last generate button click", diagnostics.lastGenerateButtonClickedAt)}
+            ${renderRow("Last inline action", diagnostics.lastInlineActionClicked)}
+            ${renderRow("Last inline action at", diagnostics.lastInlineActionAt)}
+            ${renderRow("Last inline action error", diagnostics.lastInlineActionError)}
+            ${renderRow("Native toolbar supported", diagnostics.nativeToolbarSupported ? "yes" : "no")}
+            ${renderRow("Native toolbar fallback", diagnostics.nativeToolbarFallbackReason)}
             ${renderRow("Last placement requested", diagnostics.lastPlacementRequested)}
             ${renderRow("Last placement resolved", diagnostics.lastPlacementResolved)}
             ${renderRow("Last placement attempt", diagnostics.lastPlacementRenderAttemptAt)}
@@ -2327,11 +2460,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       && (payload.requestId.startsWith("settings:") || payload.requestId.startsWith("settings-auto:") || payload.requestId.startsWith("settings-reset:"));
     if (payload.type === "state") {
       if (payload.state.chatId !== state.chatId) embeddedTagEntries.clear();
+      syncOptimisticJobsFromState(payload.state);
       state = payload.state;
       if (settingsResponse) settingsSaveStatus = "saved";
       render();
     }
     if (payload.type === "error") {
+      if (payload.state) syncOptimisticJobsFromState(payload.state);
       state = payload.state ?? {
         ...state,
         status: "error",

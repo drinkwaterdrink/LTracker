@@ -28,9 +28,12 @@ import {
 } from "./shared/htmlTemplateRenderer";
 import {
   buildMessageTrackerHistory,
+  MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+  MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
   MESSAGE_LOCAL_UI_FALLBACK_REASON,
   MESSAGE_LOCAL_UI_SUPPORTED,
   MESSAGE_WIDGET_PLACEMENT_REASON,
+  renderMessageTracker,
 } from "./shared/messageDisplay";
 import {
   normalizeMessageAttachedSnapshotPresetMetadata,
@@ -104,6 +107,7 @@ import {
   type LTrackerSettings,
   type MessageAttachedSnapshot,
   type MessageSnapshotIndexEntry,
+  type MessageTrackerHistoryEntry,
   type PermissionState,
   type RenderedTrackerPreview,
   type SwipeTrackerIdentity,
@@ -227,6 +231,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "import_preset",
     "validate_preset",
     "render_template",
+    "generate_message_tracker",
     "regenerate_message_tracker",
     "cancel_tracker_generation",
     "delete_message_tracker",
@@ -249,6 +254,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "import_preset",
       "validate_preset",
       "render_template",
+      "generate_message_tracker",
       "regenerate_message_tracker",
       "cancel_tracker_generation",
       "delete_message_tracker",
@@ -263,6 +269,10 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
   if (
     payload.type === "regenerate_message_tracker"
+    && (typeof payload.messageId !== "string" || ("swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== undefined && typeof payload.swipeKey !== "string"))
+  ) return false;
+  if (
+    payload.type === "generate_message_tracker"
     && (typeof payload.messageId !== "string" || ("swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== undefined && typeof payload.swipeKey !== "string"))
   ) return false;
   if (
@@ -420,6 +430,17 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastTagInterceptMessageId: null,
     lastTagInterceptSwipeKey: null,
     lastTagInterceptError: null,
+    lastMessageControlRenderAt: null,
+    lastMessageControlMessageId: null,
+    lastMessageControlSwipeKey: null,
+    lastMessageControlState: null,
+    lastGenerateButtonMessageId: null,
+    lastGenerateButtonClickedAt: null,
+    lastInlineActionClicked: null,
+    lastInlineActionAt: null,
+    lastInlineActionError: null,
+    nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
+    nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
   };
 }
 
@@ -499,6 +520,17 @@ function mountPointStrategy(value: unknown): LTrackerDiagnostics["lastMountPoint
     || value === "bubble_adapter"
     || value === "widget_fallback"
     || value === "drawer_only"
+    ? value
+    : null;
+}
+
+function inlineActionOrNull(value: unknown): LTrackerDiagnostics["lastInlineActionClicked"] {
+  return value === "generate"
+    || value === "regenerate"
+    || value === "cancel"
+    || value === "edit"
+    || value === "delete"
+    || value === "toggle"
     ? value
     : null;
 }
@@ -665,6 +697,17 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastTagInterceptMessageId: stringOrNull(value.lastTagInterceptMessageId),
     lastTagInterceptSwipeKey: stringOrNull(value.lastTagInterceptSwipeKey),
     lastTagInterceptError: stringOrNull(value.lastTagInterceptError),
+    lastMessageControlRenderAt: stringOrNull(value.lastMessageControlRenderAt),
+    lastMessageControlMessageId: stringOrNull(value.lastMessageControlMessageId),
+    lastMessageControlSwipeKey: stringOrNull(value.lastMessageControlSwipeKey),
+    lastMessageControlState: stringOrNull(value.lastMessageControlState),
+    lastGenerateButtonMessageId: stringOrNull(value.lastGenerateButtonMessageId),
+    lastGenerateButtonClickedAt: stringOrNull(value.lastGenerateButtonClickedAt),
+    lastInlineActionClicked: inlineActionOrNull(value.lastInlineActionClicked),
+    lastInlineActionAt: stringOrNull(value.lastInlineActionAt),
+    lastInlineActionError: stringOrNull(value.lastInlineActionError),
+    nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
+    nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
   };
 }
 
@@ -919,6 +962,59 @@ function activeTrackerJobDiagnostics(chatId: string | null): LTrackerDiagnostics
     }));
 }
 
+async function buildMessageControlCandidates(
+  chatId: string | null,
+  settings: LTrackerSettings,
+  latestChatSnapshot: TrackerSnapshot | null,
+  preset: TrackerSchemaPreset,
+  messageSnapshotIndex: MessageSnapshotIndexEntry[],
+  activeWidgetJobs: Record<string, { jobId: string; startedAt: string | null }>,
+  selectedSwipeIdentities: Record<string, SwipeTrackerIdentity>,
+): Promise<MessageTrackerHistoryEntry[]> {
+  if (!chatId || !settings.messageDisplay.showGenerateButtonForMissingTracker) return [];
+  const messages = await readChatMessages(chatId);
+  const existingKeys = new Set(messageSnapshotIndex.map((entry) => swipeIdentityKey(entry)));
+  const recent = messages.slice(-Math.max(settings.recentMessageLimit, 12));
+  const entries: MessageTrackerHistoryEntry[] = [];
+  for (const message of recent) {
+    if (message.is_user) continue;
+    const identity = selectedSwipeIdentities[message.id] ?? deriveSwipeTrackerIdentity(chatId, message);
+    const key = swipeIdentityKey(identity);
+    if (existingKeys.has(key)) continue;
+    const activeJob = activeWidgetJobs[key] ?? null;
+    const indexEntry: MessageSnapshotIndexEntry = {
+      messageId: message.id,
+      messageIndex: typeof message.index_in_chat === "number" && Number.isFinite(message.index_in_chat) ? Math.round(message.index_in_chat) : null,
+      swipeKey: identity.swipeKey,
+      swipeIndex: identity.swipeIndex,
+      swipeId: identity.swipeId,
+      swipeContentHash: identity.swipeContentHash,
+      swipeKeySource: identity.swipeKeySource,
+      createdAt: nowIso(),
+      presetId: preset.id,
+      presetName: preset.name,
+      storageKey: `missing:${chatId}:${message.id}:${identity.swipeKey}`,
+    };
+    entries.push({
+      indexEntry,
+      snapshot: null,
+      rendered: renderMessageTracker({
+        messageId: message.id,
+        messageIndex: indexEntry.messageIndex,
+        attachedSnapshot: null,
+        latestChatSnapshot,
+        preset,
+        settings: settings.messageDisplay,
+        swipeIdentity: identity,
+        isRegenerating: Boolean(activeJob),
+        activeJobId: activeJob?.jobId ?? null,
+        activeJobStartedAt: activeJob?.startedAt ?? null,
+      }),
+    });
+  }
+  return entries;
+}
+
 function resolveMessageWidgetPlacement(
   requested: LTrackerMessageDisplayPlacement,
   settings?: LTrackerSettings,
@@ -990,6 +1086,18 @@ async function buildState(
     activeWidgetJobs,
     selectedSwipeIdentities,
   });
+  const messageControlCandidates = await buildMessageControlCandidates(
+    chatId,
+    settings,
+    snapshot,
+    presetState.activePreset,
+    messageSnapshotIndex,
+    activeWidgetJobs,
+    selectedSwipeIdentities,
+  ).catch((error: unknown) => {
+    spindle.log.warn(`LTracker could not build message control candidates: ${errorMessage(error)}`);
+    return [];
+  });
   const latestMessageSnapshot = await loadMessageSnapshot(
     chatId,
     diagnostics.latestAttachedMessageId,
@@ -1027,6 +1135,7 @@ async function buildState(
     injectionPreview,
     renderPreview,
     messageSnapshotHistory,
+    messageControlCandidates,
     presets: presetState.presets,
     activePreset: presetState.activePreset,
     activePresetState: presetState.activePresetState,
@@ -1062,6 +1171,8 @@ async function buildState(
       messageWidgetPlacementResolved: placement.resolved,
       messageWidgetPlacementReason: placement.reason,
       messageDisplayRenderer,
+      nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
+      nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
     },
   };
 }
@@ -2111,6 +2222,11 @@ async function generateTracker(
         lastAutoSkippedReason: "Chat changed before the auto tracker result was saved.",
         lastError: null,
       };
+      if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+      diagnostics = {
+        ...diagnostics,
+        activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId),
+      };
       await persistDiagnostics(diagnostics, userId);
       await sendState(resolvedChatId, userId, "idle", null, requestId);
       return;
@@ -2216,6 +2332,11 @@ async function generateTracker(
       }
     }
 
+    if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+    diagnostics = {
+      ...diagnostics,
+      activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId),
+    };
     await persistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "idle", null, requestId);
   } catch (error) {
@@ -2254,6 +2375,11 @@ async function generateTracker(
           activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId),
         };
       }
+      if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+      diagnostics = {
+        ...diagnostics,
+        activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId),
+      };
       await tryPersistDiagnostics(diagnostics, userId);
       await sendState(resolvedChatId, userId, "idle", null, requestId);
       return;
@@ -2279,6 +2405,11 @@ async function generateTracker(
         activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId),
       };
     }
+    if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+    diagnostics = {
+      ...diagnostics,
+      activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId),
+    };
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "error", currentError, requestId);
   } finally {
@@ -2662,7 +2793,7 @@ async function handleRefresh(
 }
 
 async function regenerateMessageTracker(
-  payload: Extract<FrontendMessage, { type: "regenerate_message_tracker" }>,
+  payload: Extract<FrontendMessage, { type: "generate_message_tracker" | "regenerate_message_tracker" }>,
   userId: string,
 ): Promise<void> {
   const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
@@ -3018,6 +3149,10 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "render_template") {
         await renderTemplatePreview(chatId, userId, payload.requestId, payload.source);
+        return;
+      }
+      if (payload.type === "generate_message_tracker") {
+        await regenerateMessageTracker(payload, userId);
         return;
       }
       if (payload.type === "regenerate_message_tracker") {

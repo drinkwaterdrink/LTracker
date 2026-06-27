@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.11";
+export const EXTENSION_VERSION = "0.12";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -16,6 +16,10 @@ export type LTrackerMessageDisplaySource = "message_attached_snapshot" | "latest
 export type LTrackerMessageDisplayRenderMode = "html_template" | "compact_text" | "pretty_json";
 export type LTrackerMessageDisplayDisplayMode = "inline_full" | "inline_button_popover" | "drawer_history_only";
 export type LTrackerMessageAttachmentMode = "sidecar_snapshot" | "embedded_tracker_tag" | "both";
+export type LTrackerMessageControlDensity = "compact" | "comfortable";
+export type LTrackerMessageControlPlacement = "message_header" | "inside_tracker_header";
+export type LTrackerMessageControlGenerationStatus = "idle" | "generating" | "completed" | "cancelled" | "failed";
+export type LTrackerInlineAction = "generate" | "regenerate" | "cancel" | "edit" | "delete" | "toggle";
 export type LTrackerMessageDisplayMode = "dom_injection" | "message_widget" | "drawer_history" | "disabled";
 export type LTrackerMessageWidgetPlacementResolved = "top" | "bottom" | "host_default" | "unsupported";
 export type LTrackerMessageDisplayRenderer = "dom_injection" | "iframe_widget" | "drawer_history";
@@ -225,6 +229,12 @@ export interface LTrackerMessageDisplaySettings {
   allowInlineStyles: boolean;
   deduplicateRenderWarnings: boolean;
   showRenderWarningsInDiagnosticsOnly: boolean;
+  showDebugSwipeKey: boolean;
+  showGenerateButtonForMissingTracker: boolean;
+  controlDensity: LTrackerMessageControlDensity;
+  controlPlacement: LTrackerMessageControlPlacement;
+  showExpandedHeaderActions: boolean;
+  showBottomActionsInInlineTracker: boolean;
   collapsedByDefault: boolean;
   compactCollapsedHeader: boolean;
   showTimestamp: boolean;
@@ -380,6 +390,17 @@ export interface LTrackerDiagnostics {
   lastTagInterceptMessageId: string | null;
   lastTagInterceptSwipeKey: string | null;
   lastTagInterceptError: string | null;
+  lastMessageControlRenderAt: string | null;
+  lastMessageControlMessageId: string | null;
+  lastMessageControlSwipeKey: string | null;
+  lastMessageControlState: string | null;
+  lastGenerateButtonMessageId: string | null;
+  lastGenerateButtonClickedAt: string | null;
+  lastInlineActionClicked: LTrackerInlineAction | null;
+  lastInlineActionAt: string | null;
+  lastInlineActionError: string | null;
+  nativeToolbarSupported: boolean;
+  nativeToolbarFallbackReason: string | null;
 }
 
 export interface PermissionState {
@@ -398,6 +419,7 @@ export interface FrontendState {
   injectionPreview: string | null;
   renderPreview: RenderedTrackerPreview | null;
   messageSnapshotHistory: MessageTrackerHistoryEntry[];
+  messageControlCandidates: MessageTrackerHistoryEntry[];
   presets: TrackerSchemaPreset[];
   activePreset: TrackerSchemaPreset;
   activePresetState: ActiveTrackerPresetState;
@@ -439,6 +461,7 @@ export interface RenderedMessageTracker {
   generationStatus: "completed" | "cancelled" | "failed" | null;
   isRegenerating: boolean;
   activeJobId: string | null;
+  controlState: MessageTrackerControlState;
   renderMode: LTrackerMessageDisplayRenderMode;
   html: string;
   textFallback: string;
@@ -447,6 +470,19 @@ export interface RenderedMessageTracker {
   domHtml: string;
   warnings: string[];
   errors: string[];
+}
+
+export interface MessageTrackerControlState {
+  messageId: string;
+  swipeKey: string;
+  hasTracker: boolean;
+  isExpanded: boolean;
+  isGenerating: boolean;
+  generationStartedAt: string | null;
+  generationDurationMs: number | null;
+  generationStatus: LTrackerMessageControlGenerationStatus;
+  error: string | null;
+  debugSwipeLabel: string | null;
 }
 
 export interface MessageTrackerHistoryEntry {
@@ -471,6 +507,7 @@ export type FrontendMessage =
   | { type: "import_preset"; chatId: string | null; importText: string; requestId: string }
   | { type: "validate_preset"; chatId: string | null; preset: TrackerPresetDraft; requestId: string }
   | { type: "render_template"; chatId: string | null; source?: LTrackerRenderSource; requestId: string }
+  | { type: "generate_message_tracker"; chatId: string | null; messageId: string; swipeKey?: string | null; requestId: string }
   | { type: "regenerate_message_tracker"; chatId: string | null; messageId: string; swipeKey?: string | null; requestId: string }
   | { type: "cancel_tracker_generation"; chatId: string | null; jobId?: string | null; messageId?: string | null; swipeKey?: string | null; requestId: string }
   | { type: "delete_message_tracker"; chatId: string | null; messageId: string; swipeKey: string; requestId: string }

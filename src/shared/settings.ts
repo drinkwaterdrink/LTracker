@@ -60,6 +60,12 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     allowInlineStyles: true,
     deduplicateRenderWarnings: true,
     showRenderWarningsInDiagnosticsOnly: true,
+    showDebugSwipeKey: false,
+    showGenerateButtonForMissingTracker: true,
+    controlDensity: "compact",
+    controlPlacement: "message_header",
+    showExpandedHeaderActions: true,
+    showBottomActionsInInlineTracker: false,
     collapsedByDefault: true,
     compactCollapsedHeader: true,
     showTimestamp: true,
@@ -128,6 +134,14 @@ export function repairSettings(value: unknown): LTrackerSettings {
     || messageDisplaySource.displayMode === "inline_full"
     ? messageDisplaySource.displayMode
     : DEFAULT_SETTINGS.messageDisplay.displayMode;
+  const messageDisplayControlDensity = messageDisplaySource.controlDensity === "comfortable"
+    || messageDisplaySource.controlDensity === "compact"
+    ? messageDisplaySource.controlDensity
+    : DEFAULT_SETTINGS.messageDisplay.controlDensity;
+  const messageDisplayControlPlacement = messageDisplaySource.controlPlacement === "inside_tracker_header"
+    || messageDisplaySource.controlPlacement === "message_header"
+    ? messageDisplaySource.controlPlacement
+    : DEFAULT_SETTINGS.messageDisplay.controlPlacement;
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -250,6 +264,20 @@ export function repairSettings(value: unknown): LTrackerSettings {
       showRenderWarningsInDiagnosticsOnly: typeof messageDisplaySource.showRenderWarningsInDiagnosticsOnly === "boolean"
         ? messageDisplaySource.showRenderWarningsInDiagnosticsOnly
         : DEFAULT_SETTINGS.messageDisplay.showRenderWarningsInDiagnosticsOnly,
+      showDebugSwipeKey: typeof messageDisplaySource.showDebugSwipeKey === "boolean"
+        ? messageDisplaySource.showDebugSwipeKey
+        : DEFAULT_SETTINGS.messageDisplay.showDebugSwipeKey,
+      showGenerateButtonForMissingTracker: typeof messageDisplaySource.showGenerateButtonForMissingTracker === "boolean"
+        ? messageDisplaySource.showGenerateButtonForMissingTracker
+        : DEFAULT_SETTINGS.messageDisplay.showGenerateButtonForMissingTracker,
+      controlDensity: messageDisplayControlDensity,
+      controlPlacement: messageDisplayControlPlacement,
+      showExpandedHeaderActions: typeof messageDisplaySource.showExpandedHeaderActions === "boolean"
+        ? messageDisplaySource.showExpandedHeaderActions
+        : DEFAULT_SETTINGS.messageDisplay.showExpandedHeaderActions,
+      showBottomActionsInInlineTracker: typeof messageDisplaySource.showBottomActionsInInlineTracker === "boolean"
+        ? messageDisplaySource.showBottomActionsInInlineTracker
+        : DEFAULT_SETTINGS.messageDisplay.showBottomActionsInInlineTracker,
       collapsedByDefault: typeof messageDisplaySource.collapsedByDefault === "boolean"
         ? messageDisplaySource.collapsedByDefault
         : DEFAULT_SETTINGS.messageDisplay.collapsedByDefault,

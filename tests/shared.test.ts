@@ -79,7 +79,7 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.11",
+  extensionVersion: "0.12",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -116,7 +116,7 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.11",
+  extensionVersion: "0.12",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
@@ -315,7 +315,7 @@ test("messageSnapshotIndexPath stores the per-chat index under message-snapshots
 
 test("embedded tracker tags build, replace, and remove by exact swipe", () => {
   const first = buildLTrackerTag("{\"scene\":{\"time\":\"one\"}}", "index-0");
-  assert.match(first, /<ltracker type="state" version="0.11" swipe="index-0">/);
+  assert.match(first, /<ltracker type="state" version="0.12" swipe="index-0">/);
   const content = upsertLTrackerTag("Assistant reply.", "{\"a\":1}", "index-0");
   const withSecond = upsertLTrackerTag(content.content, "{\"b\":2}", "index-1");
   const replaced = upsertLTrackerTag(withSecond.content, "{\"a\":3}", "index-0");
@@ -970,6 +970,9 @@ test("renderMessageTracker widget is compact and omits copy buttons by default",
   assert.doesNotMatch(rendered.domHtml, /Copy JSON/);
   assert.doesNotMatch(rendered.domHtml, /Copy HTML/);
   assert.doesNotMatch(rendered.domHtml, /Copy Text/);
+  assert.doesNotMatch(rendered.domHtml, /ltd-footer-actions/);
+  assert.doesNotMatch(rendered.widgetHtml, /swipe index-0/i);
+  assert.doesNotMatch(rendered.domHtml, /swipe index-0/i);
   assert.match(rendered.widgetHtml, /class="ltr-icon-button"/);
   assert.match(rendered.widgetHtml, /title="Regenerate tracker"/);
   assert.match(rendered.widgetHtml, /aria-label="Regenerate tracker"/);
@@ -982,6 +985,74 @@ test("renderMessageTracker widget is compact and omits copy buttons by default",
   assert.match(rendered.domHtml, /aria-label="Delete tracker"/);
   assert.doesNotMatch(rendered.widgetHtml, />\s*Regenerate tracker\s*</);
   assert.doesNotMatch(rendered.domHtml, />\s*(Regenerate tracker|View or edit tracker|Delete tracker)\s*</);
+});
+
+test("renderMessageTracker hides swipe labels until debug swipe key is enabled", () => {
+  const hidden = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: DEFAULT_SETTINGS.messageDisplay,
+  });
+  const shown = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      showDebugSwipeKey: true,
+    },
+  });
+
+  assert.equal(DEFAULT_SETTINGS.messageDisplay.showDebugSwipeKey, false);
+  assert.equal(hidden.controlState.debugSwipeLabel, null);
+  assert.doesNotMatch(hidden.domHtml, /swipe index-0/i);
+  assert.match(shown.controlState.debugSwipeLabel ?? "", /swipe index-0/i);
+  assert.match(shown.domHtml, /swipe index-0/i);
+});
+
+test("renderMessageTracker renders a tiny generate icon for missing snapshots when enabled", () => {
+  const missing = renderMessageTracker({
+    messageId: "m3",
+    messageIndex: 8,
+    attachedSnapshot: null,
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: DEFAULT_SETTINGS.messageDisplay,
+    swipeIdentity: {
+      chatId: "chat-a",
+      messageId: "m3",
+      swipeKey: DEFAULT_SWIPE_KEY,
+      swipeIndex: null,
+      swipeId: null,
+      swipeContentHash: null,
+      swipeKeySource: "unknown",
+    },
+  });
+  const disabled = renderMessageTracker({
+    messageId: "m3",
+    messageIndex: 8,
+    attachedSnapshot: null,
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      showGenerateButtonForMissingTracker: false,
+    },
+  });
+
+  assert.equal(DEFAULT_SETTINGS.messageDisplay.showGenerateButtonForMissingTracker, true);
+  assert.equal(missing.controlState.hasTracker, false);
+  assert.match(missing.domHtml, /data-ltracker-dom-action="generate"/);
+  assert.match(missing.domHtml, /title="Generate tracker"/);
+  assert.match(missing.widgetHtml, /data-ltracker-action="generate"/);
+  assert.doesNotMatch(missing.domHtml, /No tracker snapshot is available/);
+  assert.equal(disabled.domHtml, "");
+  assert.equal(disabled.widgetHtml, "");
 });
 
 test("renderMessageTracker widget shows generation duration when available", () => {
@@ -1037,9 +1108,12 @@ test("renderMessageTracker widget exposes cancel state while regenerating", () =
   assert.match(rendered.widgetHtml, /title="Cancel tracker generation"/);
   assert.match(rendered.widgetHtml, /aria-label="Cancel tracker generation"/);
   assert.match(rendered.widgetHtml, /ltr-spinning/);
+  assert.match(rendered.widgetHtml, /data-elapsed/);
   assert.match(rendered.domHtml, /title="Cancel tracker generation"/);
   assert.match(rendered.domHtml, /aria-label="Cancel tracker generation"/);
   assert.match(rendered.domHtml, /ltd-spinning/);
+  assert.match(rendered.domHtml, /data-ltracker-elapsed/);
+  assert.match(rendered.domHtml, /data-started-at="2003-09-22T16:19:00.000Z"/);
   assert.match(rendered.widgetHtml, /job-widget-1/);
 });
 
@@ -1264,6 +1338,12 @@ test("repairSettings repairs message display settings with defaults and clamping
       allowInlineStyles: false,
       deduplicateRenderWarnings: false,
       showRenderWarningsInDiagnosticsOnly: false,
+      showDebugSwipeKey: true,
+      showGenerateButtonForMissingTracker: false,
+      controlDensity: "comfortable",
+      controlPlacement: "inside_tracker_header",
+      showExpandedHeaderActions: false,
+      showBottomActionsInInlineTracker: true,
       collapsedByDefault: true,
       compactCollapsedHeader: false,
       showTimestamp: false,
@@ -1289,6 +1369,12 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(settings.messageDisplay.allowInlineStyles, false);
   assert.equal(settings.messageDisplay.deduplicateRenderWarnings, false);
   assert.equal(settings.messageDisplay.showRenderWarningsInDiagnosticsOnly, false);
+  assert.equal(settings.messageDisplay.showDebugSwipeKey, true);
+  assert.equal(settings.messageDisplay.showGenerateButtonForMissingTracker, false);
+  assert.equal(settings.messageDisplay.controlDensity, "comfortable");
+  assert.equal(settings.messageDisplay.controlPlacement, "inside_tracker_header");
+  assert.equal(settings.messageDisplay.showExpandedHeaderActions, false);
+  assert.equal(settings.messageDisplay.showBottomActionsInInlineTracker, true);
   assert.equal(settings.messageDisplay.collapsedByDefault, true);
   assert.equal(settings.messageDisplay.compactCollapsedHeader, false);
   assert.equal(settings.messageDisplay.showTimestamp, false);
@@ -1309,6 +1395,8 @@ test("repairSettings repairs message display settings with defaults and clamping
       placement: "middle",
       source: "bad",
       renderMode: "markdown",
+      controlDensity: "roomy",
+      controlPlacement: "native_toolbar",
       maxRenderedChars: 10,
     },
   });
@@ -1317,6 +1405,12 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(repaired.messageDisplay.placement, DEFAULT_SETTINGS.messageDisplay.placement);
   assert.equal(repaired.messageDisplay.source, DEFAULT_SETTINGS.messageDisplay.source);
   assert.equal(repaired.messageDisplay.renderMode, DEFAULT_SETTINGS.messageDisplay.renderMode);
+  assert.equal(repaired.messageDisplay.showDebugSwipeKey, DEFAULT_SETTINGS.messageDisplay.showDebugSwipeKey);
+  assert.equal(repaired.messageDisplay.showGenerateButtonForMissingTracker, DEFAULT_SETTINGS.messageDisplay.showGenerateButtonForMissingTracker);
+  assert.equal(repaired.messageDisplay.controlDensity, DEFAULT_SETTINGS.messageDisplay.controlDensity);
+  assert.equal(repaired.messageDisplay.controlPlacement, DEFAULT_SETTINGS.messageDisplay.controlPlacement);
+  assert.equal(repaired.messageDisplay.showExpandedHeaderActions, DEFAULT_SETTINGS.messageDisplay.showExpandedHeaderActions);
+  assert.equal(repaired.messageDisplay.showBottomActionsInInlineTracker, DEFAULT_SETTINGS.messageDisplay.showBottomActionsInInlineTracker);
   assert.equal(repaired.messageDisplay.minimizedMaxHeightPx, 0);
   assert.equal(repaired.messageDisplay.maxRenderedChars, 1_000);
 });
@@ -1366,7 +1460,7 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
 
 test("context handler hotfix is disabled by default", () => {
   assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
-  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.11/);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.12/);
 });
 
 test("context handler guard never mutates a frozen context object when disabled", async () => {
@@ -1507,6 +1601,12 @@ test("README settings reference covers the major setting groups", () => {
     "messageDisplay.allowInlineStyles",
     "messageDisplay.deduplicateRenderWarnings",
     "messageDisplay.showRenderWarningsInDiagnosticsOnly",
+    "messageDisplay.showDebugSwipeKey",
+    "messageDisplay.showGenerateButtonForMissingTracker",
+    "messageDisplay.controlDensity",
+    "messageDisplay.controlPlacement",
+    "messageDisplay.showExpandedHeaderActions",
+    "messageDisplay.showBottomActionsInInlineTracker",
     "messageDisplay.collapsedByDefault",
     "messageDisplay.compactCollapsedHeader",
     "messageDisplay.showTimestamp",
@@ -1535,6 +1635,19 @@ test("README settings reference covers the major setting groups", () => {
     "sanitized inline styles",
     "copy buttons",
     "top vs bottom",
+    "compact message control pill",
+    "Generate tracker",
+    "stop/cancel",
+    "native toolbar fallback",
+    "Default: Trusted Preset Mode",
+    "Safe Mode",
+    "Dev Mode",
+    "0.13 Connection Settings",
+    "0.14 Power Template Engine",
+    "0.15 Dev Mode Templates",
+    "0.16 Sequential + Partial Regeneration",
+    "0.17 Cleanup / Repair / Pending Fields",
+    "0.18 World Books, Character Exclusions, Import/Export Polish",
   ]) {
     assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
@@ -1553,9 +1666,20 @@ test("drawer UI keeps detailed setting explanations out of the app surface", () 
   ]) {
     assert.doesNotMatch(frontend, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(frontend, /Current Lumiverse widget API renders below messages/);
-  assert.match(frontend, /Context handler disabled reason/);
+  assert.match(frontend, /MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON/);
+  assert.match(frontend, /Context handler injection is disabled in 0\.12/);
   assert.match(frontend, /registerTagInterceptor/);
   assert.match(frontend, /data-settings-save-status/);
+  assert.match(frontend, /saveSettings\("settings-auto"\)/);
   assert.doesNotMatch(frontend, />Save Settings</);
+});
+
+test("frontend message controls send exact message and swipe actions", () => {
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  assert.match(frontend, /type: "generate_message_tracker"[\s\S]{0,220}messageId[\s\S]{0,80}swipeKey/);
+  assert.match(frontend, /requestId: requestId\("widget-generate"\)/);
+  assert.match(frontend, /type: "regenerate_message_tracker"[\s\S]{0,220}messageId[\s\S]{0,80}swipeKey/);
+  assert.match(frontend, /type: "cancel_tracker_generation"[\s\S]{0,240}messageId[\s\S]{0,80}swipeKey/);
+  assert.match(frontend, /noteInlineAction\("generate", messageId, swipeKey\)/);
+  assert.match(frontend, /noteInlineAction\("cancel", messageId, swipeKey\)/);
 });

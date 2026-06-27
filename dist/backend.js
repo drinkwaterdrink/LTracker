@@ -228,10 +228,10 @@ function emptyDecision(skippedReason) {
 
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
-var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.11 while the Lumiverse context handler return contract is being verified.";
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.12 while the Lumiverse context handler return contract is being verified.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.11";
+var EXTENSION_VERSION = "0.12";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -818,6 +818,8 @@ function swipeKeySourceOrUnknown(value) {
 var MESSAGE_LOCAL_UI_SUPPORTED = true;
 var MESSAGE_LOCAL_UI_FALLBACK_REASON = null;
 var MESSAGE_WIDGET_PLACEMENT_REASON = "lumiverse-spindle-types@0.5.21 exposes ctx.messages.renderWidget() as a below-message widget surface and does not expose a top-placement option.";
+var MESSAGE_NATIVE_TOOLBAR_SUPPORTED = false;
+var MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON = "lumiverse-spindle-types@0.5.21 exposes message DOM helpers, message widgets, message tags, and message_footer mounting, but no per-message toolbar action slot.";
 function snapshotForDisplay(input) {
   if (input.settings.source === "latest_chat_snapshot" && input.latestChatSnapshot) return input.latestChatSnapshot;
   return input.attachedSnapshot?.snapshot ?? null;
@@ -903,40 +905,74 @@ function currentRunningDuration(startedAt) {
   if (!Number.isFinite(startedMs)) return null;
   return formatDurationMs(Date.now() - startedMs);
 }
+function debugSwipeLabel(rendered, settings) {
+  if (!settings.showDebugSwipeKey) return null;
+  const parts = [`swipe ${rendered.swipeKey}`];
+  if (rendered.swipeIndex !== null) parts.push(`index ${rendered.swipeIndex}`);
+  if (rendered.swipeId) parts.push(`id ${rendered.swipeId}`);
+  if (rendered.swipeKeySource !== "unknown") parts.push(rendered.swipeKeySource);
+  return parts.join(" / ");
+}
+function controlGenerationStatus(rendered, hasTracker) {
+  if (rendered.isRegenerating) return "generating";
+  if (rendered.generationStatus === "completed" || rendered.generationStatus === "cancelled" || rendered.generationStatus === "failed") {
+    return rendered.generationStatus;
+  }
+  return hasTracker ? "completed" : "idle";
+}
+function buildControlState(rendered, settings, hasTracker, errors) {
+  const status = controlGenerationStatus(rendered, hasTracker);
+  return {
+    messageId: rendered.messageId,
+    swipeKey: rendered.swipeKey,
+    hasTracker,
+    isExpanded: hasTracker && !settings.collapsedByDefault,
+    isGenerating: rendered.isRegenerating,
+    generationStartedAt: rendered.generationStartedAt,
+    generationDurationMs: rendered.generationDurationMs,
+    generationStatus: status,
+    error: status === "failed" ? errors[0] ?? "Tracker generation failed." : null,
+    debugSwipeLabel: debugSwipeLabel(rendered, settings)
+  };
+}
 function buildWidgetHtml(rendered, settings) {
+  if (!rendered.controlState.hasTracker && !settings.showGenerateButtonForMissingTracker) return "";
   const duration = settings.showGenerationDuration ? formatDurationMs(rendered.generationDurationMs) : null;
   const runningSince = rendered.isRegenerating ? rendered.generationStartedAt : null;
-  const actionLabel = rendered.isRegenerating ? "Cancel tracker generation" : "Regenerate tracker";
+  const actionLabel = rendered.isRegenerating ? "Cancel tracker generation" : rendered.controlState.hasTracker ? "Regenerate tracker" : "Generate tracker";
+  const action = rendered.controlState.hasTracker ? "toggle_regenerate" : "generate";
+  const actionKind = rendered.isRegenerating ? "stop" : rendered.controlState.hasTracker ? "refresh" : "generate";
   const meta = [
     settings.showPresetName && rendered.presetName ? rendered.presetName : null,
-    settings.showTimestamp && rendered.snapshotCreatedAt ? rendered.snapshotCreatedAt : null
+    settings.showTimestamp && rendered.snapshotCreatedAt ? rendered.snapshotCreatedAt : null,
+    rendered.controlState.debugSwipeLabel
   ].filter((item) => Boolean(item)).join(" / ");
-  const body = rendered.html || `<pre class="ltr-pre">${escapeHtml(rendered.textFallback)}</pre>`;
+  const body = rendered.controlState.hasTracker ? rendered.html || `<pre class="ltr-pre">${escapeHtml(rendered.textFallback)}</pre>` : "";
   const regenerateButton = settings.showWidgetRegenerateButton ? `
       <button
         class="ltr-icon-button${rendered.isRegenerating ? " ltr-spinning" : ""}"
         type="button"
-        data-ltracker-action="regenerate"
+        data-ltracker-action="${escapeHtml(action)}"
         data-message-id="${escapeHtml(rendered.messageId)}"
+        data-swipe-key="${escapeHtml(rendered.swipeKey)}"
         data-job-id="${escapeHtml(rendered.activeJobId ?? "")}"
         title="${escapeHtml(actionLabel)}"
         aria-label="${escapeHtml(actionLabel)}"
       >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M17.7 6.3A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.67 4.22 1.76L13 11h8V3l-3.3 3.3Z"/>
-        </svg>
+        ${iconSvg(actionKind)}
       </button>
       <script>
       (() => {
         const messageId = ${safeScriptJson(rendered.messageId)};
         const jobId = ${safeScriptJson(rendered.activeJobId ?? "")};
         document.addEventListener("click", (event) => {
-          const button = event.target && event.target.closest ? event.target.closest("[data-ltracker-action='regenerate']") : null;
+          const button = event.target && event.target.closest ? event.target.closest("[data-ltracker-action]") : null;
           if (!button) return;
           window.parent.postMessage({
             type: "ltracker_widget_action",
-            action: "toggle_regenerate",
+            action: button.getAttribute("data-ltracker-action"),
             messageId,
+            swipeKey: button.getAttribute("data-swipe-key"),
             jobId
           }, "*");
         });
@@ -955,9 +991,10 @@ function buildWidgetHtml(rendered, settings) {
       })();
       <\/script>` : "";
   const elapsedMarkup = settings.showGenerationDuration ? rendered.isRegenerating && rendered.generationStartedAt ? `<span class="ltr-pill" data-elapsed>${escapeHtml(currentRunningDuration(rendered.generationStartedAt) ?? "0ms")}</span>` : duration ? `<span class="ltr-pill">${escapeHtml(duration)}</span>` : "" : "";
-  const statusMarkup = rendered.isRegenerating ? `<span class="ltr-pill">generating</span>` : "";
+  const statusMarkup = rendered.isRegenerating ? `<span class="ltr-pill">generating</span>` : rendered.controlState.error ? `<span class="ltr-pill">warning</span>` : "";
   const metaMarkup = meta ? `<span class="ltr-meta">${escapeHtml(meta)}</span>` : "";
   const open = settings.collapsedByDefault ? "" : " open";
+  const bodyMarkup = rendered.controlState.hasTracker ? `<div class="ltr-body">${body}</div>` : "";
   return `<!doctype html>
 <html>
 <head>
@@ -1000,7 +1037,7 @@ function buildWidgetHtml(rendered, settings) {
           ${regenerateButton}
         </span>
       </summary>
-      <div class="ltr-body">${body}</div>
+      ${bodyMarkup}
     </details>
   </section>
 </body>
@@ -1010,6 +1047,15 @@ function iconSvg(kind) {
   if (kind === "stop") {
     return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 7h10v10H7z"/></svg>`;
   }
+  if (kind === "generate") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m12 2 1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Zm6.5 10 1 2.5L22 15.5l-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1 1-2.5ZM5.5 13l1.1 3.1L10 17.2l-3.4 1.2-1.1 3.1-1.1-3.1L1 17.2l3.4-1.1L5.5 13Z"/></svg>`;
+  }
+  if (kind === "warning") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 1 21h22L12 2Zm1 15h-2v2h2v-2Zm0-8h-2v6h2V9Z"/></svg>`;
+  }
+  if (kind === "chevron") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m8.6 9.4 3.4 3.4 3.4-3.4L17 11l-5 5-5-5 1.6-1.6Z"/></svg>`;
+  }
   if (kind === "edit") {
     return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m5 16.2 9.9-9.9 2.8 2.8-9.9 9.9H5v-2.8Zm11.3-11.3 1.1-1.1a1.5 1.5 0 0 1 2.1 0l.7.7a1.5 1.5 0 0 1 0 2.1l-1.1 1.1-2.8-2.8Z"/></svg>`;
   }
@@ -1018,65 +1064,90 @@ function iconSvg(kind) {
   }
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17.7 6.3A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.67 4.22 1.76L13 11h8V3l-3.3 3.3Z"/></svg>`;
 }
-function domButton(action, label, icon, enabled) {
+function domButton(action, label, icon, enabled, extraClass = "") {
   if (!enabled) return "";
-  return `<button class="ltd-icon-button" type="button" data-ltracker-dom-action="${escapeHtml(action)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${iconSvg(icon)}</button>`;
+  return `<button class="ltd-icon-button${extraClass}" type="button" data-ltracker-dom-action="${escapeHtml(action)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${iconSvg(icon)}</button>`;
 }
 function buildDomHtml(rendered, settings) {
+  if (!rendered.controlState.hasTracker && !settings.showGenerateButtonForMissingTracker) return "";
   const duration = settings.showGenerationDuration ? formatDurationMs(rendered.generationDurationMs) : null;
   const meta = [
     settings.showPresetName && rendered.presetName ? rendered.presetName : null,
     settings.showTimestamp && rendered.snapshotCreatedAt ? rendered.snapshotCreatedAt : null,
-    rendered.snapshotCreatedAt && rendered.snapshotCreatedAt !== rendered.attachedAt ? null : null
+    rendered.controlState.debugSwipeLabel
   ].filter((item) => Boolean(item)).join(" / ");
   const elapsedMarkup = settings.showGenerationDuration ? rendered.isRegenerating && rendered.generationStartedAt ? `<span class="ltd-pill" data-ltracker-elapsed data-started-at="${escapeHtml(rendered.generationStartedAt)}">${escapeHtml(currentRunningDuration(rendered.generationStartedAt) ?? "0ms")}</span>` : duration ? `<span class="ltd-pill">${escapeHtml(duration)}</span>` : "" : "";
-  const statusMarkup = rendered.isRegenerating ? `<span class="ltd-pill" data-ltracker-status>generating</span>` : "";
+  const statusMarkup = rendered.isRegenerating ? `<span class="ltd-pill" data-ltracker-status>generating</span>` : rendered.controlState.error ? `<span class="ltd-pill ltd-warning" data-ltracker-status>warning</span>` : "";
   const editedMarkup = rendered.json.includes('"editedByUser": true') ? `<span class="ltd-pill">edited</span>` : "";
-  const body = rendered.html || `<pre class="ltd-pre">${escapeHtml(rendered.textFallback)}</pre>`;
-  const actionLabel = rendered.isRegenerating ? "Cancel tracker generation" : "Regenerate tracker";
-  const actionKind = rendered.isRegenerating ? "stop" : "refresh";
+  const body = rendered.controlState.hasTracker ? rendered.html || `<pre class="ltd-pre">${escapeHtml(rendered.textFallback)}</pre>` : "";
+  const primaryAction = rendered.isRegenerating ? "toggle_regenerate" : rendered.controlState.hasTracker ? "toggle_regenerate" : "generate";
+  const actionLabel = rendered.isRegenerating ? "Cancel tracker generation" : rendered.controlState.hasTracker ? "Regenerate tracker" : "Generate tracker";
+  const actionKind = rendered.isRegenerating ? "stop" : rendered.controlState.hasTracker ? "refresh" : "generate";
   const open = settings.collapsedByDefault ? "" : " open";
   const compactClass = settings.compactCollapsedHeader ? " ltd-compact" : "";
+  const densityClass = settings.controlDensity === "comfortable" ? " ltd-comfortable" : " ltd-compact-density";
+  const placementClass = settings.controlPlacement === "inside_tracker_header" ? " ltd-inside-header" : " ltd-message-header";
+  const hasTrackerClass = rendered.controlState.hasTracker ? " ltd-has-tracker" : " ltd-missing-tracker";
+  const expandedActions = settings.showExpandedHeaderActions || !rendered.controlState.hasTracker;
+  const bodyMarkup = rendered.controlState.hasTracker ? `<div class="ltd-body">${body}</div>` : "";
+  const footerActions = settings.showBottomActionsInInlineTracker && rendered.controlState.hasTracker ? `<div class="ltd-footer-actions" style="display: flex; gap: 4px; justify-content: flex-end; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 5px 7px;">
+        ${domButton("toggle_regenerate", actionLabel, actionKind, settings.showWidgetRegenerateButton, rendered.isRegenerating ? " ltd-spinning" : "")}
+        ${domButton("edit", "View or edit tracker", "edit", settings.showEditButton)}
+        ${domButton("delete", "Delete tracker", "delete", settings.showDeleteButton)}
+      </div>` : "";
+  const titleIcon = rendered.isRegenerating ? `<span class="ltd-control-icon ltd-spinning">${iconSvg("refresh")}</span>` : rendered.controlState.error ? `<span class="ltd-control-icon ltd-warning">${iconSvg("warning")}</span>` : `<span class="ltd-control-icon">${rendered.controlState.hasTracker ? iconSvg("chevron") : iconSvg("generate")}</span>`;
+  const title = rendered.controlState.hasTracker ? "L" : "";
   return `
-<section class="ltracker-dom-tracker${compactClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}">
+<section class="ltracker-dom-tracker${compactClass}${densityClass}${placementClass}${hasTrackerClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}" data-ltracker-control-state="${escapeHtml(rendered.controlState.generationStatus)}">
   <style>
-    .ltracker-dom-tracker { margin: 0 0 6px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 8px; background: color-mix(in srgb, currentColor 4%, transparent); color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .ltracker-dom-tracker { margin: 0 0 4px; border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 8px; background: color-mix(in srgb, currentColor 3%, transparent); color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 100%; }
+    .ltracker-dom-tracker.ltd-missing-tracker { display: inline-flex; border-radius: 999px; background: color-mix(in srgb, currentColor 5%, transparent); }
     .ltracker-dom-tracker details { margin: 0; min-width: 0; }
-    .ltracker-dom-tracker summary { cursor: pointer; list-style-position: outside; min-height: 30px; padding: 4px 7px; }
+    .ltracker-dom-tracker summary { cursor: pointer; list-style: none; min-height: 26px; padding: 3px 5px; }
+    .ltracker-dom-tracker summary::-webkit-details-marker { display: none; }
     .ltd-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-    .ltd-head { display: flex; align-items: center; gap: 5px 7px; flex-wrap: wrap; min-width: 0; }
-    .ltd-title { font-weight: 700; }
-    .ltd-meta { opacity: .72; overflow-wrap: anywhere; }
-    .ltd-pill { border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 999px; padding: 1px 6px; opacity: .82; }
+    .ltd-head { display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; min-width: 0; }
+    .ltd-title { font-weight: 700; letter-spacing: 0; }
+    .ltd-control-icon { width: 18px; height: 18px; display: inline-grid; place-items: center; border-radius: 999px; background: color-mix(in srgb, currentColor 8%, transparent); }
+    .ltd-control-icon svg { width: 13px; height: 13px; transition: transform .15s ease; }
+    .ltracker-dom-tracker details[open] .ltd-control-icon svg { transform: rotate(180deg); }
+    .ltd-missing-tracker .ltd-control-icon svg, .ltd-spinning svg { transform: none; }
+    .ltd-meta { opacity: .68; overflow-wrap: anywhere; }
+    .ltd-pill { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 999px; padding: 1px 5px; opacity: .8; }
+    .ltd-warning { color: #f59e0b; }
     .ltd-actions { display: inline-flex; align-items: center; gap: 4px; }
-    .ltd-icon-button { width: 26px; height: 26px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 7%, transparent); color: inherit; cursor: pointer; padding: 0; }
-    .ltd-icon-button svg { width: 15px; height: 15px; }
+    .ltd-icon-button { width: 24px; height: 24px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 6%, transparent); color: inherit; cursor: pointer; padding: 0; }
+    .ltd-comfortable .ltd-icon-button { width: 28px; height: 28px; }
+    .ltd-icon-button svg { width: 14px; height: 14px; }
     .ltd-icon-button:hover, .ltd-icon-button:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); outline: 2px solid color-mix(in srgb, currentColor 30%, transparent); }
     .ltd-spinning svg { animation: ltd-spin .9s linear infinite; }
-    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; }
+    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; max-height: min(56vh, 540px); overflow: auto; }
     .ltd-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .ltracker-dom-tracker details:not([open]) { min-height: 0; }
+    .ltracker-dom-tracker details:not([open]) .ltd-body { display: none; }
     @keyframes ltd-spin { to { transform: rotate(360deg); } }
-    @media (max-width: 520px) { .ltd-meta { display: none; } .ltd-icon-button { width: 28px; height: 28px; } }
+    @media (max-width: 520px) { .ltd-meta { display: none; } .ltd-summary { gap: 4px; } .ltd-icon-button { width: 28px; height: 28px; } .ltd-body { max-height: 48vh; } }
   </style>
   <details${open}>
     <summary>
       <span class="ltd-summary">
         <span class="ltd-head">
-          <span class="ltd-title">LTracker</span>
+          ${titleIcon}
+          ${title ? `<span class="ltd-title">${escapeHtml(title)}</span>` : ""}
           ${meta ? `<span class="ltd-meta">${escapeHtml(meta)}</span>` : ""}
           ${elapsedMarkup}
           ${statusMarkup}
           ${editedMarkup}
         </span>
         <span class="ltd-actions">
-          ${domButton("toggle_regenerate", actionLabel, actionKind, settings.showWidgetRegenerateButton).replace("ltd-icon-button", `ltd-icon-button${rendered.isRegenerating ? " ltd-spinning" : ""}`)}
-          ${domButton("edit", "View or edit tracker", "edit", settings.showEditButton)}
-          ${domButton("delete", "Delete tracker", "delete", settings.showDeleteButton)}
+          ${domButton(primaryAction, actionLabel, actionKind, settings.showWidgetRegenerateButton || !rendered.controlState.hasTracker, rendered.isRegenerating ? " ltd-spinning" : "")}
+          ${rendered.controlState.hasTracker && expandedActions ? domButton("edit", "View or edit tracker", "edit", settings.showEditButton) : ""}
+          ${rendered.controlState.hasTracker && expandedActions ? domButton("delete", "Delete tracker", "delete", settings.showDeleteButton) : ""}
         </span>
       </span>
     </summary>
-    <div class="ltd-body">${body}</div>
+    ${bodyMarkup}
+    ${footerActions}
   </details>
 </section>`;
 }
@@ -1104,10 +1175,14 @@ function renderMessageTracker(input) {
       warnings: [],
       errors: [textFallback2]
     };
-    return {
+    const renderable2 = {
       ...base2,
-      widgetHtml: buildWidgetHtml(base2, input.settings),
-      domHtml: buildDomHtml(base2, input.settings)
+      controlState: buildControlState(base2, input.settings, false, [])
+    };
+    return {
+      ...renderable2,
+      widgetHtml: buildWidgetHtml(renderable2, input.settings),
+      domHtml: buildDomHtml(renderable2, input.settings)
     };
   }
   const warnings = [];
@@ -1158,10 +1233,14 @@ function renderMessageTracker(input) {
     warnings,
     errors
   };
-  return {
+  const renderable = {
     ...base,
-    widgetHtml: buildWidgetHtml(base, input.settings),
-    domHtml: buildDomHtml(base, input.settings)
+    controlState: buildControlState(base, input.settings, true, errors)
+  };
+  return {
+    ...renderable,
+    widgetHtml: buildWidgetHtml(renderable, input.settings),
+    domHtml: buildDomHtml(renderable, input.settings)
   };
 }
 function buildMessageTrackerHistory(input) {
@@ -1633,6 +1712,12 @@ var DEFAULT_SETTINGS = {
     allowInlineStyles: true,
     deduplicateRenderWarnings: true,
     showRenderWarningsInDiagnosticsOnly: true,
+    showDebugSwipeKey: false,
+    showGenerateButtonForMissingTracker: true,
+    controlDensity: "compact",
+    controlPlacement: "message_header",
+    showExpandedHeaderActions: true,
+    showBottomActionsInInlineTracker: false,
     collapsedByDefault: true,
     compactCollapsedHeader: true,
     showTimestamp: true,
@@ -1669,6 +1754,8 @@ function repairSettings(value) {
   const messageDisplayRenderMode = messageDisplaySource.renderMode === "compact_text" || messageDisplaySource.renderMode === "pretty_json" || messageDisplaySource.renderMode === "html_template" ? messageDisplaySource.renderMode : DEFAULT_SETTINGS.messageDisplay.renderMode;
   const messageDisplayAttachmentMode = messageDisplaySource.attachmentMode === "embedded_tracker_tag" || messageDisplaySource.attachmentMode === "both" || messageDisplaySource.attachmentMode === "sidecar_snapshot" ? messageDisplaySource.attachmentMode : DEFAULT_SETTINGS.messageDisplay.attachmentMode;
   const messageDisplayDisplayMode = messageDisplaySource.displayMode === "inline_button_popover" || messageDisplaySource.displayMode === "drawer_history_only" || messageDisplaySource.displayMode === "inline_full" ? messageDisplaySource.displayMode : DEFAULT_SETTINGS.messageDisplay.displayMode;
+  const messageDisplayControlDensity = messageDisplaySource.controlDensity === "comfortable" || messageDisplaySource.controlDensity === "compact" ? messageDisplaySource.controlDensity : DEFAULT_SETTINGS.messageDisplay.controlDensity;
+  const messageDisplayControlPlacement = messageDisplaySource.controlPlacement === "inside_tracker_header" || messageDisplaySource.controlPlacement === "message_header" ? messageDisplaySource.controlPlacement : DEFAULT_SETTINGS.messageDisplay.controlPlacement;
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -1749,6 +1836,12 @@ function repairSettings(value) {
       allowInlineStyles: typeof messageDisplaySource.allowInlineStyles === "boolean" ? messageDisplaySource.allowInlineStyles : DEFAULT_SETTINGS.messageDisplay.allowInlineStyles,
       deduplicateRenderWarnings: typeof messageDisplaySource.deduplicateRenderWarnings === "boolean" ? messageDisplaySource.deduplicateRenderWarnings : DEFAULT_SETTINGS.messageDisplay.deduplicateRenderWarnings,
       showRenderWarningsInDiagnosticsOnly: typeof messageDisplaySource.showRenderWarningsInDiagnosticsOnly === "boolean" ? messageDisplaySource.showRenderWarningsInDiagnosticsOnly : DEFAULT_SETTINGS.messageDisplay.showRenderWarningsInDiagnosticsOnly,
+      showDebugSwipeKey: typeof messageDisplaySource.showDebugSwipeKey === "boolean" ? messageDisplaySource.showDebugSwipeKey : DEFAULT_SETTINGS.messageDisplay.showDebugSwipeKey,
+      showGenerateButtonForMissingTracker: typeof messageDisplaySource.showGenerateButtonForMissingTracker === "boolean" ? messageDisplaySource.showGenerateButtonForMissingTracker : DEFAULT_SETTINGS.messageDisplay.showGenerateButtonForMissingTracker,
+      controlDensity: messageDisplayControlDensity,
+      controlPlacement: messageDisplayControlPlacement,
+      showExpandedHeaderActions: typeof messageDisplaySource.showExpandedHeaderActions === "boolean" ? messageDisplaySource.showExpandedHeaderActions : DEFAULT_SETTINGS.messageDisplay.showExpandedHeaderActions,
+      showBottomActionsInInlineTracker: typeof messageDisplaySource.showBottomActionsInInlineTracker === "boolean" ? messageDisplaySource.showBottomActionsInInlineTracker : DEFAULT_SETTINGS.messageDisplay.showBottomActionsInInlineTracker,
       collapsedByDefault: typeof messageDisplaySource.collapsedByDefault === "boolean" ? messageDisplaySource.collapsedByDefault : DEFAULT_SETTINGS.messageDisplay.collapsedByDefault,
       compactCollapsedHeader: typeof messageDisplaySource.compactCollapsedHeader === "boolean" ? messageDisplaySource.compactCollapsedHeader : DEFAULT_SETTINGS.messageDisplay.compactCollapsedHeader,
       showTimestamp: typeof messageDisplaySource.showTimestamp === "boolean" ? messageDisplaySource.showTimestamp : DEFAULT_SETTINGS.messageDisplay.showTimestamp,
@@ -1927,6 +2020,7 @@ function isFrontendMessage(payload) {
     "import_preset",
     "validate_preset",
     "render_template",
+    "generate_message_tracker",
     "regenerate_message_tracker",
     "cancel_tracker_generation",
     "delete_message_tracker",
@@ -1948,6 +2042,7 @@ function isFrontendMessage(payload) {
     "import_preset",
     "validate_preset",
     "render_template",
+    "generate_message_tracker",
     "regenerate_message_tracker",
     "cancel_tracker_generation",
     "delete_message_tracker",
@@ -1959,6 +2054,7 @@ function isFrontendMessage(payload) {
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
   if (payload.type === "regenerate_message_tracker" && (typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
+  if (payload.type === "generate_message_tracker" && (typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
   if (payload.type === "cancel_tracker_generation" && ("jobId" in payload && payload.jobId !== null && payload.jobId !== void 0 && typeof payload.jobId !== "string")) return false;
   if (payload.type === "cancel_tracker_generation" && ("messageId" in payload && payload.messageId !== null && payload.messageId !== void 0 && typeof payload.messageId !== "string")) return false;
   if (payload.type === "cancel_tracker_generation" && ("swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
@@ -2085,7 +2181,18 @@ function defaultDiagnostics(chatId) {
     lastTagInterceptAt: null,
     lastTagInterceptMessageId: null,
     lastTagInterceptSwipeKey: null,
-    lastTagInterceptError: null
+    lastTagInterceptError: null,
+    lastMessageControlRenderAt: null,
+    lastMessageControlMessageId: null,
+    lastMessageControlSwipeKey: null,
+    lastMessageControlState: null,
+    lastGenerateButtonMessageId: null,
+    lastGenerateButtonClickedAt: null,
+    lastInlineActionClicked: null,
+    lastInlineActionAt: null,
+    lastInlineActionError: null,
+    nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
+    nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON
   };
 }
 function stringOrNull2(value) {
@@ -2135,6 +2242,9 @@ function messageDisplayRenderer(value) {
 }
 function mountPointStrategy(value) {
   return value === "official_message_body" || value === "official_message_element" || value === "bubble_adapter" || value === "widget_fallback" || value === "drawer_only" ? value : null;
+}
+function inlineActionOrNull(value) {
+  return value === "generate" || value === "regenerate" || value === "cancel" || value === "edit" || value === "delete" || value === "toggle" ? value : null;
 }
 function activeTrackerJobsOrEmpty(value) {
   if (!Array.isArray(value)) return [];
@@ -2265,7 +2375,18 @@ function repairDiagnostics(value, chatId) {
     lastTagInterceptAt: stringOrNull2(value.lastTagInterceptAt),
     lastTagInterceptMessageId: stringOrNull2(value.lastTagInterceptMessageId),
     lastTagInterceptSwipeKey: stringOrNull2(value.lastTagInterceptSwipeKey),
-    lastTagInterceptError: stringOrNull2(value.lastTagInterceptError)
+    lastTagInterceptError: stringOrNull2(value.lastTagInterceptError),
+    lastMessageControlRenderAt: stringOrNull2(value.lastMessageControlRenderAt),
+    lastMessageControlMessageId: stringOrNull2(value.lastMessageControlMessageId),
+    lastMessageControlSwipeKey: stringOrNull2(value.lastMessageControlSwipeKey),
+    lastMessageControlState: stringOrNull2(value.lastMessageControlState),
+    lastGenerateButtonMessageId: stringOrNull2(value.lastGenerateButtonMessageId),
+    lastGenerateButtonClickedAt: stringOrNull2(value.lastGenerateButtonClickedAt),
+    lastInlineActionClicked: inlineActionOrNull(value.lastInlineActionClicked),
+    lastInlineActionAt: stringOrNull2(value.lastInlineActionAt),
+    lastInlineActionError: stringOrNull2(value.lastInlineActionError),
+    nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
+    nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON
   };
 }
 async function getSettings(userId) {
@@ -2463,6 +2584,50 @@ function activeTrackerJobDiagnostics(chatId) {
     startedAt: job.startedAt
   }));
 }
+async function buildMessageControlCandidates(chatId, settings, latestChatSnapshot, preset, messageSnapshotIndex, activeWidgetJobs, selectedSwipeIdentities) {
+  if (!chatId || !settings.messageDisplay.showGenerateButtonForMissingTracker) return [];
+  const messages = await readChatMessages(chatId);
+  const existingKeys = new Set(messageSnapshotIndex.map((entry) => swipeIdentityKey(entry)));
+  const recent = messages.slice(-Math.max(settings.recentMessageLimit, 12));
+  const entries = [];
+  for (const message of recent) {
+    if (message.is_user) continue;
+    const identity = selectedSwipeIdentities[message.id] ?? deriveSwipeTrackerIdentity(chatId, message);
+    const key = swipeIdentityKey(identity);
+    if (existingKeys.has(key)) continue;
+    const activeJob = activeWidgetJobs[key] ?? null;
+    const indexEntry = {
+      messageId: message.id,
+      messageIndex: typeof message.index_in_chat === "number" && Number.isFinite(message.index_in_chat) ? Math.round(message.index_in_chat) : null,
+      swipeKey: identity.swipeKey,
+      swipeIndex: identity.swipeIndex,
+      swipeId: identity.swipeId,
+      swipeContentHash: identity.swipeContentHash,
+      swipeKeySource: identity.swipeKeySource,
+      createdAt: nowIso(),
+      presetId: preset.id,
+      presetName: preset.name,
+      storageKey: `missing:${chatId}:${message.id}:${identity.swipeKey}`
+    };
+    entries.push({
+      indexEntry,
+      snapshot: null,
+      rendered: renderMessageTracker({
+        messageId: message.id,
+        messageIndex: indexEntry.messageIndex,
+        attachedSnapshot: null,
+        latestChatSnapshot,
+        preset,
+        settings: settings.messageDisplay,
+        swipeIdentity: identity,
+        isRegenerating: Boolean(activeJob),
+        activeJobId: activeJob?.jobId ?? null,
+        activeJobStartedAt: activeJob?.startedAt ?? null
+      })
+    });
+  }
+  return entries;
+}
 function resolveMessageWidgetPlacement(requested, settings) {
   if (settings?.messageDisplay.useDomInjection) {
     return {
@@ -2521,6 +2686,18 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     activeWidgetJobs,
     selectedSwipeIdentities
   });
+  const messageControlCandidates = await buildMessageControlCandidates(
+    chatId,
+    settings,
+    snapshot,
+    presetState.activePreset,
+    messageSnapshotIndex,
+    activeWidgetJobs,
+    selectedSwipeIdentities
+  ).catch((error2) => {
+    spindle.log.warn(`LTracker could not build message control candidates: ${errorMessage(error2)}`);
+    return [];
+  });
   const latestMessageSnapshot = await loadMessageSnapshot(
     chatId,
     diagnostics.latestAttachedMessageId,
@@ -2548,6 +2725,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     injectionPreview,
     renderPreview,
     messageSnapshotHistory,
+    messageControlCandidates,
     presets: presetState.presets,
     activePreset: presetState.activePreset,
     activePresetState: presetState.activePresetState,
@@ -2578,7 +2756,9 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       activeTrackerJobs: activeTrackerJobDiagnostics(chatId),
       messageWidgetPlacementResolved: placement.resolved,
       messageWidgetPlacementReason: placement.reason,
-      messageDisplayRenderer: messageDisplayRenderer2
+      messageDisplayRenderer: messageDisplayRenderer2,
+      nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
+      nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON
     }
   };
 }
@@ -3303,6 +3483,11 @@ async function generateTracker(chatId, userId, trigger) {
         lastAutoSkippedReason: "Chat changed before the auto tracker result was saved.",
         lastError: null
       };
+      if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+      diagnostics = {
+        ...diagnostics,
+        activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
+      };
       await persistDiagnostics(diagnostics, userId);
       await sendState(resolvedChatId, userId, "idle", null, requestId);
       return;
@@ -3401,6 +3586,11 @@ async function generateTracker(chatId, userId, trigger) {
         };
       }
     }
+    if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+    diagnostics = {
+      ...diagnostics,
+      activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
+    };
     await persistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "idle", null, requestId);
   } catch (error) {
@@ -3439,6 +3629,11 @@ async function generateTracker(chatId, userId, trigger) {
           activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
         };
       }
+      if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+      diagnostics = {
+        ...diagnostics,
+        activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
+      };
       await tryPersistDiagnostics(diagnostics, userId);
       await sendState(resolvedChatId, userId, "idle", null, requestId);
       return;
@@ -3464,6 +3659,11 @@ async function generateTracker(chatId, userId, trigger) {
         activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
       };
     }
+    if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+    diagnostics = {
+      ...diagnostics,
+      activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
+    };
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "error", currentError, requestId);
   } finally {
@@ -4110,6 +4310,10 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "render_template") {
         await renderTemplatePreview(chatId, userId, payload.requestId, payload.source);
+        return;
+      }
+      if (payload.type === "generate_message_tracker") {
+        await regenerateMessageTracker(payload, userId);
         return;
       }
       if (payload.type === "regenerate_message_tracker") {
