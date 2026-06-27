@@ -183,6 +183,7 @@ function emptyState(): FrontendState {
     status: "idle",
     chatId: null,
     snapshot: null,
+    latestMessageSnapshot: null,
     error: null,
     permissions: {
       generation: false,
@@ -205,6 +206,7 @@ function emptyState(): FrontendState {
       },
       lastJobId: null,
       lastRequestId: null,
+      lastGenerationSource: null,
       lastGenerationStartedAt: null,
       lastGenerationCompletedAt: null,
       lastGenerationDurationMs: null,
@@ -216,6 +218,19 @@ function emptyState(): FrontendState {
       lastPromptPreview: null,
       lastError: null,
       lastCancellation: null,
+      autoSubscriptionActive: false,
+      lastAutoEventAt: null,
+      lastAutoEventType: null,
+      lastAutoSkippedReason: null,
+      lastAutoScheduledAt: null,
+      lastAutoTriggeredAt: null,
+      lastAutoSourceMessageId: null,
+      lastAutoSourceMessageIndex: null,
+      lastAutoGenerationId: null,
+      latestAttachedMessageId: null,
+      latestAttachedMessageIndex: null,
+      latestAttachedSnapshotAt: null,
+      latestAttachedSnapshotStorageKey: null,
     },
   };
 }
@@ -336,6 +351,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const input = tab.root.querySelector<HTMLInputElement>(`[data-setting="${name}"]`);
       return input ? input.checked : state.settings[name];
     };
+    const autoNumberValue = (name: keyof Pick<LTrackerSettings["auto"], "autoDebounceMs" | "skipFirstMessages">): number => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.auto[name];
+    };
+    const autoBooleanValue = (name: keyof Omit<LTrackerSettings["auto"], "autoDebounceMs" | "skipFirstMessages">): boolean => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-setting="${name}"]`);
+      return input ? input.checked : state.settings.auto[name];
+    };
     return {
       schemaVersion: SETTINGS_SCHEMA_VERSION,
       recentMessageLimit: numberValue("recentMessageLimit"),
@@ -343,6 +366,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       generationTimeoutMs: numberValue("generationTimeoutMs"),
       saveRawOutput: booleanValue("saveRawOutput"),
       savePromptPreview: booleanValue("savePromptPreview"),
+      auto: {
+        autoModeEnabled: autoBooleanValue("autoModeEnabled"),
+        autoDebounceMs: autoNumberValue("autoDebounceMs"),
+        skipFirstMessages: autoNumberValue("skipFirstMessages"),
+        triggerAfterAssistantMessages: autoBooleanValue("triggerAfterAssistantMessages"),
+        triggerAfterUserMessages: autoBooleanValue("triggerAfterUserMessages"),
+        attachSnapshotToMessage: autoBooleanValue("attachSnapshotToMessage"),
+        onlyWhenChatActive: autoBooleanValue("onlyWhenChatActive"),
+      },
     };
   }
 
@@ -389,6 +421,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const prompt = diagnostics.lastPromptPreview;
     const parsedTracker = diagnostics.lastParsedTracker;
     const error = state.error ?? diagnostics.lastError;
+    const autoStatus = state.settings.auto.autoModeEnabled
+      ? diagnostics.autoSubscriptionActive ? "Armed" : "Enabled, listener inactive"
+      : "Disabled";
+    const latestMessageSnapshotText = state.latestMessageSnapshot
+      ? JSON.stringify(state.latestMessageSnapshot, null, 2)
+      : "No message-attached tracker snapshot saved yet.";
     const permissionText = [
       state.permissions.generation ? "generation granted" : "generation missing",
       state.permissions.chats ? "chats granted" : "chats missing",
@@ -440,6 +478,34 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               <input type="checkbox" data-setting="savePromptPreview"${checked(state.settings.savePromptPreview)}>
               Save prompt preview
             </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="autoModeEnabled"${checked(state.settings.auto.autoModeEnabled)}>
+              Auto mode
+            </label>
+            <label class="ltracker-field">
+              Auto debounce ms
+              <input type="number" min="250" max="30000" step="250" data-setting="autoDebounceMs" value="${escapeHtml(String(state.settings.auto.autoDebounceMs))}">
+            </label>
+            <label class="ltracker-field">
+              Skip first messages
+              <input type="number" min="0" max="100" step="1" data-setting="skipFirstMessages" value="${escapeHtml(String(state.settings.auto.skipFirstMessages))}">
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="triggerAfterAssistantMessages"${checked(state.settings.auto.triggerAfterAssistantMessages)}>
+              Trigger after assistant
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="triggerAfterUserMessages"${checked(state.settings.auto.triggerAfterUserMessages)}>
+              Trigger after user
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="attachSnapshotToMessage"${checked(state.settings.auto.attachSnapshotToMessage)}>
+              Attach snapshot to message
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="onlyWhenChatActive"${checked(state.settings.auto.onlyWhenChatActive)}>
+              Active chat only
+            </label>
           </div>
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="save-settings">Save Settings</button>
@@ -453,10 +519,24 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Extension version", state.version)}
             ${renderRow("Active chat id", state.chatId)}
             ${renderRow("Current status", state.status)}
+            ${renderRow("Auto mode", autoStatus)}
             ${renderRow("Permission status", permissionText)}
+            ${renderRow("Last generation source", diagnostics.lastGenerationSource)}
             ${renderRow("Last generation started", diagnostics.lastGenerationStartedAt)}
             ${renderRow("Last generation completed", diagnostics.lastGenerationCompletedAt)}
             ${renderRow("Last duration ms", diagnostics.lastGenerationDurationMs)}
+            ${renderRow("Last auto event", diagnostics.lastAutoEventAt)}
+            ${renderRow("Last auto event type", diagnostics.lastAutoEventType)}
+            ${renderRow("Last auto scheduled", diagnostics.lastAutoScheduledAt)}
+            ${renderRow("Last auto triggered", diagnostics.lastAutoTriggeredAt)}
+            ${renderRow("Last auto skipped", diagnostics.lastAutoSkippedReason)}
+            ${renderRow("Last auto source message", diagnostics.lastAutoSourceMessageId)}
+            ${renderRow("Last auto source index", diagnostics.lastAutoSourceMessageIndex)}
+            ${renderRow("Last auto generation id", diagnostics.lastAutoGenerationId)}
+            ${renderRow("Latest attached message", diagnostics.latestAttachedMessageId)}
+            ${renderRow("Latest attached index", diagnostics.latestAttachedMessageIndex)}
+            ${renderRow("Latest attached at", diagnostics.latestAttachedSnapshotAt)}
+            ${renderRow("Latest attached storage key", diagnostics.latestAttachedSnapshotStorageKey)}
             ${renderRow("Messages read", diagnostics.lastMessagesRead)}
             ${renderRow("Source message range", diagnostics.lastSourceMessageRange)}
             ${renderRow("Source message ids", diagnostics.lastSourceMessageIds.join(", "))}
@@ -499,7 +579,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             <button class="ltracker-button" type="button" data-action="copy-raw" ${disabled(!rawOutput)}>
               Copy Last Raw Output
             </button>
+            <button class="ltracker-button" type="button" data-action="copy-message-snapshot" ${disabled(!state.latestMessageSnapshot)}>
+              Copy Message Snapshot
+            </button>
           </div>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Latest message-attached snapshot</span>
+          <pre class="ltracker-json">${escapeHtml(latestMessageSnapshotText)}</pre>
         </section>
 
         <section class="ltracker-panel">
@@ -525,6 +613,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (action === "copy-prompt") void copyText(state.diagnostics.lastPromptPreview, "prompt");
     if (action === "copy-raw") void copyText(state.diagnostics.lastRawOutput, "raw output");
+    if (action === "copy-message-snapshot") {
+      void copyText(
+        state.latestMessageSnapshot ? JSON.stringify(state.latestMessageSnapshot, null, 2) : null,
+        "message snapshot",
+      );
+    }
   };
 
   tab.root.addEventListener("click", onClick);

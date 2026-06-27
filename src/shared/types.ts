@@ -1,10 +1,12 @@
-export const EXTENSION_VERSION = "0.02";
+export const EXTENSION_VERSION = "0.03";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
 
 export type TrackerStatus = "idle" | "generating" | "error";
 export type TranscriptRole = "user" | "assistant";
+export type TrackerGenerationSourceKind = "manual" | "auto";
+export type AutoTriggerEventType = "GENERATION_ENDED" | "MESSAGE_SENT";
 export type LTrackerErrorStage =
   | "active_chat"
   | "read_messages"
@@ -36,6 +38,44 @@ export interface TrackerSnapshot {
   data: Record<string, unknown>;
 }
 
+export interface ManualTrackerTriggerSource {
+  kind: "manual";
+  requestId: string;
+}
+
+export interface AutoTrackerTriggerSource {
+  kind: "auto";
+  requestId: string;
+  eventType: AutoTriggerEventType;
+  sourceMessageId: string;
+  sourceMessageIndex: number | null;
+  generationId: string | null;
+  generationType: string | null;
+}
+
+export type TrackerTriggerSource = ManualTrackerTriggerSource | AutoTrackerTriggerSource;
+
+export interface MessageAttachedSnapshot {
+  schemaVersion: typeof STORAGE_SCHEMA_VERSION;
+  extensionVersion: string;
+  chatId: string;
+  messageId: string;
+  messageIndex: number | null;
+  trigger: AutoTrackerTriggerSource;
+  snapshot: TrackerSnapshot;
+  attachedAt: string;
+}
+
+export interface LTrackerAutoSettings {
+  autoModeEnabled: boolean;
+  autoDebounceMs: number;
+  skipFirstMessages: number;
+  triggerAfterAssistantMessages: boolean;
+  triggerAfterUserMessages: boolean;
+  attachSnapshotToMessage: boolean;
+  onlyWhenChatActive: boolean;
+}
+
 export interface LTrackerSettings {
   schemaVersion: typeof SETTINGS_SCHEMA_VERSION;
   recentMessageLimit: number;
@@ -43,6 +83,7 @@ export interface LTrackerSettings {
   generationTimeoutMs: number;
   saveRawOutput: boolean;
   savePromptPreview: boolean;
+  auto: LTrackerAutoSettings;
 }
 
 export interface LTrackerError {
@@ -76,6 +117,7 @@ export interface LTrackerDiagnostics {
   buildInfo: LTrackerBuildInfo;
   lastJobId: string | null;
   lastRequestId: string | null;
+  lastGenerationSource: TrackerGenerationSourceKind | null;
   lastGenerationStartedAt: string | null;
   lastGenerationCompletedAt: string | null;
   lastGenerationDurationMs: number | null;
@@ -87,6 +129,19 @@ export interface LTrackerDiagnostics {
   lastPromptPreview: string | null;
   lastError: LTrackerError | null;
   lastCancellation: LTrackerCancellation | null;
+  autoSubscriptionActive: boolean;
+  lastAutoEventAt: string | null;
+  lastAutoEventType: AutoTriggerEventType | null;
+  lastAutoSkippedReason: string | null;
+  lastAutoScheduledAt: string | null;
+  lastAutoTriggeredAt: string | null;
+  lastAutoSourceMessageId: string | null;
+  lastAutoSourceMessageIndex: number | null;
+  lastAutoGenerationId: string | null;
+  latestAttachedMessageId: string | null;
+  latestAttachedMessageIndex: number | null;
+  latestAttachedSnapshotAt: string | null;
+  latestAttachedSnapshotStorageKey: string | null;
 }
 
 export interface PermissionState {
@@ -100,6 +155,7 @@ export interface FrontendState {
   status: TrackerStatus;
   chatId: string | null;
   snapshot: TrackerSnapshot | null;
+  latestMessageSnapshot: MessageAttachedSnapshot | null;
   error: LTrackerError | null;
   permissions: PermissionState;
   settings: LTrackerSettings;

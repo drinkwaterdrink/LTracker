@@ -1,8 +1,13 @@
 import type {
   ChatMessageDTO,
+  GenerationEndedPayloadDTO,
   LlmMessageDTO,
   SpindleAPI,
 } from "lumiverse-spindle-types";
+import {
+  isQuietGenerationType,
+  shouldScheduleAutoTracker,
+} from "./shared/auto";
 import { parseTrackerJson } from "./shared/parser";
 import {
   DEFAULT_SETTINGS,
@@ -10,6 +15,7 @@ import {
 } from "./shared/settings";
 import {
   diagnosticsPath,
+  messageSnapshotPath,
   SETTINGS_PATH,
   snapshotPath,
 } from "./shared/storageKeys";
@@ -22,6 +28,8 @@ import {
   SETTINGS_SCHEMA_VERSION,
   SPINDLE_TYPES_VERSION,
   STORAGE_SCHEMA_VERSION,
+  type AutoTriggerEventType,
+  type AutoTrackerTriggerSource,
   type BackendMessage,
   type FrontendMessage,
   type FrontendState,
@@ -31,9 +39,13 @@ import {
   type LTrackerError,
   type LTrackerErrorStage,
   type LTrackerSettings,
+  type MessageAttachedSnapshot,
   type PermissionState,
+  type TrackerGenerationSourceKind,
   type TrackerSnapshot,
+  type TrackerTriggerSource,
   type TranscriptMessage,
+  type TranscriptRole,
 } from "./shared/types";
 
 declare const spindle: SpindleAPI;
@@ -42,6 +54,17 @@ interface ActiveJob {
   controller: AbortController;
   jobId: string;
   requestId: string;
+  sourceKind: TrackerGenerationSourceKind;
+  cancelReason?: string;
+}
+
+interface PendingAutoJob {
+  timer: ReturnType<typeof setTimeout>;
+  chatId: string;
+  userId: string;
+  requestId: string;
+  trigger: AutoTrackerTriggerSource;
+  scheduledAt: string;
 }
 
 class LTrackerStageError extends Error {
@@ -65,10 +88,19 @@ const BUILD_INFO: LTrackerBuildInfo = {
 };
 
 const activeJobs = new Map<string, ActiveJob>();
+const pendingAutoJobs = new Map<string, PendingAutoJob>();
+const activeChatByUser = new Map<string, string | null>();
+const usersByChat = new Map<string, Set<string>>();
+const eventCleanups: Array<() => void> = [];
+let autoSubscriptionsActive = false;
 let disposed = false;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
 }
 
 function errorMessage(error: unknown): string {
@@ -91,7 +123,7 @@ function diagnosticError(error: unknown, fallbackStage: LTrackerErrorStage): LTr
   const result: LTrackerError = {
     stage,
     message: errorMessage(error),
-    createdAt: new Date().toISOString(),
+    createdAt: nowIso(),
   };
   if (detail) result.detail = detail;
   return result;
@@ -138,6 +170,7 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     buildInfo: BUILD_INFO,
     lastJobId: null,
     lastRequestId: null,
+    lastGenerationSource: null,
     lastGenerationStartedAt: null,
     lastGenerationCompletedAt: null,
     lastGenerationDurationMs: null,
@@ -149,6 +182,19 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastPromptPreview: null,
     lastError: null,
     lastCancellation: null,
+    autoSubscriptionActive: autoSubscriptionsActive,
+    lastAutoEventAt: null,
+    lastAutoEventType: null,
+    lastAutoSkippedReason: null,
+    lastAutoScheduledAt: null,
+    lastAutoTriggeredAt: null,
+    lastAutoSourceMessageId: null,
+    lastAutoSourceMessageIndex: null,
+    lastAutoGenerationId: null,
+    latestAttachedMessageId: null,
+    latestAttachedMessageIndex: null,
+    latestAttachedSnapshotAt: null,
+    latestAttachedSnapshotStorageKey: null,
   };
 }
 
@@ -160,6 +206,10 @@ function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -168,12 +218,20 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
   return isRecord(value) && !Array.isArray(value) ? value : null;
 }
 
+function sourceKindOrNull(value: unknown): TrackerGenerationSourceKind | null {
+  return value === "manual" || value === "auto" ? value : null;
+}
+
+function autoEventTypeOrNull(value: unknown): AutoTriggerEventType | null {
+  return value === "GENERATION_ENDED" || value === "MESSAGE_SENT" ? value : null;
+}
+
 function errorOrNull(value: unknown): LTrackerError | null {
   if (!isRecord(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
   const error: LTrackerError = {
     stage: value.stage as LTrackerErrorStage,
     message: value.message,
-    createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString(),
+    createdAt: typeof value.createdAt === "string" ? value.createdAt : nowIso(),
   };
   if (typeof value.detail === "string") error.detail = value.detail;
   return error;
@@ -190,7 +248,7 @@ function cancellationOrNull(value: unknown): LTrackerCancellation | null {
     jobId: value.jobId,
     requestId: value.requestId,
     reason: value.reason,
-    createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString(),
+    createdAt: typeof value.createdAt === "string" ? value.createdAt : nowIso(),
   };
 }
 
@@ -202,6 +260,7 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
     lastJobId: stringOrNull(value.lastJobId),
     lastRequestId: stringOrNull(value.lastRequestId),
+    lastGenerationSource: sourceKindOrNull(value.lastGenerationSource),
     lastGenerationStartedAt: stringOrNull(value.lastGenerationStartedAt),
     lastGenerationCompletedAt: stringOrNull(value.lastGenerationCompletedAt),
     lastGenerationDurationMs: numberOrNull(value.lastGenerationDurationMs),
@@ -215,6 +274,19 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastPromptPreview: stringOrNull(value.lastPromptPreview),
     lastError: errorOrNull(value.lastError),
     lastCancellation: cancellationOrNull(value.lastCancellation),
+    autoSubscriptionActive: autoSubscriptionsActive,
+    lastAutoEventAt: stringOrNull(value.lastAutoEventAt),
+    lastAutoEventType: autoEventTypeOrNull(value.lastAutoEventType),
+    lastAutoSkippedReason: stringOrNull(value.lastAutoSkippedReason),
+    lastAutoScheduledAt: stringOrNull(value.lastAutoScheduledAt),
+    lastAutoTriggeredAt: stringOrNull(value.lastAutoTriggeredAt),
+    lastAutoSourceMessageId: stringOrNull(value.lastAutoSourceMessageId),
+    lastAutoSourceMessageIndex: nonNegativeInteger(value.lastAutoSourceMessageIndex),
+    lastAutoGenerationId: stringOrNull(value.lastAutoGenerationId),
+    latestAttachedMessageId: stringOrNull(value.latestAttachedMessageId),
+    latestAttachedMessageIndex: nonNegativeInteger(value.latestAttachedMessageIndex),
+    latestAttachedSnapshotAt: stringOrNull(value.latestAttachedSnapshotAt),
+    latestAttachedSnapshotStorageKey: stringOrNull(value.latestAttachedSnapshotStorageKey),
   };
 }
 
@@ -249,6 +321,18 @@ async function loadSnapshot(chatId: string | null, userId: string): Promise<Trac
   });
 }
 
+async function loadMessageSnapshot(
+  chatId: string | null,
+  messageId: string | null,
+  userId: string,
+): Promise<MessageAttachedSnapshot | null> {
+  if (!chatId || !messageId) return null;
+  return spindle.userStorage.getJson<MessageAttachedSnapshot | null>(messageSnapshotPath(chatId, messageId), {
+    fallback: null,
+    userId,
+  });
+}
+
 async function loadDiagnostics(chatId: string | null, userId: string): Promise<LTrackerDiagnostics> {
   if (!chatId) return defaultDiagnostics(null);
   const raw = await spindle.userStorage.getJson<unknown>(diagnosticsPath(chatId), {
@@ -260,7 +344,10 @@ async function loadDiagnostics(chatId: string | null, userId: string): Promise<L
 
 async function persistDiagnostics(diagnostics: LTrackerDiagnostics, userId: string): Promise<void> {
   if (!diagnostics.chatId) return;
-  await spindle.userStorage.setJson(diagnosticsPath(diagnostics.chatId), diagnostics, {
+  await spindle.userStorage.setJson(diagnosticsPath(diagnostics.chatId), {
+    ...diagnostics,
+    autoSubscriptionActive: autoSubscriptionsActive,
+  }, {
     indent: 2,
     userId,
   });
@@ -283,12 +370,18 @@ async function buildState(
   const settings = await getSettings(userId);
   const diagnostics = await loadDiagnostics(chatId, userId);
   const snapshot = await loadSnapshot(chatId, userId);
+  const latestMessageSnapshot = await loadMessageSnapshot(
+    chatId,
+    diagnostics.latestAttachedMessageId,
+    userId,
+  );
   const stateError = error ?? diagnostics.lastError;
   return {
     version: EXTENSION_VERSION,
     status: status ?? diagnostics.status,
     chatId,
     snapshot,
+    latestMessageSnapshot,
     error: stateError,
     permissions: permissionState(),
     settings,
@@ -296,6 +389,7 @@ async function buildState(
       ...diagnostics,
       status: status ?? diagnostics.status,
       lastError: stateError,
+      autoSubscriptionActive: autoSubscriptionsActive,
     },
   };
 }
@@ -332,12 +426,16 @@ async function resolveActiveChatId(chatId: string | null, userId: string): Promi
   return active.id;
 }
 
-async function getRecentMessages(chatId: string, settings: LTrackerSettings): Promise<ChatMessageDTO[]> {
-  ensurePermission("chatMutation", "chat_mutation is required to read recent chat messages");
+async function readChatMessages(chatId: string): Promise<ChatMessageDTO[]> {
+  ensurePermission("chatMutation", "chat_mutation is required to read chat messages");
   if (!spindle.chat?.getMessages) {
     throw new Error("Lumiverse chat message API is unavailable.");
   }
-  const messages = await spindle.chat.getMessages(chatId);
+  return spindle.chat.getMessages(chatId);
+}
+
+async function getRecentMessages(chatId: string, settings: LTrackerSettings): Promise<ChatMessageDTO[]> {
+  const messages = await readChatMessages(chatId);
   return messages.slice(-settings.recentMessageLimit);
 }
 
@@ -424,6 +522,13 @@ async function saveSnapshot(snapshot: TrackerSnapshot, userId: string): Promise<
   });
 }
 
+async function saveMessageAttachedSnapshot(snapshot: MessageAttachedSnapshot, userId: string): Promise<void> {
+  await spindle.userStorage.setJson(messageSnapshotPath(snapshot.chatId, snapshot.messageId), snapshot, {
+    indent: 2,
+    userId,
+  });
+}
+
 function promptPreview(messages: LlmMessageDTO[]): string {
   return messages.map((message) => {
     const content = typeof message.content === "string"
@@ -447,15 +552,328 @@ function isCurrentJob(chatId: string, jobId: string): boolean {
   return activeJobs.get(chatId)?.jobId === jobId;
 }
 
-async function generateTracker(chatId: string | null, userId: string, requestId: string): Promise<void> {
+function userChatKey(userId: string, chatId: string): string {
+  return `${userId}:${chatId}`;
+}
+
+function messageRole(message: ChatMessageDTO): TranscriptRole {
+  return message.is_user ? "user" : "assistant";
+}
+
+function createManualTrigger(requestId: string): TrackerTriggerSource {
+  return { kind: "manual", requestId };
+}
+
+function createAutoTrigger(input: {
+  eventType: AutoTriggerEventType;
+  requestId: string;
+  message: ChatMessageDTO;
+  generationId: string | null;
+  generationType: string | null;
+}): AutoTrackerTriggerSource {
+  return {
+    kind: "auto",
+    requestId: input.requestId,
+    eventType: input.eventType,
+    sourceMessageId: input.message.id,
+    sourceMessageIndex: input.message.index_in_chat,
+    generationId: input.generationId ?? null,
+    generationType: input.generationType ?? null,
+  };
+}
+
+async function markAutoSkipped(
+  chatId: string,
+  userId: string,
+  trigger: AutoTrackerTriggerSource,
+  reason: string,
+  eventAt: string | null = null,
+): Promise<void> {
+  const diagnostics = {
+    ...await loadDiagnostics(chatId, userId),
+    status: activeJobs.has(chatId) ? "generating" as const : "idle" as const,
+    lastAutoEventAt: eventAt ?? nowIso(),
+    lastAutoEventType: trigger.eventType,
+    lastAutoSkippedReason: reason,
+    lastAutoScheduledAt: null,
+    lastAutoTriggeredAt: null,
+    lastAutoSourceMessageId: trigger.sourceMessageId,
+    lastAutoSourceMessageIndex: trigger.sourceMessageIndex,
+    lastAutoGenerationId: trigger.generationId,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(chatId, userId, diagnostics.status, null, trigger.requestId);
+}
+
+function cancelPendingAutoForChat(chatId: string, userId: string | null, reason: string): void {
+  for (const [key, pending] of pendingAutoJobs) {
+    if (pending.chatId !== chatId) continue;
+    if (userId && pending.userId !== userId) continue;
+    clearTimeout(pending.timer);
+    pendingAutoJobs.delete(key);
+    void markAutoSkipped(pending.chatId, pending.userId, pending.trigger, reason, pending.scheduledAt)
+      .catch((error: unknown) => spindle.log.warn(`LTracker could not record auto cancellation: ${errorMessage(error)}`));
+  }
+}
+
+function abortAutoJobForChat(chatId: string, reason: string): void {
+  const job = activeJobs.get(chatId);
+  if (!job || job.sourceKind !== "auto") return;
+  job.cancelReason = reason;
+  job.controller.abort();
+}
+
+function rememberActiveChat(userId: string, chatId: string | null): void {
+  const previous = activeChatByUser.get(userId) ?? null;
+  if (previous === chatId) return;
+  if (previous) {
+    const users = usersByChat.get(previous);
+    users?.delete(userId);
+    if (users?.size === 0) usersByChat.delete(previous);
+    cancelPendingAutoForChat(previous, userId, "Chat changed before the auto timer fired.");
+    abortAutoJobForChat(previous, "Chat changed before the auto tracker result was saved.");
+  }
+  if (chatId) {
+    activeChatByUser.set(userId, chatId);
+    const users = usersByChat.get(chatId) ?? new Set<string>();
+    users.add(userId);
+    usersByChat.set(chatId, users);
+  } else {
+    activeChatByUser.delete(userId);
+  }
+}
+
+function targetUsersForChat(chatId: string, userId?: string): string[] {
+  if (userId) return [userId];
+  return [...(usersByChat.get(chatId) ?? [])];
+}
+
+function isChatMessage(value: unknown): value is ChatMessageDTO {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.chat_id === "string"
+    && typeof value.index_in_chat === "number"
+    && typeof value.is_user === "boolean"
+    && typeof value.content === "string";
+}
+
+function messageFromEventPayload(payload: unknown): ChatMessageDTO | null {
+  if (isChatMessage(payload)) return payload;
+  if (isRecord(payload) && isChatMessage(payload.message)) return payload.message;
+  return null;
+}
+
+async function scheduleAutoForMessage(input: {
+  chatId: string;
+  userId: string;
+  eventType: AutoTriggerEventType;
+  eventAt: string;
+  message: ChatMessageDTO;
+  generationId: string | null;
+  generationType: string | null;
+}): Promise<void> {
+  if (isQuietGenerationType(input.generationType)) return;
+
+  const settings = await getSettings(input.userId);
+  if (!settings.auto.autoModeEnabled) return;
+
+  const messages = await readChatMessages(input.chatId);
+  const sourceMessage = messages.find((message) => message.id === input.message.id) ?? input.message;
+  const requestId = `auto:${input.eventType}:${sourceMessage.id}:${Date.now()}`;
+  const trigger = createAutoTrigger({
+    eventType: input.eventType,
+    requestId,
+    message: sourceMessage,
+    generationId: input.generationId,
+    generationType: input.generationType,
+  });
+
+  const decision = shouldScheduleAutoTracker({
+    settings,
+    role: messageRole(sourceMessage),
+    messageCount: messages.length,
+    chatId: input.chatId,
+    activeChatId: activeChatByUser.get(input.userId) ?? null,
+    trackerGenerationRunning: activeJobs.has(input.chatId),
+  });
+
+  if (!decision.shouldSchedule) {
+    await markAutoSkipped(input.chatId, input.userId, trigger, decision.reason, input.eventAt);
+    return;
+  }
+
+  const key = userChatKey(input.userId, input.chatId);
+  const existing = pendingAutoJobs.get(key);
+  if (existing) {
+    clearTimeout(existing.timer);
+  }
+
+  const scheduledAt = nowIso();
+  const timer = setTimeout(() => {
+    void runPendingAuto(key).catch((error: unknown) => {
+      spindle.log.warn(`LTracker auto job failed: ${errorMessage(error)}`);
+    });
+  }, settings.auto.autoDebounceMs);
+
+  pendingAutoJobs.set(key, {
+    timer,
+    chatId: input.chatId,
+    userId: input.userId,
+    requestId,
+    trigger,
+    scheduledAt,
+  });
+
+  const diagnostics = {
+    ...await loadDiagnostics(input.chatId, input.userId),
+    lastAutoEventAt: input.eventAt,
+    lastAutoEventType: input.eventType,
+    lastAutoSkippedReason: null,
+    lastAutoScheduledAt: scheduledAt,
+    lastAutoTriggeredAt: null,
+    lastAutoSourceMessageId: sourceMessage.id,
+    lastAutoSourceMessageIndex: sourceMessage.index_in_chat,
+    lastAutoGenerationId: input.generationId,
+  };
+  await tryPersistDiagnostics(diagnostics, input.userId);
+  await sendState(input.chatId, input.userId, diagnostics.status, null, requestId);
+}
+
+async function runPendingAuto(key: string): Promise<void> {
+  const pending = pendingAutoJobs.get(key);
+  if (!pending) return;
+  pendingAutoJobs.delete(key);
+
+  const settings = await getSettings(pending.userId);
+  if (settings.auto.onlyWhenChatActive && activeChatByUser.get(pending.userId) !== pending.chatId) {
+    await markAutoSkipped(
+      pending.chatId,
+      pending.userId,
+      pending.trigger,
+      "Chat changed before the auto timer fired.",
+      pending.scheduledAt,
+    );
+    return;
+  }
+  if (activeJobs.has(pending.chatId)) {
+    await markAutoSkipped(
+      pending.chatId,
+      pending.userId,
+      pending.trigger,
+      "A tracker generation is already running for this chat.",
+      pending.scheduledAt,
+    );
+    return;
+  }
+  await generateTracker(pending.chatId, pending.userId, pending.trigger);
+}
+
+async function handleGenerationEnded(payload: GenerationEndedPayloadDTO, userId?: string): Promise<void> {
+  if (payload.error || !payload.messageId || isQuietGenerationType(payload.generationType)) return;
+  const users = targetUsersForChat(payload.chatId, userId);
+  if (users.length === 0) {
+    spindle.log.warn(`LTracker ignored auto event without a known user for chat ${payload.chatId}.`);
+    return;
+  }
+
+  const eventAt = nowIso();
+  for (const targetUserId of users) {
+    const settings = await getSettings(targetUserId);
+    if (!settings.auto.autoModeEnabled) continue;
+
+    const messages = await readChatMessages(payload.chatId);
+    const message = messages.find((item) => item.id === payload.messageId);
+    if (!message) {
+      const trigger: AutoTrackerTriggerSource = {
+        kind: "auto",
+        requestId: `auto:GENERATION_ENDED:${payload.messageId}:${Date.now()}`,
+        eventType: "GENERATION_ENDED",
+        sourceMessageId: payload.messageId,
+        sourceMessageIndex: null,
+        generationId: payload.generationId,
+        generationType: payload.generationType ?? null,
+      };
+      await markAutoSkipped(payload.chatId, targetUserId, trigger, "Generated message was not found.", eventAt);
+      continue;
+    }
+    if (message.is_user) {
+      const trigger = createAutoTrigger({
+        eventType: "GENERATION_ENDED",
+        requestId: `auto:GENERATION_ENDED:${message.id}:${Date.now()}`,
+        message,
+        generationId: payload.generationId,
+        generationType: payload.generationType ?? null,
+      });
+      await markAutoSkipped(payload.chatId, targetUserId, trigger, "Generation ended on a user message.", eventAt);
+      continue;
+    }
+    await scheduleAutoForMessage({
+      chatId: payload.chatId,
+      userId: targetUserId,
+      eventType: "GENERATION_ENDED",
+      eventAt,
+      message,
+      generationId: payload.generationId,
+      generationType: payload.generationType ?? null,
+    });
+  }
+}
+
+async function handleMessageSent(payload: unknown, userId?: string): Promise<void> {
+  const message = messageFromEventPayload(payload);
+  if (!message || !message.is_user) return;
+  const chatId = message.chat_id;
+  const users = targetUsersForChat(chatId, userId);
+  const eventAt = nowIso();
+  for (const targetUserId of users) {
+    await scheduleAutoForMessage({
+      chatId,
+      userId: targetUserId,
+      eventType: "MESSAGE_SENT",
+      eventAt,
+      message,
+      generationId: null,
+      generationType: null,
+    });
+  }
+}
+
+function handleChatSwitched(payload: unknown, userId?: string): void {
+  if (!userId || !isRecord(payload)) return;
+  const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
+  rememberActiveChat(userId, chatId);
+}
+
+async function generateTracker(
+  chatId: string | null,
+  userId: string,
+  trigger: TrackerTriggerSource,
+): Promise<void> {
   let stage: LTrackerErrorStage = "active_chat";
+  const requestId = trigger.requestId;
   const resolvedChatId = await resolveActiveChatId(chatId, userId).catch((error: unknown) => {
     stageError("active_chat", error);
   });
+  rememberActiveChat(userId, resolvedChatId);
 
   const settings = await getSettings(userId).catch((error: unknown) => {
     stageError("storage", error);
   });
+
+  if (trigger.kind === "manual") {
+    cancelPendingAutoForChat(resolvedChatId, userId, "Manual generation superseded the pending auto job.");
+  }
+
+  if (trigger.kind === "auto" && activeJobs.has(resolvedChatId)) {
+    await markAutoSkipped(
+      resolvedChatId,
+      userId,
+      trigger,
+      "A tracker generation is already running for this chat.",
+      nowIso(),
+    );
+    return;
+  }
 
   const existing = activeJobs.get(resolvedChatId);
   const lastCancellation: LTrackerCancellation | null = existing
@@ -463,7 +881,7 @@ async function generateTracker(chatId: string | null, userId: string, requestId:
         jobId: existing.jobId,
         requestId: existing.requestId,
         reason: "Cancelled by a newer Generate Tracker request.",
-        createdAt: new Date().toISOString(),
+        createdAt: nowIso(),
       }
     : null;
   existing?.controller.abort();
@@ -472,6 +890,7 @@ async function generateTracker(chatId: string | null, userId: string, requestId:
     controller: new AbortController(),
     jobId: newJobId(),
     requestId,
+    sourceKind: trigger.kind,
   };
   activeJobs.set(resolvedChatId, job);
 
@@ -481,6 +900,7 @@ async function generateTracker(chatId: string | null, userId: string, requestId:
     status: "generating" as const,
     lastJobId: job.jobId,
     lastRequestId: requestId,
+    lastGenerationSource: trigger.kind,
     lastGenerationStartedAt: new Date(startedAtMs).toISOString(),
     lastGenerationCompletedAt: null,
     lastGenerationDurationMs: null,
@@ -492,7 +912,18 @@ async function generateTracker(chatId: string | null, userId: string, requestId:
     lastPromptPreview: null,
     lastError: null,
     lastCancellation,
+    lastAutoTriggeredAt: trigger.kind === "auto" ? new Date(startedAtMs).toISOString() : null,
   };
+  if (trigger.kind === "auto") {
+    diagnostics = {
+      ...diagnostics,
+      lastAutoEventType: trigger.eventType,
+      lastAutoSkippedReason: null,
+      lastAutoSourceMessageId: trigger.sourceMessageId,
+      lastAutoSourceMessageIndex: trigger.sourceMessageIndex,
+      lastAutoGenerationId: trigger.generationId,
+    };
+  }
 
   await tryPersistDiagnostics(diagnostics, userId);
   await sendState(resolvedChatId, userId, "generating", null, requestId);
@@ -537,21 +968,32 @@ async function generateTracker(chatId: string | null, userId: string, requestId:
     const data = parseTrackerJson(rawOutput);
     if (!isCurrentJob(resolvedChatId, job.jobId)) return;
 
-    const completedAtMs = Date.now();
-    diagnostics = {
-      ...diagnostics,
-      status: "idle",
-      lastGenerationCompletedAt: new Date(completedAtMs).toISOString(),
-      lastGenerationDurationMs: completedAtMs - startedAtMs,
-      lastParsedTracker: data,
-      lastError: null,
-    };
+    if (
+      trigger.kind === "auto"
+      && settings.auto.onlyWhenChatActive
+      && activeChatByUser.get(userId) !== resolvedChatId
+    ) {
+      const completedAtMs = Date.now();
+      diagnostics = {
+        ...diagnostics,
+        status: "idle",
+        lastGenerationCompletedAt: new Date(completedAtMs).toISOString(),
+        lastGenerationDurationMs: completedAtMs - startedAtMs,
+        lastAutoSkippedReason: "Chat changed before the auto tracker result was saved.",
+        lastError: null,
+      };
+      await persistDiagnostics(diagnostics, userId);
+      await sendState(resolvedChatId, userId, "idle", null, requestId);
+      return;
+    }
 
+    const completedAtMs = Date.now();
+    const completedAt = new Date(completedAtMs).toISOString();
     const snapshot: TrackerSnapshot = {
       schemaVersion: STORAGE_SCHEMA_VERSION,
       extensionVersion: EXTENSION_VERSION,
       chatId: resolvedChatId,
-      createdAt: new Date(completedAtMs).toISOString(),
+      createdAt: completedAt,
       messageCount: transcriptMessages.length,
       sourceMessageIds,
       data,
@@ -559,10 +1001,63 @@ async function generateTracker(chatId: string | null, userId: string, requestId:
 
     stage = "storage";
     await saveSnapshot(snapshot, userId);
+
+    diagnostics = {
+      ...diagnostics,
+      status: "idle",
+      lastGenerationCompletedAt: completedAt,
+      lastGenerationDurationMs: completedAtMs - startedAtMs,
+      lastParsedTracker: data,
+      lastError: null,
+    };
+
+    if (trigger.kind === "auto" && settings.auto.attachSnapshotToMessage) {
+      const attachedAt = nowIso();
+      const storageKey = messageSnapshotPath(resolvedChatId, trigger.sourceMessageId);
+      const attachedSnapshot: MessageAttachedSnapshot = {
+        schemaVersion: STORAGE_SCHEMA_VERSION,
+        extensionVersion: EXTENSION_VERSION,
+        chatId: resolvedChatId,
+        messageId: trigger.sourceMessageId,
+        messageIndex: trigger.sourceMessageIndex,
+        trigger,
+        snapshot,
+        attachedAt,
+      };
+      await saveMessageAttachedSnapshot(attachedSnapshot, userId);
+      diagnostics = {
+        ...diagnostics,
+        latestAttachedMessageId: trigger.sourceMessageId,
+        latestAttachedMessageIndex: trigger.sourceMessageIndex,
+        latestAttachedSnapshotAt: attachedAt,
+        latestAttachedSnapshotStorageKey: storageKey,
+      };
+    }
+
     await persistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "idle", null, requestId);
   } catch (error) {
     if (!isCurrentJob(resolvedChatId, job.jobId)) return;
+    if (trigger.kind === "auto" && job.controller.signal.aborted && job.cancelReason) {
+      const completedAtMs = Date.now();
+      diagnostics = {
+        ...diagnostics,
+        status: "idle",
+        lastGenerationCompletedAt: new Date(completedAtMs).toISOString(),
+        lastGenerationDurationMs: completedAtMs - startedAtMs,
+        lastCancellation: {
+          jobId: job.jobId,
+          requestId,
+          reason: job.cancelReason,
+          createdAt: nowIso(),
+        },
+        lastAutoSkippedReason: job.cancelReason,
+        lastError: null,
+      };
+      await tryPersistDiagnostics(diagnostics, userId);
+      await sendState(resolvedChatId, userId, "idle", null, requestId);
+      return;
+    }
     const currentError = diagnosticError(error, stage);
     const completedAtMs = Date.now();
     diagnostics = {
@@ -583,6 +1078,7 @@ async function clearSnapshot(chatId: string | null, userId: string, requestId: s
   const resolvedChatId = await resolveActiveChatId(chatId, userId).catch((error: unknown) => {
     stageError("active_chat", error);
   });
+  rememberActiveChat(userId, resolvedChatId);
   const path = snapshotPath(resolvedChatId);
 
   try {
@@ -606,12 +1102,17 @@ async function handleSettingsSave(
   payload: Extract<FrontendMessage, { type: "save_settings" }>,
   userId: string,
 ): Promise<void> {
-  await saveSettings(payload.settings, userId).catch((error: unknown) => {
+  const settings = await saveSettings(payload.settings, userId).catch((error: unknown) => {
     stageError("storage", error);
   });
   const resolvedChatId = payload.chatId
     ? payload.chatId
     : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
+  rememberActiveChat(userId, resolvedChatId);
+  if (!settings.auto.autoModeEnabled && resolvedChatId) {
+    cancelPendingAutoForChat(resolvedChatId, userId, "Auto mode was disabled.");
+    abortAutoJobForChat(resolvedChatId, "Auto mode was disabled before the tracker result was saved.");
+  }
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
 
@@ -625,6 +1126,11 @@ async function handleSettingsReset(
   const resolvedChatId = payload.chatId
     ? payload.chatId
     : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
+  rememberActiveChat(userId, resolvedChatId);
+  if (resolvedChatId) {
+    cancelPendingAutoForChat(resolvedChatId, userId, "Settings were reset.");
+    abortAutoJobForChat(resolvedChatId, "Settings were reset before the auto tracker result was saved.");
+  }
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
 
@@ -635,19 +1141,50 @@ async function handleRefresh(
   const resolvedChatId = payload.chatId
     ? payload.chatId
     : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
+  rememberActiveChat(userId, resolvedChatId);
   await sendState(resolvedChatId, userId, undefined, null);
 }
+
+function disposeBackend(): void {
+  if (disposed) return;
+  disposed = true;
+  for (const pending of pendingAutoJobs.values()) clearTimeout(pending.timer);
+  pendingAutoJobs.clear();
+  for (const job of activeJobs.values()) job.controller.abort();
+  activeJobs.clear();
+  for (const cleanup of eventCleanups.splice(0).reverse()) cleanup();
+  autoSubscriptionsActive = false;
+}
+
+function registerEventListeners(): void {
+  eventCleanups.push(spindle.on("GENERATION_ENDED", (payload, userId) => {
+    void handleGenerationEnded(payload, userId).catch((error: unknown) => {
+      spindle.log.warn(`LTracker generation-ended handler failed: ${errorMessage(error)}`);
+    });
+  }));
+  eventCleanups.push(spindle.on("MESSAGE_SENT", (payload, userId) => {
+    void handleMessageSent(payload, userId).catch((error: unknown) => {
+      spindle.log.warn(`LTracker message-sent handler failed: ${errorMessage(error)}`);
+    });
+  }));
+  eventCleanups.push(spindle.on("CHAT_SWITCHED", handleChatSwitched));
+  eventCleanups.push(spindle.on("EXTENSION_UNLOADED", disposeBackend));
+  autoSubscriptionsActive = true;
+}
+
+registerEventListeners();
 
 spindle.onFrontendMessage((payload, userId) => {
   if (!isFrontendMessage(payload)) return;
 
   const requestId = "requestId" in payload ? payload.requestId : undefined;
   const chatId = payload.chatId;
+  if (chatId) rememberActiveChat(userId, chatId);
 
   void (async () => {
     try {
       if (payload.type === "generate_tracker") {
-        await generateTracker(chatId, userId, payload.requestId);
+        await generateTracker(chatId, userId, createManualTrigger(payload.requestId));
         return;
       }
       if (payload.type === "clear_snapshot") {
