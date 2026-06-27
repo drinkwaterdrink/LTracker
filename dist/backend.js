@@ -228,7 +228,7 @@ function emptyDecision(skippedReason) {
 
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
-var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.09 while the Lumiverse context handler return contract is being verified.";
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.10 while the Lumiverse context handler return contract is being verified.";
 
 // src/shared/htmlTemplateRenderer.ts
 var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
@@ -582,6 +582,96 @@ function renderHtmlTemplate(input, options = {}) {
   }
 }
 
+// src/shared/swipeIdentity.ts
+var DEFAULT_SWIPE_KEY = "default";
+function isRecord3(value) {
+  return typeof value === "object" && value !== null;
+}
+function normalizeKeyPart(value) {
+  return value.trim().replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80) || DEFAULT_SWIPE_KEY;
+}
+function numberOrNull(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.round(value));
+}
+function stringOrNumberAsString(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(Math.max(0, Math.round(value)));
+  return null;
+}
+function officialSwipeId(message) {
+  const direct = stringOrNumberAsString(message.swipeId) ?? stringOrNumberAsString(message.activeSwipeId) ?? stringOrNumberAsString(message.selectedSwipeId);
+  if (direct) return direct;
+  if (!isRecord3(message.extra)) return null;
+  return stringOrNumberAsString(message.extra.swipeId) ?? stringOrNumberAsString(message.extra.activeSwipeId) ?? stringOrNumberAsString(message.extra.selectedSwipeId) ?? stringOrNumberAsString(message.extra.swipe_id);
+}
+function hashSwipeContent(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function deriveSwipeTrackerIdentity(chatId, message) {
+  const swipes = Array.isArray(message.swipes) ? message.swipes : [];
+  const swipeIndex = numberOrNull(typeof message.swipe_id === "number" ? message.swipe_id : null);
+  const activeContent = swipeIndex !== null && typeof swipes[swipeIndex] === "string" ? swipes[swipeIndex] : typeof message.content === "string" ? message.content : "";
+  const swipeContentHash = activeContent ? hashSwipeContent(activeContent) : null;
+  const swipeId = officialSwipeId(message);
+  if (swipeId) {
+    return {
+      chatId,
+      messageId: message.id,
+      swipeKey: `id-${normalizeKeyPart(swipeId)}`,
+      swipeIndex,
+      swipeId,
+      swipeContentHash,
+      swipeKeySource: "swipe_id"
+    };
+  }
+  if (swipeIndex !== null) {
+    return {
+      chatId,
+      messageId: message.id,
+      swipeKey: `index-${swipeIndex}`,
+      swipeIndex,
+      swipeId: null,
+      swipeContentHash,
+      swipeKeySource: "swipe_index"
+    };
+  }
+  if (swipeContentHash) {
+    return {
+      chatId,
+      messageId: message.id,
+      swipeKey: `hash-${swipeContentHash}`,
+      swipeIndex: null,
+      swipeId: null,
+      swipeContentHash,
+      swipeKeySource: "content_hash"
+    };
+  }
+  return defaultSwipeIdentity(chatId, message.id);
+}
+function defaultSwipeIdentity(chatId, messageId) {
+  return {
+    chatId,
+    messageId,
+    swipeKey: DEFAULT_SWIPE_KEY,
+    swipeIndex: null,
+    swipeId: null,
+    swipeContentHash: null,
+    swipeKeySource: "unknown"
+  };
+}
+function swipeIdentityKey(identity) {
+  return `${identity.messageId}:${identity.swipeKey}`;
+}
+function swipeKeySourceOrUnknown(value) {
+  return value === "swipe_id" || value === "swipe_index" || value === "content_hash" || value === "unknown" ? value : "unknown";
+}
+
 // src/shared/messageDisplay.ts
 var MESSAGE_LOCAL_UI_SUPPORTED = true;
 var MESSAGE_LOCAL_UI_FALLBACK_REASON = null;
@@ -598,6 +688,21 @@ function metadataFromSnapshot(attachedSnapshot, snapshot) {
     snapshotCreatedAt: snapshot?.createdAt ?? null,
     attachedAt: attachedSnapshot?.attachedAt ?? null
   };
+}
+function identityFromInput(input) {
+  if (input.swipeIdentity) return input.swipeIdentity;
+  if (input.attachedSnapshot) {
+    return {
+      chatId: input.attachedSnapshot.chatId,
+      messageId: input.messageId,
+      swipeKey: input.attachedSnapshot.swipeKey ?? DEFAULT_SWIPE_KEY,
+      swipeIndex: input.attachedSnapshot.swipeIndex ?? null,
+      swipeId: input.attachedSnapshot.swipeId ?? null,
+      swipeContentHash: input.attachedSnapshot.swipeContentHash ?? null,
+      swipeKeySource: input.attachedSnapshot.swipeKeySource ?? "unknown"
+    };
+  }
+  return defaultSwipeIdentity(input.latestChatSnapshot?.chatId ?? "", input.messageId);
 }
 function generationMetadataFromSnapshot(snapshot, input) {
   return {
@@ -636,6 +741,8 @@ function displayJson(messageId, messageIndex, attachedSnapshot, snapshot, settin
     generationDurationMs: snapshot.generationDurationMs ?? null,
     generationCancelledAt: snapshot.generationCancelledAt ?? null,
     generationStatus: snapshot.generationStatus ?? null,
+    editedAt: snapshot.editedAt ?? null,
+    editedByUser: snapshot.editedByUser === true,
     data: snapshot.data
   }, null, 2), settings.maxRenderedChars);
 }
@@ -757,15 +864,95 @@ function buildWidgetHtml(rendered, settings) {
 </body>
 </html>`;
 }
+function iconSvg(kind) {
+  if (kind === "stop") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 7h10v10H7z"/></svg>`;
+  }
+  if (kind === "edit") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m5 16.2 9.9-9.9 2.8 2.8-9.9 9.9H5v-2.8Zm11.3-11.3 1.1-1.1a1.5 1.5 0 0 1 2.1 0l.7.7a1.5 1.5 0 0 1 0 2.1l-1.1 1.1-2.8-2.8Z"/></svg>`;
+  }
+  if (kind === "delete") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2 .2 7h1.6l-.2-7H10Zm3.4 0-.2 7h1.6l.2-7h-1.6Z"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17.7 6.3A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.67 4.22 1.76L13 11h8V3l-3.3 3.3Z"/></svg>`;
+}
+function domButton(action, label, icon, enabled) {
+  if (!enabled) return "";
+  return `<button class="ltd-icon-button" type="button" data-ltracker-dom-action="${escapeHtml(action)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${iconSvg(icon)}</button>`;
+}
+function buildDomHtml(rendered, settings) {
+  const duration = settings.showGenerationDuration ? formatDurationMs(rendered.generationDurationMs) : null;
+  const meta = [
+    settings.showPresetName && rendered.presetName ? rendered.presetName : null,
+    settings.showTimestamp && rendered.snapshotCreatedAt ? rendered.snapshotCreatedAt : null,
+    rendered.snapshotCreatedAt && rendered.snapshotCreatedAt !== rendered.attachedAt ? null : null
+  ].filter((item) => Boolean(item)).join(" / ");
+  const elapsedMarkup = settings.showGenerationDuration ? rendered.isRegenerating && rendered.generationStartedAt ? `<span class="ltd-pill" data-ltracker-elapsed data-started-at="${escapeHtml(rendered.generationStartedAt)}">${escapeHtml(currentRunningDuration(rendered.generationStartedAt) ?? "0ms")}</span>` : duration ? `<span class="ltd-pill">${escapeHtml(duration)}</span>` : "" : "";
+  const statusMarkup = rendered.isRegenerating ? `<span class="ltd-pill" data-ltracker-status>generating</span>` : "";
+  const editedMarkup = rendered.json.includes('"editedByUser": true') ? `<span class="ltd-pill">edited</span>` : "";
+  const body = rendered.html || `<pre class="ltd-pre">${escapeHtml(rendered.textFallback)}</pre>`;
+  const actionLabel = rendered.isRegenerating ? "Cancel tracker generation" : "Regenerate tracker";
+  const actionKind = rendered.isRegenerating ? "stop" : "refresh";
+  const open = settings.collapsedByDefault ? "" : " open";
+  const compactClass = settings.compactCollapsedHeader ? " ltd-compact" : "";
+  return `
+<section class="ltracker-dom-tracker${compactClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}">
+  <style>
+    .ltracker-dom-tracker { margin: 0 0 6px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 8px; background: color-mix(in srgb, currentColor 4%, transparent); color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .ltracker-dom-tracker details { margin: 0; min-width: 0; }
+    .ltracker-dom-tracker summary { cursor: pointer; list-style-position: outside; min-height: 30px; padding: 4px 7px; }
+    .ltd-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+    .ltd-head { display: flex; align-items: center; gap: 5px 7px; flex-wrap: wrap; min-width: 0; }
+    .ltd-title { font-weight: 700; }
+    .ltd-meta { opacity: .72; overflow-wrap: anywhere; }
+    .ltd-pill { border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 999px; padding: 1px 6px; opacity: .82; }
+    .ltd-actions { display: inline-flex; align-items: center; gap: 4px; }
+    .ltd-icon-button { width: 26px; height: 26px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 7%, transparent); color: inherit; cursor: pointer; padding: 0; }
+    .ltd-icon-button svg { width: 15px; height: 15px; }
+    .ltd-icon-button:hover, .ltd-icon-button:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); outline: 2px solid color-mix(in srgb, currentColor 30%, transparent); }
+    .ltd-spinning svg { animation: ltd-spin .9s linear infinite; }
+    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; }
+    .ltd-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .ltracker-dom-tracker details:not([open]) { min-height: 0; }
+    @keyframes ltd-spin { to { transform: rotate(360deg); } }
+    @media (max-width: 520px) { .ltd-meta { display: none; } .ltd-icon-button { width: 28px; height: 28px; } }
+  </style>
+  <details${open}>
+    <summary>
+      <span class="ltd-summary">
+        <span class="ltd-head">
+          <span class="ltd-title">LTracker</span>
+          ${meta ? `<span class="ltd-meta">${escapeHtml(meta)}</span>` : ""}
+          ${elapsedMarkup}
+          ${statusMarkup}
+          ${editedMarkup}
+        </span>
+        <span class="ltd-actions">
+          ${domButton("toggle_regenerate", actionLabel, actionKind, settings.showWidgetRegenerateButton).replace("ltd-icon-button", `ltd-icon-button${rendered.isRegenerating ? " ltd-spinning" : ""}`)}
+          ${domButton("edit", "View or edit tracker", "edit", settings.showEditButton)}
+          ${domButton("delete", "Delete tracker", "delete", settings.showDeleteButton)}
+        </span>
+      </span>
+    </summary>
+    <div class="ltd-body">${body}</div>
+  </details>
+</section>`;
+}
 function renderMessageTracker(input) {
   const snapshot = snapshotForDisplay(input);
   const metadata = metadataFromSnapshot(input.attachedSnapshot, snapshot);
   const generationMetadata = generationMetadataFromSnapshot(snapshot, input);
+  const identity = identityFromInput(input);
   if (!snapshot) {
     const textFallback2 = "No tracker snapshot is available for this message.";
     const base2 = {
       messageId: input.messageId,
       messageIndex: input.messageIndex,
+      swipeKey: identity.swipeKey,
+      swipeIndex: identity.swipeIndex,
+      swipeId: identity.swipeId,
+      swipeContentHash: identity.swipeContentHash,
+      swipeKeySource: identity.swipeKeySource,
       ...metadata,
       ...generationMetadata,
       renderMode: input.settings.renderMode,
@@ -777,7 +964,8 @@ function renderMessageTracker(input) {
     };
     return {
       ...base2,
-      widgetHtml: buildWidgetHtml(base2, input.settings)
+      widgetHtml: buildWidgetHtml(base2, input.settings),
+      domHtml: buildDomHtml(base2, input.settings)
     };
   }
   const warnings = [];
@@ -812,6 +1000,11 @@ function renderMessageTracker(input) {
   const base = {
     messageId: input.messageId,
     messageIndex: input.messageIndex,
+    swipeKey: identity.swipeKey,
+    swipeIndex: identity.swipeIndex,
+    swipeId: identity.swipeId,
+    swipeContentHash: identity.swipeContentHash,
+    swipeKeySource: identity.swipeKeySource,
     ...metadata,
     ...generationMetadata,
     renderMode: input.settings.renderMode,
@@ -823,13 +1016,19 @@ function renderMessageTracker(input) {
   };
   return {
     ...base,
-    widgetHtml: buildWidgetHtml(base, input.settings)
+    widgetHtml: buildWidgetHtml(base, input.settings),
+    domHtml: buildDomHtml(base, input.settings)
   };
 }
 function buildMessageTrackerHistory(input) {
-  return input.index.map((entry, index) => {
-    const snapshot = input.snapshots[index] ?? null;
-    const activeJob = input.activeWidgetJobs?.[entry.messageId] ?? null;
+  const filteredIndex = input.selectedSwipeIdentities ? input.index.filter((entry) => {
+    const selected = input.selectedSwipeIdentities?.[entry.messageId];
+    return !selected || selected.swipeKey === entry.swipeKey;
+  }) : input.index;
+  return filteredIndex.map((entry) => {
+    const originalIndex = input.index.findIndex((item) => swipeIdentityKey(item) === swipeIdentityKey(entry));
+    const snapshot = input.snapshots[originalIndex] ?? null;
+    const activeJob = input.activeWidgetJobs?.[swipeIdentityKey(entry)] ?? null;
     return {
       indexEntry: entry,
       snapshot,
@@ -840,6 +1039,15 @@ function buildMessageTrackerHistory(input) {
         latestChatSnapshot: input.latestChatSnapshot,
         preset: input.preset,
         settings: input.settings,
+        swipeIdentity: {
+          chatId: snapshot?.chatId ?? input.latestChatSnapshot?.chatId ?? "",
+          messageId: entry.messageId,
+          swipeKey: entry.swipeKey,
+          swipeIndex: entry.swipeIndex,
+          swipeId: entry.swipeId,
+          swipeContentHash: entry.swipeContentHash,
+          swipeKeySource: entry.swipeKeySource
+        },
         isRegenerating: Boolean(activeJob),
         activeJobId: activeJob?.jobId ?? null,
         activeJobStartedAt: activeJob?.startedAt ?? null
@@ -849,7 +1057,7 @@ function buildMessageTrackerHistory(input) {
 }
 
 // src/shared/messageSnapshotIndex.ts
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringOrNull(value) {
@@ -858,13 +1066,21 @@ function stringOrNull(value) {
 function messageIndexOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
 }
+function swipeKeyOrDefault(value) {
+  return typeof value === "string" && value.trim() ? value : DEFAULT_SWIPE_KEY;
+}
 function repairIndexEntry(value) {
-  if (!isRecord3(value) || typeof value.messageId !== "string" || typeof value.storageKey !== "string") {
+  if (!isRecord4(value) || typeof value.messageId !== "string" || typeof value.storageKey !== "string") {
     return null;
   }
   return {
     messageId: value.messageId,
     messageIndex: messageIndexOrNull(value.messageIndex),
+    swipeKey: swipeKeyOrDefault(value.swipeKey),
+    swipeIndex: messageIndexOrNull(value.swipeIndex),
+    swipeId: stringOrNull(value.swipeId),
+    swipeContentHash: stringOrNull(value.swipeContentHash),
+    swipeKeySource: swipeKeySourceOrUnknown(value.swipeKeySource),
     createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
     presetId: stringOrNull(value.presetId),
     presetName: stringOrNull(value.presetName),
@@ -877,8 +1093,10 @@ function repairMessageSnapshotIndex(value) {
   const repaired = [];
   for (const item of value) {
     const entry = repairIndexEntry(item);
-    if (!entry || seen.has(entry.messageId)) continue;
-    seen.add(entry.messageId);
+    if (!entry) continue;
+    const key = swipeIdentityKey(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
     repaired.push(entry);
   }
   return sortMessageSnapshotIndex(repaired);
@@ -890,14 +1108,23 @@ function sortMessageSnapshotIndex(index) {
     }
     if (left.messageIndex !== null && right.messageIndex === null) return -1;
     if (left.messageIndex === null && right.messageIndex !== null) return 1;
+    if (left.messageId !== right.messageId) return left.messageId.localeCompare(right.messageId);
+    if (left.swipeIndex !== null && right.swipeIndex !== null && left.swipeIndex !== right.swipeIndex) {
+      return left.swipeIndex - right.swipeIndex;
+    }
+    if (left.swipeIndex !== null && right.swipeIndex === null) return -1;
+    if (left.swipeIndex === null && right.swipeIndex !== null) return 1;
     const created = left.createdAt.localeCompare(right.createdAt);
-    return created !== 0 ? created : left.messageId.localeCompare(right.messageId);
+    return created !== 0 ? created : left.swipeKey.localeCompare(right.swipeKey);
   });
 }
 function upsertMessageSnapshotIndexEntry(index, entry) {
-  const next = index.filter((item) => item.messageId !== entry.messageId);
+  const next = index.filter((item) => swipeIdentityKey(item) !== swipeIdentityKey(entry));
   next.push(entry);
   return sortMessageSnapshotIndex(next);
+}
+function removeMessageSnapshotIndexEntry(index, messageId, swipeKey) {
+  return sortMessageSnapshotIndex(index.filter((item) => item.messageId !== messageId || item.swipeKey !== swipeKey));
 }
 function normalizeTrackerSnapshotPresetMetadata(snapshot) {
   return {
@@ -909,13 +1136,20 @@ function normalizeTrackerSnapshotPresetMetadata(snapshot) {
     generationCompletedAt: snapshot.generationCompletedAt ?? null,
     generationDurationMs: typeof snapshot.generationDurationMs === "number" && Number.isFinite(snapshot.generationDurationMs) ? Math.max(0, Math.round(snapshot.generationDurationMs)) : null,
     generationCancelledAt: snapshot.generationCancelledAt ?? null,
-    generationStatus: snapshot.generationStatus === "completed" || snapshot.generationStatus === "cancelled" || snapshot.generationStatus === "failed" ? snapshot.generationStatus : null
+    generationStatus: snapshot.generationStatus === "completed" || snapshot.generationStatus === "cancelled" || snapshot.generationStatus === "failed" ? snapshot.generationStatus : null,
+    editedAt: snapshot.editedAt ?? null,
+    editedByUser: snapshot.editedByUser === true
   };
 }
 function normalizeMessageAttachedSnapshotPresetMetadata(snapshot) {
   const normalizedSnapshot = normalizeTrackerSnapshotPresetMetadata(snapshot.snapshot);
   return {
     ...snapshot,
+    swipeKey: snapshot.swipeKey ?? DEFAULT_SWIPE_KEY,
+    swipeIndex: snapshot.swipeIndex ?? null,
+    swipeId: snapshot.swipeId ?? null,
+    swipeContentHash: snapshot.swipeContentHash ?? null,
+    swipeKeySource: swipeKeySourceOrUnknown(snapshot.swipeKeySource),
     presetId: snapshot.presetId ?? normalizedSnapshot.presetId ?? null,
     presetName: snapshot.presetName ?? normalizedSnapshot.presetName ?? null,
     presetVersion: snapshot.presetVersion ?? normalizedSnapshot.presetVersion ?? null,
@@ -1057,7 +1291,7 @@ var DEFAULT_TRACKER_PRESET = {
     supportsSequentialGeneration: false
   }
 };
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringValue(value, fallback = "") {
@@ -1070,7 +1304,7 @@ function validOrigin(value) {
   return value === "built_in" || value === "user_imported" || value === "user_created";
 }
 function repairCapabilities(value) {
-  if (!isRecord4(value)) return void 0;
+  if (!isRecord5(value)) return void 0;
   const result = {};
   if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
   if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
@@ -1092,13 +1326,13 @@ function createPresetId(name, existingIds) {
   return `${base}_${Date.now()}`;
 }
 function validateJsonSchema(value) {
-  if (!isRecord4(value)) {
+  if (!isRecord5(value)) {
     return { ok: false, error: "JSON Schema must be a JSON object." };
   }
   return { ok: true, error: null };
 }
 function validateTrackerPreset(value) {
-  if (!isRecord4(value)) return { ok: false, error: "Preset must be a JSON object." };
+  if (!isRecord5(value)) return { ok: false, error: "Preset must be a JSON object." };
   if (typeof value.id !== "string" || !sanitizePresetId(value.id)) {
     return { ok: false, error: "Preset id is required." };
   }
@@ -1122,7 +1356,7 @@ function validateTrackerPreset(value) {
   return { ok: true, error: null };
 }
 function repairTrackerPreset(value) {
-  if (!isRecord4(value)) return null;
+  if (!isRecord5(value)) return null;
   const origin = validOrigin(value.origin) ? value.origin : null;
   if (!origin) return null;
   const preset = {
@@ -1132,7 +1366,7 @@ function repairTrackerPreset(value) {
     version: stringValue(value.version, "1.0"),
     createdAt: stringValue(value.createdAt, (/* @__PURE__ */ new Date()).toISOString()),
     updatedAt: stringValue(value.updatedAt, (/* @__PURE__ */ new Date()).toISOString()),
-    jsonSchema: isRecord4(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord5(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: stringValue(value.promptInstructions),
     origin
   };
@@ -1162,7 +1396,7 @@ function draftToPreset(draft, options) {
   return preset;
 }
 function importTrackerPresetEnvelope(value, existingIds, now) {
-  if (!isRecord4(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
+  if (!isRecord5(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
   if (value.kind !== PRESET_EXPORT_KIND) {
     return { ok: false, preset: null, error: "Import kind must be ltracker_schema_preset." };
   }
@@ -1199,7 +1433,7 @@ function resolveSelectedPreset(presets, selectedPresetId) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.09";
+var EXTENSION_VERSION = "0.10";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1213,7 +1447,8 @@ var SETTINGS_LIMITS = {
   skipFirstMessages: { min: 0, max: 100, default: 2 },
   maxInjectedChars: { min: 500, max: 2e4, default: 3e3 },
   maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
-  maxMessageDisplayRenderedChars: { min: 1e3, max: 2e5, default: 5e4 }
+  maxMessageDisplayRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
+  minimizedMaxHeightPx: { min: 0, max: 400, default: 0 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -1250,19 +1485,26 @@ var DEFAULT_SETTINGS = {
   },
   messageDisplay: {
     enabled: true,
+    useDomInjection: true,
+    fallbackToIframeWidget: true,
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
     collapsedByDefault: true,
+    compactCollapsedHeader: true,
     showTimestamp: true,
     showPresetName: true,
     showDebugCopyButtonsInHistory: true,
     showWidgetRegenerateButton: true,
+    showEditButton: true,
+    showDeleteButton: true,
+    showNoTrackerForSwipe: false,
     showGenerationDuration: true,
+    minimizedMaxHeightPx: SETTINGS_LIMITS.minimizedMaxHeightPx.default,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default
   }
 };
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null;
 }
 function clampNumber(value, fallback, min, max) {
@@ -1271,11 +1513,11 @@ function clampNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.round(numeric)));
 }
 function repairSettings(value) {
-  const source = isRecord5(value) ? value : {};
-  const autoSource = isRecord5(source.auto) ? source.auto : {};
-  const injectionSource = isRecord5(source.injection) ? source.injection : {};
-  const rendererSource = isRecord5(source.renderer) ? source.renderer : {};
-  const messageDisplaySource = isRecord5(source.messageDisplay) ? source.messageDisplay : {};
+  const source = isRecord6(value) ? value : {};
+  const autoSource = isRecord6(source.auto) ? source.auto : {};
+  const injectionSource = isRecord6(source.injection) ? source.injection : {};
+  const rendererSource = isRecord6(source.renderer) ? source.renderer : {};
+  const messageDisplaySource = isRecord6(source.messageDisplay) ? source.messageDisplay : {};
   const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot" ? injectionSource.mode : DEFAULT_SETTINGS.injection.mode;
   const format = injectionSource.format === "pretty_json" || injectionSource.format === "minimal" || injectionSource.format === "compact" ? injectionSource.format : DEFAULT_SETTINGS.injection.format;
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot" ? rendererSource.previewSource : DEFAULT_SETTINGS.renderer.previewSource;
@@ -1352,15 +1594,27 @@ function repairSettings(value) {
     },
     messageDisplay: {
       enabled: typeof messageDisplaySource.enabled === "boolean" ? messageDisplaySource.enabled : DEFAULT_SETTINGS.messageDisplay.enabled,
+      useDomInjection: typeof messageDisplaySource.useDomInjection === "boolean" ? messageDisplaySource.useDomInjection : DEFAULT_SETTINGS.messageDisplay.useDomInjection,
+      fallbackToIframeWidget: typeof messageDisplaySource.fallbackToIframeWidget === "boolean" ? messageDisplaySource.fallbackToIframeWidget : DEFAULT_SETTINGS.messageDisplay.fallbackToIframeWidget,
       placement: messageDisplayPlacement,
       source: messageDisplaySourceSetting,
       renderMode: messageDisplayRenderMode,
       collapsedByDefault: typeof messageDisplaySource.collapsedByDefault === "boolean" ? messageDisplaySource.collapsedByDefault : DEFAULT_SETTINGS.messageDisplay.collapsedByDefault,
+      compactCollapsedHeader: typeof messageDisplaySource.compactCollapsedHeader === "boolean" ? messageDisplaySource.compactCollapsedHeader : DEFAULT_SETTINGS.messageDisplay.compactCollapsedHeader,
       showTimestamp: typeof messageDisplaySource.showTimestamp === "boolean" ? messageDisplaySource.showTimestamp : DEFAULT_SETTINGS.messageDisplay.showTimestamp,
       showPresetName: typeof messageDisplaySource.showPresetName === "boolean" ? messageDisplaySource.showPresetName : DEFAULT_SETTINGS.messageDisplay.showPresetName,
       showDebugCopyButtonsInHistory: typeof messageDisplaySource.showDebugCopyButtonsInHistory === "boolean" ? messageDisplaySource.showDebugCopyButtonsInHistory : typeof messageDisplaySource.showCopyButton === "boolean" ? messageDisplaySource.showCopyButton : DEFAULT_SETTINGS.messageDisplay.showDebugCopyButtonsInHistory,
       showWidgetRegenerateButton: typeof messageDisplaySource.showWidgetRegenerateButton === "boolean" ? messageDisplaySource.showWidgetRegenerateButton : DEFAULT_SETTINGS.messageDisplay.showWidgetRegenerateButton,
+      showEditButton: typeof messageDisplaySource.showEditButton === "boolean" ? messageDisplaySource.showEditButton : DEFAULT_SETTINGS.messageDisplay.showEditButton,
+      showDeleteButton: typeof messageDisplaySource.showDeleteButton === "boolean" ? messageDisplaySource.showDeleteButton : DEFAULT_SETTINGS.messageDisplay.showDeleteButton,
+      showNoTrackerForSwipe: typeof messageDisplaySource.showNoTrackerForSwipe === "boolean" ? messageDisplaySource.showNoTrackerForSwipe : DEFAULT_SETTINGS.messageDisplay.showNoTrackerForSwipe,
       showGenerationDuration: typeof messageDisplaySource.showGenerationDuration === "boolean" ? messageDisplaySource.showGenerationDuration : DEFAULT_SETTINGS.messageDisplay.showGenerationDuration,
+      minimizedMaxHeightPx: clampNumber(
+        messageDisplaySource.minimizedMaxHeightPx,
+        SETTINGS_LIMITS.minimizedMaxHeightPx.default,
+        SETTINGS_LIMITS.minimizedMaxHeightPx.min,
+        SETTINGS_LIMITS.minimizedMaxHeightPx.max
+      ),
       maxRenderedChars: clampNumber(
         messageDisplaySource.maxRenderedChars,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
@@ -1383,8 +1637,11 @@ function snapshotPath(chatId) {
 function messageSnapshotsPrefix(chatId) {
   return `chats/${encodeStorageSegment(chatId)}/messages/`;
 }
-function messageSnapshotPath(chatId, messageId) {
+function legacyMessageSnapshotPath(chatId, messageId) {
   return `${messageSnapshotsPrefix(chatId)}${encodeStorageSegment(messageId)}/tracker-snapshot.json`;
+}
+function messageSnapshotPath(chatId, messageId, swipeKey = "default") {
+  return `${messageSnapshotsPrefix(chatId)}${encodeStorageSegment(messageId)}/swipes/${encodeStorageSegment(swipeKey)}/tracker-snapshot.json`;
 }
 function messageSnapshotIndexPath(chatId) {
   return `chats/${encodeStorageSegment(chatId)}/message-snapshots/index.json`;
@@ -1474,7 +1731,7 @@ var autoSubscriptionsActive = false;
 var contextHandlerRegistered = false;
 var internalTrackerGenerationDepth = 0;
 var disposed = false;
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null;
 }
 function nowIso() {
@@ -1503,7 +1760,7 @@ function diagnosticError(error, fallbackStage) {
   return result;
 }
 function isFrontendMessage(payload) {
-  if (!isRecord6(payload) || typeof payload.type !== "string") return false;
+  if (!isRecord7(payload) || typeof payload.type !== "string") return false;
   if (![
     "ready",
     "refresh_state",
@@ -1521,7 +1778,9 @@ function isFrontendMessage(payload) {
     "validate_preset",
     "render_template",
     "regenerate_message_tracker",
-    "cancel_tracker_generation"
+    "cancel_tracker_generation",
+    "delete_message_tracker",
+    "save_edited_message_tracker"
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if ([
@@ -1539,14 +1798,20 @@ function isFrontendMessage(payload) {
     "validate_preset",
     "render_template",
     "regenerate_message_tracker",
-    "cancel_tracker_generation"
+    "cancel_tracker_generation",
+    "delete_message_tracker",
+    "save_edited_message_tracker"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
-  if (payload.type === "save_settings" && !isRecord6(payload.settings)) return false;
-  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord6(payload.preset)) return false;
+  if (payload.type === "save_settings" && !isRecord7(payload.settings)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord7(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
-  if (payload.type === "regenerate_message_tracker" && typeof payload.messageId !== "string") return false;
-  if (payload.type === "cancel_tracker_generation" && typeof payload.jobId !== "string") return false;
+  if (payload.type === "regenerate_message_tracker" && (typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
+  if (payload.type === "cancel_tracker_generation" && ("jobId" in payload && payload.jobId !== null && payload.jobId !== void 0 && typeof payload.jobId !== "string")) return false;
+  if (payload.type === "cancel_tracker_generation" && ("messageId" in payload && payload.messageId !== null && payload.messageId !== void 0 && typeof payload.messageId !== "string")) return false;
+  if (payload.type === "cancel_tracker_generation" && ("swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
+  if (payload.type === "delete_message_tracker" && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string")) return false;
+  if (payload.type === "save_edited_message_tracker" && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string" || typeof payload.jsonText !== "string")) return false;
   if (payload.type === "render_template" && "source" in payload && payload.source !== void 0 && payload.source !== "latest_chat_snapshot" && payload.source !== "latest_message_snapshot") return false;
   return true;
 }
@@ -1640,13 +1905,26 @@ function defaultDiagnostics(chatId) {
     lastWidgetRegenerateError: null,
     activeWidgetRegenerationCount: 0,
     messageWidgetPlacementResolved: "host_default",
-    messageWidgetPlacementReason: MESSAGE_WIDGET_PLACEMENT_REASON
+    messageWidgetPlacementReason: MESSAGE_WIDGET_PLACEMENT_REASON,
+    messageDisplayRenderer: "drawer_history",
+    lastDomInjectionAt: null,
+    lastDomInjectionError: null,
+    lastUninjectAt: null,
+    lastDeletedTrackerMessageId: null,
+    lastDeletedTrackerSwipeKey: null,
+    lastEditedTrackerMessageId: null,
+    lastEditedTrackerSwipeKey: null,
+    lastSwipeDetectedMessageId: null,
+    lastSwipeKey: null,
+    lastSwipeKeySource: null,
+    swipeTrackerIndexCount: 0,
+    activeTrackerJobs: []
   };
 }
 function stringOrNull2(value) {
   return typeof value === "string" ? value : null;
 }
-function numberOrNull(value) {
+function numberOrNull2(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 function nonNegativeInteger(value) {
@@ -1656,10 +1934,10 @@ function stringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 function recordOrNull(value) {
-  return isRecord6(value) && !Array.isArray(value) ? value : null;
+  return isRecord7(value) && !Array.isArray(value) ? value : null;
 }
 function sourceKindOrNull(value) {
-  return value === "manual" || value === "auto" ? value : null;
+  return value === "manual" || value === "auto" || value === "widget" ? value : null;
 }
 function autoEventTypeOrNull(value) {
   return value === "GENERATION_ENDED" || value === "MESSAGE_SENT" ? value : null;
@@ -1677,7 +1955,7 @@ function renderStatusOrNull(value) {
   return value === "rendered" || value === "fallback" || value === "no_template" || value === "no_snapshot" || value === "error" ? value : null;
 }
 function messageDisplayModeOrNull(value) {
-  return value === "message_widget" || value === "drawer_history" || value === "disabled" ? value : null;
+  return value === "dom_injection" || value === "message_widget" || value === "drawer_history" || value === "disabled" ? value : null;
 }
 function messageDisplayPlacementOrNull(value) {
   return value === "top" || value === "bottom" ? value : null;
@@ -1685,8 +1963,17 @@ function messageDisplayPlacementOrNull(value) {
 function messageWidgetPlacementResolved(value) {
   return value === "top" || value === "bottom" || value === "host_default" || value === "unsupported" ? value : MESSAGE_LOCAL_UI_SUPPORTED ? "host_default" : "unsupported";
 }
+function messageDisplayRenderer(value) {
+  return value === "dom_injection" || value === "iframe_widget" || value === "drawer_history" ? value : "drawer_history";
+}
+function activeTrackerJobsOrEmpty(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => {
+    return isRecord7(item) && typeof item.jobId === "string" && typeof item.messageId === "string" && typeof item.swipeKey === "string" && typeof item.startedAt === "string";
+  });
+}
 function errorOrNull(value) {
-  if (!isRecord6(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
+  if (!isRecord7(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
   const error = {
     stage: value.stage,
     message: value.message,
@@ -1696,7 +1983,7 @@ function errorOrNull(value) {
   return error;
 }
 function cancellationOrNull(value) {
-  if (!isRecord6(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
+  if (!isRecord7(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
   return {
     jobId: value.jobId,
     requestId: value.requestId,
@@ -1706,7 +1993,7 @@ function cancellationOrNull(value) {
 }
 function repairDiagnostics(value, chatId) {
   const base = defaultDiagnostics(chatId);
-  if (!isRecord6(value)) return base;
+  if (!isRecord7(value)) return base;
   return {
     ...base,
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
@@ -1715,7 +2002,7 @@ function repairDiagnostics(value, chatId) {
     lastGenerationSource: sourceKindOrNull(value.lastGenerationSource),
     lastGenerationStartedAt: stringOrNull2(value.lastGenerationStartedAt),
     lastGenerationCompletedAt: stringOrNull2(value.lastGenerationCompletedAt),
-    lastGenerationDurationMs: numberOrNull(value.lastGenerationDurationMs),
+    lastGenerationDurationMs: numberOrNull2(value.lastGenerationDurationMs),
     lastMessagesRead: typeof value.lastMessagesRead === "number" && Number.isFinite(value.lastMessagesRead) ? Math.max(0, Math.round(value.lastMessagesRead)) : 0,
     lastSourceMessageIds: stringArray(value.lastSourceMessageIds),
     lastSourceMessageRange: stringOrNull2(value.lastSourceMessageRange),
@@ -1776,12 +2063,25 @@ function repairDiagnostics(value, chatId) {
     lastWidgetRegenerateMessageId: stringOrNull2(value.lastWidgetRegenerateMessageId),
     lastWidgetRegenerateStartedAt: stringOrNull2(value.lastWidgetRegenerateStartedAt),
     lastWidgetRegenerateCompletedAt: stringOrNull2(value.lastWidgetRegenerateCompletedAt),
-    lastWidgetRegenerateDurationMs: numberOrNull(value.lastWidgetRegenerateDurationMs),
+    lastWidgetRegenerateDurationMs: numberOrNull2(value.lastWidgetRegenerateDurationMs),
     lastWidgetRegenerateCancelledAt: stringOrNull2(value.lastWidgetRegenerateCancelledAt),
     lastWidgetRegenerateError: stringOrNull2(value.lastWidgetRegenerateError),
     activeWidgetRegenerationCount: typeof value.activeWidgetRegenerationCount === "number" && Number.isFinite(value.activeWidgetRegenerationCount) ? Math.max(0, Math.round(value.activeWidgetRegenerationCount)) : 0,
     messageWidgetPlacementResolved: messageWidgetPlacementResolved(value.messageWidgetPlacementResolved),
-    messageWidgetPlacementReason: stringOrNull2(value.messageWidgetPlacementReason) ?? MESSAGE_WIDGET_PLACEMENT_REASON
+    messageWidgetPlacementReason: stringOrNull2(value.messageWidgetPlacementReason) ?? MESSAGE_WIDGET_PLACEMENT_REASON,
+    messageDisplayRenderer: messageDisplayRenderer(value.messageDisplayRenderer),
+    lastDomInjectionAt: stringOrNull2(value.lastDomInjectionAt),
+    lastDomInjectionError: stringOrNull2(value.lastDomInjectionError),
+    lastUninjectAt: stringOrNull2(value.lastUninjectAt),
+    lastDeletedTrackerMessageId: stringOrNull2(value.lastDeletedTrackerMessageId),
+    lastDeletedTrackerSwipeKey: stringOrNull2(value.lastDeletedTrackerSwipeKey),
+    lastEditedTrackerMessageId: stringOrNull2(value.lastEditedTrackerMessageId),
+    lastEditedTrackerSwipeKey: stringOrNull2(value.lastEditedTrackerSwipeKey),
+    lastSwipeDetectedMessageId: stringOrNull2(value.lastSwipeDetectedMessageId),
+    lastSwipeKey: stringOrNull2(value.lastSwipeKey),
+    lastSwipeKeySource: stringOrNull2(value.lastSwipeKeySource),
+    swipeTrackerIndexCount: typeof value.swipeTrackerIndexCount === "number" && Number.isFinite(value.swipeTrackerIndexCount) ? Math.max(0, Math.round(value.swipeTrackerIndexCount)) : 0,
+    activeTrackerJobs: activeTrackerJobsOrEmpty(value.activeTrackerJobs)
   };
 }
 async function getSettings(userId) {
@@ -1848,7 +2148,7 @@ async function loadActivePresetState(chatId, userId) {
     fallback: null,
     userId
   });
-  if (!isRecord6(raw) || typeof raw.selectedPresetId !== "string") {
+  if (!isRecord7(raw) || typeof raw.selectedPresetId !== "string") {
     return defaultActivePresetState();
   }
   return {
@@ -1905,13 +2205,19 @@ async function loadSnapshot(chatId, userId) {
   });
   return snapshot ? normalizeTrackerSnapshotPresetMetadata(snapshot) : null;
 }
-async function loadMessageSnapshot(chatId, messageId, userId) {
+async function loadMessageSnapshot(chatId, messageId, userId, swipeKey = DEFAULT_SWIPE_KEY) {
   if (!chatId || !messageId) return null;
-  const snapshot = await spindle.userStorage.getJson(messageSnapshotPath(chatId, messageId), {
+  const snapshot = await spindle.userStorage.getJson(messageSnapshotPath(chatId, messageId, swipeKey), {
     fallback: null,
     userId
   });
-  return snapshot ? normalizeMessageAttachedSnapshotPresetMetadata(snapshot) : null;
+  if (snapshot) return normalizeMessageAttachedSnapshotPresetMetadata(snapshot);
+  if (swipeKey !== DEFAULT_SWIPE_KEY) return null;
+  const legacy = await spindle.userStorage.getJson(legacyMessageSnapshotPath(chatId, messageId), {
+    fallback: null,
+    userId
+  });
+  return legacy ? normalizeMessageAttachedSnapshotPresetMetadata(legacy) : null;
 }
 async function loadMessageSnapshotIndex(chatId, userId) {
   if (!chatId) return [];
@@ -1931,18 +2237,55 @@ async function saveMessageSnapshotIndex(chatId, index, userId) {
     userId
   });
 }
+function chatJobKey(chatId) {
+  return `chat:${chatId}`;
+}
+function trackerJobKey(chatId, messageId, swipeKey) {
+  return `tracker:${chatId}:${messageId}:${swipeKey}`;
+}
+function jobKeyForTrigger(chatId, trigger) {
+  return trigger.kind === "manual" ? chatJobKey(chatId) : trackerJobKey(chatId, trigger.sourceMessageId, trigger.swipeKey);
+}
+function jobsForChat(chatId) {
+  return [...activeJobs.values()].filter((job) => job.chatId === chatId);
+}
+function hasActiveJobForChat(chatId) {
+  return jobsForChat(chatId).length > 0;
+}
+function abortJobsForChat(chatId, reason) {
+  for (const job of jobsForChat(chatId)) {
+    job.cancelReason = reason;
+    job.controller.abort();
+  }
+}
 function activeWidgetJobsForChat(chatId) {
   if (!chatId) return {};
-  const job = activeJobs.get(chatId);
-  if (!job || job.sourceKind !== "widget" || !job.sourceMessageId) return {};
-  return {
-    [job.sourceMessageId]: {
+  const result = {};
+  for (const job of jobsForChat(chatId)) {
+    if (!job.sourceMessageId || !job.swipeKey) continue;
+    result[swipeIdentityKey({ messageId: job.sourceMessageId, swipeKey: job.swipeKey })] = {
       jobId: job.jobId,
       startedAt: job.startedAt
-    }
-  };
+    };
+  }
+  return result;
 }
-function resolveMessageWidgetPlacement(requested) {
+function activeTrackerJobDiagnostics(chatId) {
+  if (!chatId) return [];
+  return jobsForChat(chatId).filter((job) => job.sourceMessageId && job.swipeKey).map((job) => ({
+    jobId: job.jobId,
+    messageId: job.sourceMessageId ?? "",
+    swipeKey: job.swipeKey ?? DEFAULT_SWIPE_KEY,
+    startedAt: job.startedAt
+  }));
+}
+function resolveMessageWidgetPlacement(requested, settings) {
+  if (settings?.messageDisplay.useDomInjection) {
+    return {
+      resolved: requested,
+      reason: requested === "top" ? null : "DOM injection uses beforeend for bottom placement."
+    };
+  }
   if (!MESSAGE_LOCAL_UI_SUPPORTED) {
     return { resolved: "unsupported", reason: MESSAGE_LOCAL_UI_FALLBACK_REASON ?? MESSAGE_WIDGET_PLACEMENT_REASON };
   }
@@ -1981,8 +2324,9 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
   const snapshot = await loadSnapshot(chatId, userId);
   const activeWidgetJobs = activeWidgetJobsForChat(chatId);
   const messageSnapshotIndex = await loadMessageSnapshotIndex(chatId, userId);
+  const selectedSwipeIdentities = await selectedSwipeIdentitiesForChat(chatId);
   const historySnapshots = await Promise.all(
-    messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId))
+    messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId, entry.swipeKey))
   );
   const messageSnapshotHistory = buildMessageTrackerHistory({
     index: messageSnapshotIndex,
@@ -1990,16 +2334,19 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     latestChatSnapshot: snapshot,
     preset: presetState.activePreset,
     settings: settings.messageDisplay,
-    activeWidgetJobs
+    activeWidgetJobs,
+    selectedSwipeIdentities
   });
   const latestMessageSnapshot = await loadMessageSnapshot(
     chatId,
     diagnostics.latestAttachedMessageId,
-    userId
+    userId,
+    diagnostics.lastSwipeKey ?? DEFAULT_SWIPE_KEY
   );
-  const messageDisplayMode = !settings.messageDisplay.enabled ? "disabled" : MESSAGE_LOCAL_UI_SUPPORTED ? "message_widget" : "drawer_history";
+  const messageDisplayMode = !settings.messageDisplay.enabled ? "disabled" : settings.messageDisplay.useDomInjection ? "dom_injection" : settings.messageDisplay.fallbackToIframeWidget && MESSAGE_LOCAL_UI_SUPPORTED ? "message_widget" : "drawer_history";
+  const messageDisplayRenderer2 = !settings.messageDisplay.enabled ? "drawer_history" : settings.messageDisplay.useDomInjection ? "dom_injection" : settings.messageDisplay.fallbackToIframeWidget && MESSAGE_LOCAL_UI_SUPPORTED ? "iframe_widget" : "drawer_history";
   const messageDisplayHydratedCount = settings.messageDisplay.enabled ? messageSnapshotHistory.filter((entry) => entry.snapshot !== null).length : 0;
-  const placement = resolveMessageWidgetPlacement(settings.messageDisplay.placement);
+  const placement = resolveMessageWidgetPlacement(settings.messageDisplay.placement, settings);
   const activeWidgetRegenerationCount = Object.keys(activeWidgetJobs).length;
   const injectionPreview = CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? buildInjectionDecision({
     settings,
@@ -2042,9 +2389,12 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
       messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
       messageSnapshotIndexCount: messageSnapshotIndex.length,
+      swipeTrackerIndexCount: messageSnapshotIndex.length,
       activeWidgetRegenerationCount,
+      activeTrackerJobs: activeTrackerJobDiagnostics(chatId),
       messageWidgetPlacementResolved: placement.resolved,
-      messageWidgetPlacementReason: placement.reason
+      messageWidgetPlacementReason: placement.reason,
+      messageDisplayRenderer: messageDisplayRenderer2
     }
   };
 }
@@ -2082,6 +2432,21 @@ async function getRecentMessages(chatId, settings) {
   const messages = await readChatMessages(chatId);
   return messages.slice(-settings.recentMessageLimit);
 }
+async function selectedSwipeIdentitiesForChat(chatId) {
+  if (!chatId) return {};
+  try {
+    const messages = await readChatMessages(chatId);
+    const result = {};
+    for (const message of messages) {
+      if (message.is_user) continue;
+      result[message.id] = deriveSwipeTrackerIdentity(chatId, message);
+    }
+    return result;
+  } catch (error) {
+    spindle.log.warn(`LTracker could not read selected swipes: ${errorMessage(error)}`);
+    return {};
+  }
+}
 async function getMessagesForTrigger(chatId, settings, trigger) {
   if (trigger.kind !== "widget") return getRecentMessages(chatId, settings);
   const messages = await readChatMessages(chatId);
@@ -2101,7 +2466,7 @@ function normalizeMessages(messages) {
 }
 function normalizeGenerationText(result) {
   if (typeof result === "string" && result.trim()) return result;
-  if (!isRecord6(result)) {
+  if (!isRecord7(result)) {
     throw new Error("Lumiverse generation returned an unsupported response.");
   }
   for (const key of ["content", "text", "output", "response"]) {
@@ -2110,7 +2475,7 @@ function normalizeGenerationText(result) {
   }
   const message = result.message;
   if (typeof message === "string" && message.trim()) return message;
-  if (isRecord6(message) && typeof message.content === "string" && message.content.trim()) {
+  if (isRecord7(message) && typeof message.content === "string" && message.content.trim()) {
     return message.content;
   }
   throw new Error("Lumiverse generation completed without textual content.");
@@ -2160,18 +2525,23 @@ async function saveSnapshot(snapshot, userId) {
   });
 }
 async function saveMessageAttachedSnapshot(snapshot, userId) {
-  await spindle.userStorage.setJson(messageSnapshotPath(snapshot.chatId, snapshot.messageId), snapshot, {
+  await spindle.userStorage.setJson(messageSnapshotPath(snapshot.chatId, snapshot.messageId, snapshot.swipeKey), snapshot, {
     indent: 2,
     userId
   });
 }
 async function saveMessageAttachedSnapshotWithIndex(snapshot, userId) {
   await saveMessageAttachedSnapshot(snapshot, userId);
-  const storageKey = messageSnapshotPath(snapshot.chatId, snapshot.messageId);
+  const storageKey = messageSnapshotPath(snapshot.chatId, snapshot.messageId, snapshot.swipeKey);
   const index = await loadMessageSnapshotIndex(snapshot.chatId, userId);
   const nextIndex = upsertMessageSnapshotIndexEntry(index, {
     messageId: snapshot.messageId,
     messageIndex: snapshot.messageIndex,
+    swipeKey: snapshot.swipeKey,
+    swipeIndex: snapshot.swipeIndex,
+    swipeId: snapshot.swipeId,
+    swipeContentHash: snapshot.swipeContentHash,
+    swipeKeySource: snapshot.swipeKeySource,
     createdAt: snapshot.attachedAt,
     presetId: snapshot.presetId,
     presetName: snapshot.presetName,
@@ -2195,8 +2565,8 @@ function sourceRange(ids) {
 function newJobId() {
   return `job:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
-function isCurrentJob(chatId, jobId) {
-  return activeJobs.get(chatId)?.jobId === jobId;
+function isCurrentJob(jobKey, jobId) {
+  return activeJobs.get(jobKey)?.jobId === jobId;
 }
 function userChatKey(userId, chatId) {
   return `${userId}:${chatId}`;
@@ -2208,6 +2578,7 @@ function createManualTrigger(requestId) {
   return { kind: "manual", requestId };
 }
 function createAutoTrigger(input) {
+  const identity = deriveSwipeTrackerIdentity(input.message.chat_id, input.message);
   return {
     kind: "auto",
     requestId: input.requestId,
@@ -2215,21 +2586,35 @@ function createAutoTrigger(input) {
     sourceMessageId: input.message.id,
     sourceMessageIndex: input.message.index_in_chat,
     generationId: input.generationId ?? null,
-    generationType: input.generationType ?? null
+    generationType: input.generationType ?? null,
+    swipeKey: identity.swipeKey,
+    swipeIndex: identity.swipeIndex,
+    swipeId: identity.swipeId,
+    swipeContentHash: identity.swipeContentHash,
+    swipeKeySource: identity.swipeKeySource
   };
 }
 function createWidgetTrigger(input) {
+  const identity = deriveSwipeTrackerIdentity(input.message.chat_id, input.message);
+  if (input.swipeKey && input.swipeKey !== identity.swipeKey) {
+    throw new LTrackerStageError("read_messages", "The selected swipe changed before tracker regeneration started.");
+  }
   return {
     kind: "widget",
     requestId: input.requestId,
     sourceMessageId: input.message.id,
-    sourceMessageIndex: input.message.index_in_chat
+    sourceMessageIndex: input.message.index_in_chat,
+    swipeKey: identity.swipeKey,
+    swipeIndex: identity.swipeIndex,
+    swipeId: identity.swipeId,
+    swipeContentHash: identity.swipeContentHash,
+    swipeKeySource: identity.swipeKeySource
   };
 }
 async function markAutoSkipped(chatId, userId, trigger, reason, eventAt = null) {
   const diagnostics = {
     ...await loadDiagnostics(chatId, userId),
-    status: activeJobs.has(chatId) ? "generating" : "idle",
+    status: hasActiveJobForChat(chatId) ? "generating" : "idle",
     lastAutoEventAt: eventAt ?? nowIso(),
     lastAutoEventType: trigger.eventType,
     lastAutoSkippedReason: reason,
@@ -2252,10 +2637,11 @@ function cancelPendingAutoForChat(chatId, userId, reason) {
   }
 }
 function abortAutoJobForChat(chatId, reason) {
-  const job = activeJobs.get(chatId);
-  if (!job || job.sourceKind !== "auto") return;
-  job.cancelReason = reason;
-  job.controller.abort();
+  for (const job of jobsForChat(chatId)) {
+    if (job.sourceKind !== "auto") continue;
+    job.cancelReason = reason;
+    job.controller.abort();
+  }
 }
 function rememberActiveChat(userId, chatId) {
   const previous = activeChatByUser.get(userId) ?? null;
@@ -2281,11 +2667,11 @@ function targetUsersForChat(chatId, userId) {
   return [...usersByChat.get(chatId) ?? []];
 }
 function isChatMessage(value) {
-  return isRecord6(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
+  return isRecord7(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
 }
 function messageFromEventPayload(payload) {
   if (isChatMessage(payload)) return payload;
-  if (isRecord6(payload) && isChatMessage(payload.message)) return payload.message;
+  if (isRecord7(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
 }
 async function scheduleAutoForMessage(input) {
@@ -2308,7 +2694,7 @@ async function scheduleAutoForMessage(input) {
     messageCount: messages.length,
     chatId: input.chatId,
     activeChatId: activeChatByUser.get(input.userId) ?? null,
-    trackerGenerationRunning: activeJobs.has(input.chatId)
+    trackerGenerationRunning: hasActiveJobForChat(input.chatId)
   });
   if (!decision.shouldSchedule) {
     await markAutoSkipped(input.chatId, input.userId, trigger, decision.reason, input.eventAt);
@@ -2362,7 +2748,7 @@ async function runPendingAuto(key) {
     );
     return;
   }
-  if (activeJobs.has(pending.chatId)) {
+  if (hasActiveJobForChat(pending.chatId)) {
     await markAutoSkipped(
       pending.chatId,
       pending.userId,
@@ -2388,6 +2774,7 @@ async function handleGenerationEnded(payload, userId) {
     const messages = await readChatMessages(payload.chatId);
     const message = messages.find((item) => item.id === payload.messageId);
     if (!message) {
+      const identity = defaultSwipeIdentity(payload.chatId, payload.messageId);
       const trigger = {
         kind: "auto",
         requestId: `auto:GENERATION_ENDED:${payload.messageId}:${Date.now()}`,
@@ -2395,7 +2782,12 @@ async function handleGenerationEnded(payload, userId) {
         sourceMessageId: payload.messageId,
         sourceMessageIndex: null,
         generationId: payload.generationId,
-        generationType: payload.generationType ?? null
+        generationType: payload.generationType ?? null,
+        swipeKey: identity.swipeKey,
+        swipeIndex: identity.swipeIndex,
+        swipeId: identity.swipeId,
+        swipeContentHash: identity.swipeContentHash,
+        swipeKeySource: identity.swipeKeySource
       };
       await markAutoSkipped(payload.chatId, targetUserId, trigger, "Generated message was not found.", eventAt);
       continue;
@@ -2440,8 +2832,46 @@ async function handleMessageSent(payload, userId) {
     });
   }
 }
+async function handleMessageSwiped(payload, userId) {
+  if (!isRecord7(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  const message = payload.message;
+  const identity = deriveSwipeTrackerIdentity(payload.chatId, message);
+  const users = targetUsersForChat(payload.chatId, userId);
+  const eventAt = nowIso();
+  for (const targetUserId of users) {
+    const diagnostics = {
+      ...await loadDiagnostics(payload.chatId, targetUserId),
+      lastSwipeDetectedMessageId: message.id,
+      lastSwipeKey: identity.swipeKey,
+      lastSwipeKeySource: identity.swipeKeySource
+    };
+    await tryPersistDiagnostics(diagnostics, targetUserId);
+    const action = typeof payload.action === "string" ? payload.action : null;
+    if (!message.is_user && (action === "added" || action === "updated")) {
+      await scheduleAutoForMessage({
+        chatId: payload.chatId,
+        userId: targetUserId,
+        eventType: "GENERATION_ENDED",
+        eventAt,
+        message,
+        generationId: null,
+        generationType: "swipe"
+      });
+    } else {
+      await sendState(payload.chatId, targetUserId, diagnostics.status, null);
+    }
+  }
+}
+async function handleSwipeEdited(payload, userId) {
+  if (!isRecord7(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  await handleMessageSwiped({
+    chatId: payload.chatId,
+    message: payload.message,
+    action: "updated"
+  }, userId);
+}
 function handleChatSwitched(payload, userId) {
-  if (!userId || !isRecord6(payload)) return;
+  if (!userId || !isRecord7(payload)) return;
   const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
   rememberActiveChat(userId, chatId);
 }
@@ -2460,8 +2890,9 @@ async function generateTracker(chatId, userId, trigger) {
   });
   if (trigger.kind === "manual") {
     cancelPendingAutoForChat(resolvedChatId, userId, "Manual generation superseded the pending auto job.");
+    abortJobsForChat(resolvedChatId, "Manual generation superseded this tracker job.");
   }
-  if (trigger.kind === "auto" && activeJobs.has(resolvedChatId)) {
+  if (trigger.kind === "auto" && hasActiveJobForChat(resolvedChatId)) {
     await markAutoSkipped(
       resolvedChatId,
       userId,
@@ -2471,15 +2902,16 @@ async function generateTracker(chatId, userId, trigger) {
     );
     return;
   }
-  if (trigger.kind === "widget" && activeJobs.has(resolvedChatId)) {
-    const running = activeJobs.get(resolvedChatId);
-    if (running?.sourceKind === "widget" && running.sourceMessageId === trigger.sourceMessageId) {
+  const jobKey = jobKeyForTrigger(resolvedChatId, trigger);
+  if (trigger.kind === "widget") {
+    const running = activeJobs.get(jobKey);
+    if (running) {
       running.cancelReason = "Widget regeneration was cancelled.";
       running.controller.abort();
       return;
     }
   }
-  const existing = activeJobs.get(resolvedChatId);
+  const existing = activeJobs.get(jobKey);
   const lastCancellation = existing ? {
     jobId: existing.jobId,
     requestId: existing.requestId,
@@ -2491,6 +2923,8 @@ async function generateTracker(chatId, userId, trigger) {
   const startedAt = new Date(startedAtMs).toISOString();
   const job = {
     controller: new AbortController(),
+    chatId: resolvedChatId,
+    jobKey,
     jobId: newJobId(),
     requestId,
     sourceKind: trigger.kind,
@@ -2499,8 +2933,13 @@ async function generateTracker(chatId, userId, trigger) {
   if (trigger.kind === "auto" || trigger.kind === "widget") {
     job.sourceMessageId = trigger.sourceMessageId;
     job.sourceMessageIndex = trigger.sourceMessageIndex;
+    job.swipeKey = trigger.swipeKey;
+    job.swipeIndex = trigger.swipeIndex;
+    job.swipeId = trigger.swipeId;
+    job.swipeContentHash = trigger.swipeContentHash;
+    job.swipeKeySource = trigger.swipeKeySource;
   }
-  activeJobs.set(resolvedChatId, job);
+  activeJobs.set(jobKey, job);
   let diagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
     status: "generating",
@@ -2533,7 +2972,11 @@ async function generateTracker(chatId, userId, trigger) {
       lastAutoSkippedReason: null,
       lastAutoSourceMessageId: trigger.sourceMessageId,
       lastAutoSourceMessageIndex: trigger.sourceMessageIndex,
-      lastAutoGenerationId: trigger.generationId
+      lastAutoGenerationId: trigger.generationId,
+      lastSwipeDetectedMessageId: trigger.sourceMessageId,
+      lastSwipeKey: trigger.swipeKey,
+      lastSwipeKeySource: trigger.swipeKeySource,
+      activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
     };
   }
   if (trigger.kind === "widget") {
@@ -2545,7 +2988,11 @@ async function generateTracker(chatId, userId, trigger) {
       lastWidgetRegenerateDurationMs: null,
       lastWidgetRegenerateCancelledAt: null,
       lastWidgetRegenerateError: null,
-      activeWidgetRegenerationCount: 1
+      activeWidgetRegenerationCount: 1,
+      lastSwipeDetectedMessageId: trigger.sourceMessageId,
+      lastSwipeKey: trigger.swipeKey,
+      lastSwipeKeySource: trigger.swipeKeySource,
+      activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
     };
   }
   await tryPersistDiagnostics(diagnostics, userId);
@@ -2576,14 +3023,14 @@ async function generateTracker(chatId, userId, trigger) {
     await tryPersistDiagnostics(diagnostics, userId);
     stage = "generation";
     const rawOutput = await runTrackerGeneration(promptMessages, userId, settings, job.controller.signal);
-    if (!isCurrentJob(resolvedChatId, job.jobId)) return;
+    if (!isCurrentJob(jobKey, job.jobId)) return;
     diagnostics = {
       ...diagnostics,
       lastRawOutput: settings.saveRawOutput ? rawOutput : "[Raw output saving disabled]"
     };
     stage = "parse";
     const data = parseTrackerJson(rawOutput);
-    if (!isCurrentJob(resolvedChatId, job.jobId)) return;
+    if (!isCurrentJob(jobKey, job.jobId)) return;
     if (trigger.kind === "auto" && settings.auto.onlyWhenChatActive && activeChatByUser.get(userId) !== resolvedChatId) {
       const completedAtMs2 = Date.now();
       diagnostics = {
@@ -2631,13 +3078,18 @@ async function generateTracker(chatId, userId, trigger) {
     };
     if (trigger.kind === "auto" && settings.auto.attachSnapshotToMessage || trigger.kind === "widget") {
       const attachedAt = nowIso();
-      const storageKey = messageSnapshotPath(resolvedChatId, trigger.sourceMessageId);
+      const storageKey = messageSnapshotPath(resolvedChatId, trigger.sourceMessageId, trigger.swipeKey);
       const attachedSnapshot = {
         schemaVersion: STORAGE_SCHEMA_VERSION,
         extensionVersion: EXTENSION_VERSION,
         chatId: resolvedChatId,
         messageId: trigger.sourceMessageId,
         messageIndex: trigger.sourceMessageIndex,
+        swipeKey: trigger.swipeKey,
+        swipeIndex: trigger.swipeIndex,
+        swipeId: trigger.swipeId,
+        swipeContentHash: trigger.swipeContentHash,
+        swipeKeySource: trigger.swipeKeySource,
         presetId: presetState.activePreset.id,
         presetName: presetState.activePreset.name,
         presetVersion: presetState.activePreset.version,
@@ -2652,7 +3104,12 @@ async function generateTracker(chatId, userId, trigger) {
         latestAttachedMessageIndex: trigger.sourceMessageIndex,
         latestAttachedSnapshotAt: attachedAt,
         latestAttachedSnapshotStorageKey: storageKey,
-        messageSnapshotIndexCount: index.length
+        messageSnapshotIndexCount: index.length,
+        swipeTrackerIndexCount: index.length,
+        lastSwipeDetectedMessageId: trigger.sourceMessageId,
+        lastSwipeKey: trigger.swipeKey,
+        lastSwipeKeySource: trigger.swipeKeySource,
+        activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
       };
       if (trigger.kind === "widget") {
         diagnostics = {
@@ -2662,14 +3119,15 @@ async function generateTracker(chatId, userId, trigger) {
           lastWidgetRegenerateDurationMs: completedAtMs - startedAtMs,
           lastWidgetRegenerateCancelledAt: null,
           lastWidgetRegenerateError: null,
-          activeWidgetRegenerationCount: 0
+          activeWidgetRegenerationCount: 0,
+          activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
         };
       }
     }
     await persistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "idle", null, requestId);
   } catch (error) {
-    if (!isCurrentJob(resolvedChatId, job.jobId)) return;
+    if (!isCurrentJob(jobKey, job.jobId)) return;
     if (job.controller.signal.aborted && job.cancelReason) {
       const completedAtMs2 = Date.now();
       const cancelledAt = new Date(completedAtMs2).toISOString();
@@ -2700,7 +3158,8 @@ async function generateTracker(chatId, userId, trigger) {
           lastWidgetRegenerateDurationMs: completedAtMs2 - startedAtMs,
           lastWidgetRegenerateCancelledAt: cancelledAt,
           lastWidgetRegenerateError: null,
-          activeWidgetRegenerationCount: 0
+          activeWidgetRegenerationCount: 0,
+          activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
         };
       }
       await tryPersistDiagnostics(diagnostics, userId);
@@ -2724,13 +3183,14 @@ async function generateTracker(chatId, userId, trigger) {
         lastWidgetRegenerateDurationMs: completedAtMs - startedAtMs,
         lastWidgetRegenerateCancelledAt: null,
         lastWidgetRegenerateError: currentError.message,
-        activeWidgetRegenerationCount: 0
+        activeWidgetRegenerationCount: 0,
+        activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
       };
     }
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "error", currentError, requestId);
   } finally {
-    if (isCurrentJob(resolvedChatId, job.jobId)) activeJobs.delete(resolvedChatId);
+    if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
   }
 }
 async function clearSnapshot(chatId, userId, requestId) {
@@ -2862,13 +3322,13 @@ function normalizePresetDraft(value) {
     name: typeof value.name === "string" ? value.name : "",
     description: typeof value.description === "string" ? value.description : "",
     version: typeof value.version === "string" ? value.version : "1.0",
-    jsonSchema: isRecord6(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord7(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: typeof value.promptInstructions === "string" ? value.promptInstructions : ""
   };
   if (typeof value.id === "string") draft.id = value.id;
   if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
   if (typeof value.notes === "string") draft.notes = value.notes;
-  if (isRecord6(value.capabilities)) {
+  if (isRecord7(value.capabilities)) {
     const capabilities = {};
     if (typeof value.capabilities.supportsHtmlTemplate === "boolean") {
       capabilities.supportsHtmlTemplate = value.capabilities.supportsHtmlTemplate;
@@ -3061,16 +3521,89 @@ async function regenerateMessageTracker(payload, userId) {
   }
   await generateTracker(resolvedChatId, userId, createWidgetTrigger({
     requestId: payload.requestId,
-    message
+    message,
+    swipeKey: payload.swipeKey ?? null
   }));
+}
+async function deleteMessageTracker(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const path = messageSnapshotPath(resolvedChatId, payload.messageId, payload.swipeKey);
+  if (await spindle.userStorage.exists(path, userId)) {
+    await spindle.userStorage.delete(path, userId);
+  }
+  if (payload.swipeKey === DEFAULT_SWIPE_KEY) {
+    const legacyPath = legacyMessageSnapshotPath(resolvedChatId, payload.messageId);
+    if (await spindle.userStorage.exists(legacyPath, userId)) {
+      await spindle.userStorage.delete(legacyPath, userId);
+    }
+  }
+  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  const nextIndex = removeMessageSnapshotIndexEntry(index, payload.messageId, payload.swipeKey);
+  await saveMessageSnapshotIndex(resolvedChatId, nextIndex, userId);
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastDeletedTrackerMessageId: payload.messageId,
+    lastDeletedTrackerSwipeKey: payload.swipeKey,
+    messageSnapshotIndexCount: nextIndex.length,
+    swipeTrackerIndexCount: nextIndex.length,
+    lastError: null
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+async function saveEditedMessageTracker(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const existing = await loadMessageSnapshot(resolvedChatId, payload.messageId, userId, payload.swipeKey);
+  if (!existing) {
+    throw new LTrackerStageError("storage", "No tracker snapshot exists for this message swipe.");
+  }
+  const parsed = parseTrackerJson(payload.jsonText);
+  const editedAt = nowIso();
+  const edited = {
+    ...existing,
+    extensionVersion: EXTENSION_VERSION,
+    attachedAt: editedAt,
+    snapshot: {
+      ...existing.snapshot,
+      extensionVersion: EXTENSION_VERSION,
+      data: parsed,
+      editedAt,
+      editedByUser: true
+    }
+  };
+  const index = await saveMessageAttachedSnapshotWithIndex(edited, userId);
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastEditedTrackerMessageId: payload.messageId,
+    lastEditedTrackerSwipeKey: payload.swipeKey,
+    latestAttachedMessageId: payload.messageId,
+    latestAttachedMessageIndex: existing.messageIndex,
+    latestAttachedSnapshotAt: editedAt,
+    latestAttachedSnapshotStorageKey: messageSnapshotPath(resolvedChatId, payload.messageId, payload.swipeKey),
+    messageSnapshotIndexCount: index.length,
+    swipeTrackerIndexCount: index.length,
+    lastParsedTracker: parsed,
+    lastError: null
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
 async function cancelTrackerGeneration(payload, userId) {
   const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
     stageError("active_chat", error);
   });
   rememberActiveChat(userId, resolvedChatId);
-  const job = activeJobs.get(resolvedChatId);
-  if (!job || job.jobId !== payload.jobId) {
+  const job = [...activeJobs.values()].find((item) => {
+    if (payload.jobId && item.jobId === payload.jobId) return true;
+    return Boolean(payload.messageId && payload.swipeKey && item.sourceMessageId === payload.messageId && item.swipeKey === payload.swipeKey);
+  });
+  if (!job || job.chatId !== resolvedChatId) {
     await sendState(resolvedChatId, userId, void 0, null, payload.requestId);
     return;
   }
@@ -3098,6 +3631,16 @@ function registerEventListeners() {
   eventCleanups.push(spindle.on("MESSAGE_SENT", (payload, userId) => {
     void handleMessageSent(payload, userId).catch((error) => {
       spindle.log.warn(`LTracker message-sent handler failed: ${errorMessage(error)}`);
+    });
+  }));
+  eventCleanups.push(spindle.on("MESSAGE_SWIPED", (payload, userId) => {
+    void handleMessageSwiped(payload, userId).catch((error) => {
+      spindle.log.warn(`LTracker message-swiped handler failed: ${errorMessage(error)}`);
+    });
+  }));
+  eventCleanups.push(spindle.on("SWIPE_EDITED", (payload, userId) => {
+    void handleSwipeEdited(payload, userId).catch((error) => {
+      spindle.log.warn(`LTracker swipe-edited handler failed: ${errorMessage(error)}`);
     });
   }));
   eventCleanups.push(spindle.on("CHAT_SWITCHED", handleChatSwitched));
@@ -3198,6 +3741,14 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "cancel_tracker_generation") {
         await cancelTrackerGeneration(payload, userId);
+        return;
+      }
+      if (payload.type === "delete_message_tracker") {
+        await deleteMessageTracker(payload, userId);
+        return;
+      }
+      if (payload.type === "save_edited_message_tracker") {
+        await saveEditedMessageTracker(payload, userId);
         return;
       }
       await handleRefresh(payload, userId);

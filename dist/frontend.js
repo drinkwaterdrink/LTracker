@@ -79,7 +79,7 @@ var VALUE_PATTERN = new RegExp(`{{\\s*(${TEMPLATE_PATH})\\s*}}`, "g");
 var MESSAGE_WIDGET_ID = "ltracker-message-tracker";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.09";
+var EXTENSION_VERSION = "0.10";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -93,7 +93,8 @@ var SETTINGS_LIMITS = {
   skipFirstMessages: { min: 0, max: 100, default: 2 },
   maxInjectedChars: { min: 500, max: 2e4, default: 3e3 },
   maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
-  maxMessageDisplayRenderedChars: { min: 1e3, max: 2e5, default: 5e4 }
+  maxMessageDisplayRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
+  minimizedMaxHeightPx: { min: 0, max: 400, default: 0 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -130,15 +131,22 @@ var DEFAULT_SETTINGS = {
   },
   messageDisplay: {
     enabled: true,
+    useDomInjection: true,
+    fallbackToIframeWidget: true,
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
     collapsedByDefault: true,
+    compactCollapsedHeader: true,
     showTimestamp: true,
     showPresetName: true,
     showDebugCopyButtonsInHistory: true,
     showWidgetRegenerateButton: true,
+    showEditButton: true,
+    showDeleteButton: true,
+    showNoTrackerForSwipe: false,
     showGenerationDuration: true,
+    minimizedMaxHeightPx: SETTINGS_LIMITS.minimizedMaxHeightPx.default,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default
   }
 };
@@ -286,6 +294,26 @@ var STYLES = `
   padding: 8px;
   resize: vertical;
   white-space: pre;
+}
+.ltracker-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ltracker-editor-textarea {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  color: inherit;
+  font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  min-height: 220px;
+  padding: 8px;
+  resize: vertical;
+  width: 100%;
+}
+.ltracker-editor-error {
+  color: #ff6b6b;
+  min-height: 1em;
 }
 .ltracker-field-wide {
   grid-column: 1 / -1;
@@ -443,7 +471,7 @@ function emptyState() {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection is disabled in 0.09 while the Lumiverse context handler return contract is being verified.",
+      contextHandlerDisabledReason: "Context handler injection is disabled in 0.10 while the Lumiverse context handler return contract is being verified.",
       lastContextHandlerError: null,
       messageDisplayEnabled: false,
       messageDisplayMode: null,
@@ -462,7 +490,20 @@ function emptyState() {
       lastWidgetRegenerateError: null,
       activeWidgetRegenerationCount: 0,
       messageWidgetPlacementResolved: "host_default",
-      messageWidgetPlacementReason: null
+      messageWidgetPlacementReason: null,
+      messageDisplayRenderer: "drawer_history",
+      lastDomInjectionAt: null,
+      lastDomInjectionError: null,
+      lastUninjectAt: null,
+      lastDeletedTrackerMessageId: null,
+      lastDeletedTrackerSwipeKey: null,
+      lastEditedTrackerMessageId: null,
+      lastEditedTrackerSwipeKey: null,
+      lastSwipeDetectedMessageId: null,
+      lastSwipeKey: null,
+      lastSwipeKeySource: null,
+      swipeTrackerIndexCount: 0,
+      activeTrackerJobs: []
     },
     injectionPreview: null,
     renderPreview: null,
@@ -533,6 +574,8 @@ function setup(ctx) {
   let disposed = false;
   const widgetCleanups = /* @__PURE__ */ new Map();
   const widgetSignatures = /* @__PURE__ */ new Map();
+  const domInjections = /* @__PURE__ */ new Map();
+  const domSignatures = /* @__PURE__ */ new Map();
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
   const tab = ctx.ui.registerDrawerTab({
@@ -551,22 +594,35 @@ function setup(ctx) {
     subtitle: "Update LTracker snapshot",
     iconSvg: ICON
   });
+  const elapsedTimer = setInterval(updateElapsedTimers, 250);
+  cleanups.push(() => clearInterval(elapsedTimer));
   function activeChatId() {
     return ctx.getActiveChat().chatId;
   }
   function send(message) {
     if (!disposed) ctx.sendToBackend(message);
   }
-  function activeWidgetJobId(messageId) {
-    return state.messageSnapshotHistory.find((entry) => entry.indexEntry.messageId === messageId)?.rendered.activeJobId ?? null;
+  function trackerEntryKey(messageId, swipeKey) {
+    return `${messageId}:${swipeKey}`;
   }
-  function toggleMessageRegeneration(messageId, jobId = null) {
-    const activeJobId = jobId || activeWidgetJobId(messageId);
+  function findHistoryEntry(messageId, swipeKey = null) {
+    if (!messageId) return null;
+    return state.messageSnapshotHistory.find((entry) => {
+      return entry.indexEntry.messageId === messageId && (!swipeKey || entry.indexEntry.swipeKey === swipeKey);
+    }) ?? null;
+  }
+  function activeWidgetJobId(messageId, swipeKey) {
+    return findHistoryEntry(messageId, swipeKey)?.rendered.activeJobId ?? null;
+  }
+  function toggleMessageRegeneration(messageId, swipeKey, jobId = null) {
+    const activeJobId = jobId || activeWidgetJobId(messageId, swipeKey);
     if (activeJobId) {
       send({
         type: "cancel_tracker_generation",
         chatId: activeChatId(),
         jobId: activeJobId,
+        messageId,
+        swipeKey,
         requestId: requestId("widget-cancel")
       });
       return;
@@ -575,13 +631,15 @@ function setup(ctx) {
       type: "regenerate_message_tracker",
       chatId: activeChatId(),
       messageId,
+      swipeKey,
       requestId: requestId("widget-regenerate")
     });
   }
-  function handleWidgetPayload(expectedMessageId, payload) {
+  function handleWidgetPayload(expectedMessageId, expectedSwipeKey, payload) {
     if (!isRecord(payload) || payload.type !== "ltracker_widget_action" || payload.action !== "toggle_regenerate" || payload.messageId !== expectedMessageId) return;
+    if ("swipeKey" in payload && payload.swipeKey !== expectedSwipeKey) return;
     const jobId = typeof payload.jobId === "string" && payload.jobId ? payload.jobId : null;
-    toggleMessageRegeneration(expectedMessageId, jobId);
+    toggleMessageRegeneration(expectedMessageId, expectedSwipeKey, jobId);
   }
   function cleanupMessageWidgets(keepKeys = /* @__PURE__ */ new Set()) {
     for (const [key, cleanup] of widgetCleanups) {
@@ -591,16 +649,127 @@ function setup(ctx) {
       widgetSignatures.delete(key);
     }
   }
+  function cleanupDomInjections(keepKeys = /* @__PURE__ */ new Set()) {
+    for (const [key, record] of domInjections) {
+      if (keepKeys.has(key)) continue;
+      record.cleanup();
+      domInjections.delete(key);
+      domSignatures.delete(key);
+    }
+  }
+  function markInjectedTrackerGenerating(root) {
+    const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const button = root.querySelector("[data-ltracker-dom-action='toggle_regenerate']");
+    button?.classList.add("ltd-spinning");
+    button?.setAttribute("title", "Cancel tracker generation");
+    button?.setAttribute("aria-label", "Cancel tracker generation");
+    const status = root.querySelector("[data-ltracker-status]");
+    if (status) status.textContent = "generating";
+    const elapsed = root.querySelector("[data-ltracker-elapsed]");
+    if (elapsed) {
+      elapsed.dataset.startedAt = startedAt;
+      elapsed.textContent = "0ms";
+    }
+  }
+  function updateElapsedTimers() {
+    const now = Date.now();
+    for (const element of ctx.dom.queryAll("[data-ltracker-elapsed]")) {
+      if (!(element instanceof HTMLElement)) continue;
+      const startedAt = element.dataset.startedAt;
+      if (!startedAt) continue;
+      const startedMs = Date.parse(startedAt);
+      if (!Number.isFinite(startedMs)) continue;
+      element.textContent = formatDurationMs(now - startedMs) ?? "0ms";
+    }
+  }
+  function handleDomTrackerAction(event) {
+    const target = event.target instanceof HTMLElement ? event.target.closest("[data-ltracker-dom-action]") : null;
+    if (!target) return;
+    const tracker = target.closest("[data-ltracker-message-id][data-ltracker-swipe-key]");
+    if (!tracker) return;
+    const messageId = ctx.dom.getMessageId(target) ?? tracker.dataset.ltrackerMessageId;
+    const swipeKey = tracker.dataset.ltrackerSwipeKey;
+    if (!messageId || !swipeKey) return;
+    const action = target.dataset.ltrackerDomAction;
+    const entry = findHistoryEntry(messageId, swipeKey);
+    if (action === "toggle_regenerate") {
+      markInjectedTrackerGenerating(tracker);
+      toggleMessageRegeneration(messageId, swipeKey, entry?.rendered.activeJobId ?? null);
+    }
+    if (action === "edit" && entry) {
+      openTrackerEditor(entry);
+    }
+    if (action === "delete") {
+      void deleteMessageTracker(messageId, swipeKey);
+    }
+  }
+  function hydrateDomInjections() {
+    if (!state.settings.messageDisplay.enabled || !state.settings.messageDisplay.useDomInjection) {
+      cleanupDomInjections();
+      return false;
+    }
+    const keepKeys = /* @__PURE__ */ new Set();
+    let injectedAny = false;
+    for (const entry of state.messageSnapshotHistory) {
+      if (!entry.snapshot) continue;
+      const key = trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey);
+      keepKeys.add(key);
+      const target = ctx.dom.findMessageElement(entry.indexEntry.messageId);
+      if (!target) continue;
+      const position = state.settings.messageDisplay.placement === "top" ? "afterbegin" : "beforeend";
+      const signature = [
+        entry.rendered.renderMode,
+        entry.rendered.snapshotCreatedAt,
+        entry.rendered.presetId,
+        entry.rendered.swipeKey,
+        entry.rendered.domHtml
+      ].join("\n");
+      if (domSignatures.get(key) === signature) {
+        injectedAny = true;
+        continue;
+      }
+      try {
+        domInjections.get(key)?.cleanup();
+        const element = ctx.dom.inject(target, entry.rendered.domHtml, position);
+        element.addEventListener("click", handleDomTrackerAction);
+        domInjections.set(key, {
+          element,
+          cleanup: () => {
+            element.removeEventListener("click", handleDomTrackerAction);
+            ctx.dom.uninject(element);
+          }
+        });
+        domSignatures.set(key, signature);
+        injectedAny = true;
+      } catch (error) {
+        state = {
+          ...state,
+          diagnostics: {
+            ...state.diagnostics,
+            lastDomInjectionError: errorMessage(error),
+            lastMessageDisplayError: errorMessage(error)
+          }
+        };
+      }
+    }
+    cleanupDomInjections(keepKeys);
+    return injectedAny;
+  }
   function hydrateMessageWidgets() {
     const renderWidget = ctx.messages?.renderWidget;
-    if (!state.settings.messageDisplay.enabled || !renderWidget) {
+    const injected = hydrateDomInjections();
+    if (state.settings.messageDisplay.useDomInjection && (injected || !state.settings.messageDisplay.fallbackToIframeWidget)) {
+      cleanupMessageWidgets();
+      return;
+    }
+    if (!state.settings.messageDisplay.enabled || !renderWidget || !state.settings.messageDisplay.fallbackToIframeWidget) {
       cleanupMessageWidgets();
       return;
     }
     const keepKeys = /* @__PURE__ */ new Set();
     for (const entry of state.messageSnapshotHistory) {
       if (!entry.snapshot) continue;
-      const key = `${entry.indexEntry.messageId}:${MESSAGE_WIDGET_ID}`;
+      const key = `${entry.indexEntry.messageId}:${entry.indexEntry.swipeKey}:${MESSAGE_WIDGET_ID}`;
       keepKeys.add(key);
       const signature = [
         entry.rendered.renderMode,
@@ -615,9 +784,9 @@ function setup(ctx) {
           messageId: entry.indexEntry.messageId,
           widgetId: MESSAGE_WIDGET_ID,
           html: entry.rendered.widgetHtml,
-          minHeight: 40,
+          minHeight: state.settings.messageDisplay.collapsedByDefault ? Math.max(0, state.settings.messageDisplay.minimizedMaxHeightPx) : 40,
           maxHeight: 4e3
-        }, (payload) => handleWidgetPayload(entry.indexEntry.messageId, payload));
+        }, (payload) => handleWidgetPayload(entry.indexEntry.messageId, entry.indexEntry.swipeKey, payload));
         widgetCleanups.set(key, cleanup);
         widgetSignatures.set(key, signature);
       } catch (error) {
@@ -741,15 +910,22 @@ function setup(ctx) {
       },
       messageDisplay: {
         enabled: messageDisplayBooleanValue("enabled"),
+        useDomInjection: messageDisplayBooleanValue("useDomInjection"),
+        fallbackToIframeWidget: messageDisplayBooleanValue("fallbackToIframeWidget"),
         placement: messageDisplaySelectValue("placement", state.settings.messageDisplay.placement),
         source: messageDisplaySelectValue("source", state.settings.messageDisplay.source),
         renderMode: messageDisplaySelectValue("renderMode", state.settings.messageDisplay.renderMode),
         collapsedByDefault: messageDisplayBooleanValue("collapsedByDefault"),
+        compactCollapsedHeader: messageDisplayBooleanValue("compactCollapsedHeader"),
         showTimestamp: messageDisplayBooleanValue("showTimestamp"),
         showPresetName: messageDisplayBooleanValue("showPresetName"),
         showDebugCopyButtonsInHistory: messageDisplayBooleanValue("showDebugCopyButtonsInHistory"),
         showWidgetRegenerateButton: messageDisplayBooleanValue("showWidgetRegenerateButton"),
+        showEditButton: messageDisplayBooleanValue("showEditButton"),
+        showDeleteButton: messageDisplayBooleanValue("showDeleteButton"),
+        showNoTrackerForSwipe: messageDisplayBooleanValue("showNoTrackerForSwipe"),
         showGenerationDuration: messageDisplayBooleanValue("showGenerationDuration"),
+        minimizedMaxHeightPx: messageDisplayNumberValue("minimizedMaxHeightPx"),
         maxRenderedChars: messageDisplayNumberValue("maxRenderedChars")
       }
     };
@@ -920,6 +1096,116 @@ function setup(ctx) {
       render();
     }
   }
+  async function deleteMessageTracker(messageId, swipeKey) {
+    const confirmed = await ctx.ui.showConfirm({
+      title: "Delete Tracker",
+      message: "Delete this tracker snapshot for the selected message swipe? The chat message will not be changed.",
+      variant: "danger",
+      confirmLabel: "Delete"
+    });
+    if (!confirmed.confirmed) return;
+    send({
+      type: "delete_message_tracker",
+      chatId: activeChatId(),
+      messageId,
+      swipeKey,
+      requestId: requestId("tracker-delete")
+    });
+  }
+  function openTrackerEditor(entry) {
+    const modal = ctx.ui.showModal({
+      title: "LTracker Message Tracker",
+      width: 760,
+      maxHeight: 720
+    });
+    const rendered = entry.rendered;
+    const metadata = JSON.stringify({
+      messageId: entry.indexEntry.messageId,
+      messageIndex: entry.indexEntry.messageIndex,
+      swipeKey: entry.indexEntry.swipeKey,
+      swipeIndex: entry.indexEntry.swipeIndex,
+      swipeId: entry.indexEntry.swipeId,
+      swipeContentHash: entry.indexEntry.swipeContentHash,
+      swipeKeySource: entry.indexEntry.swipeKeySource,
+      presetId: rendered.presetId,
+      presetName: rendered.presetName,
+      presetVersion: rendered.presetVersion,
+      snapshotCreatedAt: rendered.snapshotCreatedAt,
+      attachedAt: rendered.attachedAt,
+      generationDurationMs: rendered.generationDurationMs,
+      generationStatus: rendered.generationStatus
+    }, null, 2);
+    modal.root.innerHTML = `
+      <div class="ltracker-editor">
+        <div class="ltracker-actions">
+          <button class="ltracker-button" type="button" data-editor-action="copy-json">Copy JSON</button>
+          <button class="ltracker-button" type="button" data-editor-action="copy-text">Copy text</button>
+          <button class="ltracker-button" type="button" data-editor-action="copy-html">Copy sanitized HTML</button>
+          <button class="ltracker-button" type="button" data-editor-action="save-json">Save edited JSON</button>
+          <button class="ltracker-button" type="button" data-editor-action="close">Close</button>
+        </div>
+        <div class="ltracker-editor-error" data-editor-error></div>
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Rendered preview</span>
+          ${rendered.html ? `<div class="ltracker-render-preview">${rendered.html}</div>` : `<pre class="ltracker-text">${escapeHtml2(rendered.textFallback)}</pre>`}
+        </section>
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Tracker JSON</span>
+          <textarea class="ltracker-editor-textarea" data-editor-json>${escapeHtml2(rendered.json)}</textarea>
+        </section>
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Text fallback</span>
+          <pre class="ltracker-text">${escapeHtml2(rendered.textFallback)}</pre>
+        </section>
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Sanitized HTML</span>
+          <pre class="ltracker-text">${escapeHtml2(rendered.html || "None")}</pre>
+        </section>
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Source metadata</span>
+          <pre class="ltracker-json">${escapeHtml2(metadata)}</pre>
+        </section>
+      </div>
+    `;
+    const setError = (message) => {
+      const target = modal.root.querySelector("[data-editor-error]");
+      if (target) target.textContent = message;
+    };
+    const onClick2 = (event) => {
+      const target = event.target instanceof HTMLElement ? event.target.closest("[data-editor-action]") : null;
+      const action = target?.dataset.editorAction;
+      if (!action) return;
+      const jsonInput = modal.root.querySelector("[data-editor-json]");
+      if (action === "copy-json") void copyText(jsonInput?.value ?? rendered.json, "tracker JSON");
+      if (action === "copy-text") void copyText(rendered.textFallback, "tracker text");
+      if (action === "copy-html") void copyText(rendered.html || null, "tracker HTML");
+      if (action === "close") modal.dismiss();
+      if (action === "save-json") {
+        const jsonText = jsonInput?.value ?? "";
+        try {
+          const parsed = JSON.parse(jsonText);
+          const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "data" in parsed && isRecord(parsed.data) ? parsed.data : parsed;
+          if (!data || typeof data !== "object" || Array.isArray(data)) {
+            setError("Tracker JSON must be a JSON object.");
+            return;
+          }
+          send({
+            type: "save_edited_message_tracker",
+            chatId: activeChatId(),
+            messageId: entry.indexEntry.messageId,
+            swipeKey: entry.indexEntry.swipeKey,
+            jsonText: JSON.stringify(data),
+            requestId: requestId("tracker-edit")
+          });
+          modal.dismiss();
+        } catch (error) {
+          setError(`Invalid JSON: ${errorMessage(error)}`);
+        }
+      }
+    };
+    modal.root.addEventListener("click", onClick2);
+    modal.onDismiss(() => modal.root.removeEventListener("click", onClick2));
+  }
   function renderMessageHistory() {
     if (state.messageSnapshotHistory.length === 0) {
       return `<div class="ltracker-render-placeholder">${escapeHtml2("No message-attached tracker snapshots are indexed for this chat yet.")}</div>`;
@@ -931,10 +1217,13 @@ function setup(ctx) {
       const open = state.settings.messageDisplay.collapsedByDefault ? "" : " open";
       const title = [
         entry.indexEntry.messageIndex !== null ? `Message #${entry.indexEntry.messageIndex}` : "Message",
+        `Swipe ${entry.indexEntry.swipeKey}`,
         rendered.presetName ? rendered.presetName : "No preset metadata"
       ].join(" - ");
       const meta = [
         `id ${entry.indexEntry.messageId}`,
+        `swipe ${entry.indexEntry.swipeKey}`,
+        entry.indexEntry.swipeKeySource ? `source ${entry.indexEntry.swipeKeySource}` : null,
         rendered.snapshotCreatedAt ? `snapshot ${rendered.snapshotCreatedAt}` : "snapshot unavailable",
         rendered.attachedAt ? `attached ${rendered.attachedAt}` : null,
         rendered.generationDurationMs !== null ? `duration ${formatDurationMs(rendered.generationDurationMs)}` : null,
@@ -943,13 +1232,13 @@ function setup(ctx) {
       ].filter((item) => Boolean(item)).join(" / ");
       const htmlPreview = rendered.html ? `<div class="ltracker-render-preview">${rendered.html}</div>` : `<pre class="ltracker-text">${escapeHtml2(rendered.textFallback)}</pre>`;
       const copyActions = state.settings.messageDisplay.showDebugCopyButtonsInHistory ? `
-                <button class="ltracker-button" type="button" data-action="copy-history-json" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}"${disabled(!rendered.json)}>
+                <button class="ltracker-button" type="button" data-action="copy-history-json" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}" data-swipe-key="${escapeHtml2(entry.indexEntry.swipeKey)}"${disabled(!rendered.json)}>
                   Copy JSON
                 </button>
-                <button class="ltracker-button" type="button" data-action="copy-history-html" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}"${disabled(!rendered.html)}>
+                <button class="ltracker-button" type="button" data-action="copy-history-html" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}" data-swipe-key="${escapeHtml2(entry.indexEntry.swipeKey)}"${disabled(!rendered.html)}>
                   Copy HTML
                 </button>
-                <button class="ltracker-button" type="button" data-action="copy-history-text" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}"${disabled(!rendered.textFallback)}>
+                <button class="ltracker-button" type="button" data-action="copy-history-text" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}" data-swipe-key="${escapeHtml2(entry.indexEntry.swipeKey)}"${disabled(!rendered.textFallback)}>
                   Copy Text
                 </button>
               ` : "";
@@ -960,8 +1249,14 @@ function setup(ctx) {
                 <div class="ltracker-history-meta">${escapeHtml2(meta)}</div>
                 ${htmlPreview}
                 <div class="ltracker-copy-actions" style="margin-top: 8px;">
-                  <button class="ltracker-button" type="button" data-action="regenerate-history" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}">
+                  <button class="ltracker-button" type="button" data-action="regenerate-history" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}" data-swipe-key="${escapeHtml2(entry.indexEntry.swipeKey)}">
                     Regenerate
+                  </button>
+                  <button class="ltracker-button" type="button" data-action="edit-history" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}" data-swipe-key="${escapeHtml2(entry.indexEntry.swipeKey)}">
+                    Edit/View
+                  </button>
+                  <button class="ltracker-button" type="button" data-action="delete-history" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}" data-swipe-key="${escapeHtml2(entry.indexEntry.swipeKey)}">
+                    Delete
                   </button>
                   ${copyActions}
                 </div>
@@ -994,7 +1289,7 @@ function setup(ctx) {
     const renderWarningsText = renderPreview?.warnings.length ? renderPreview.warnings.join("\n") : "None";
     const renderErrorsText = renderPreview?.errors.length ? renderPreview.errors.join("\n") : "None";
     const messageHistoryHtml = renderMessageHistory();
-    const placementWarning = state.settings.messageDisplay.placement === "top" && diagnostics.messageWidgetPlacementReason ? `<p class="ltracker-note">${escapeHtml2("Current Lumiverse widget API renders below messages.")}</p>` : "";
+    const placementWarning = state.settings.messageDisplay.placement === "top" && diagnostics.messageWidgetPlacementReason && diagnostics.messageDisplayRenderer === "iframe_widget" ? `<p class="ltracker-note">${escapeHtml2("Current Lumiverse widget API renders below messages.")}</p>` : "";
     const activePreset = state.activePreset;
     const activePresetIsBuiltIn = activePreset.origin === "built_in";
     const presetSchemaText = JSON.stringify(activePreset.jsonSchema, null, 2);
@@ -1215,6 +1510,14 @@ function setup(ctx) {
               <input type="checkbox" data-message-display-setting="enabled"${checked(state.settings.messageDisplay.enabled)}>
               Enable message display
             </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="useDomInjection"${checked(state.settings.messageDisplay.useDomInjection)}>
+              DOM injection
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="fallbackToIframeWidget"${checked(state.settings.messageDisplay.fallbackToIframeWidget)}>
+              Iframe fallback
+            </label>
             <label class="ltracker-field">
               Placement
               <select data-message-display-setting="placement">
@@ -1242,6 +1545,10 @@ function setup(ctx) {
               Collapsed by default
             </label>
             <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="compactCollapsedHeader"${checked(state.settings.messageDisplay.compactCollapsedHeader)}>
+              Compact collapsed header
+            </label>
+            <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="showTimestamp"${checked(state.settings.messageDisplay.showTimestamp)}>
               Show timestamp
             </label>
@@ -1258,8 +1565,24 @@ function setup(ctx) {
               Widget regenerate button
             </label>
             <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showEditButton"${checked(state.settings.messageDisplay.showEditButton)}>
+              Edit button
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showDeleteButton"${checked(state.settings.messageDisplay.showDeleteButton)}>
+              Delete button
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showNoTrackerForSwipe"${checked(state.settings.messageDisplay.showNoTrackerForSwipe)}>
+              No-tracker swipe state
+            </label>
+            <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="showGenerationDuration"${checked(state.settings.messageDisplay.showGenerationDuration)}>
               Generation duration
+            </label>
+            <label class="ltracker-field">
+              Fallback minimized height
+              <input type="number" min="0" max="400" step="10" data-message-display-setting="minimizedMaxHeightPx" value="${escapeHtml2(String(state.settings.messageDisplay.minimizedMaxHeightPx))}">
             </label>
             <label class="ltracker-field">
               Max rendered chars
@@ -1346,13 +1669,26 @@ function setup(ctx) {
             ${renderRow("Permission status", permissionText)}
             ${renderRow("Message display enabled", diagnostics.messageDisplayEnabled ? "yes" : "no")}
             ${renderRow("Message display mode", diagnostics.messageDisplayMode)}
+            ${renderRow("Message display renderer", diagnostics.messageDisplayRenderer)}
             ${renderRow("Message display placement", diagnostics.messageDisplayPlacement)}
             ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
             ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
             ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
+            ${renderRow("Last DOM injection", diagnostics.lastDomInjectionAt)}
+            ${renderRow("Last DOM injection error", diagnostics.lastDomInjectionError)}
+            ${renderRow("Last uninject", diagnostics.lastUninjectAt)}
             ${renderRow("Message-local UI supported", diagnostics.messageLocalUiSupported ? "yes" : "no")}
             ${renderRow("Message-local fallback reason", diagnostics.messageLocalUiFallbackReason)}
             ${renderRow("Message snapshot index count", diagnostics.messageSnapshotIndexCount)}
+            ${renderRow("Swipe tracker index count", diagnostics.swipeTrackerIndexCount)}
+            ${renderRow("Last deleted tracker message", diagnostics.lastDeletedTrackerMessageId)}
+            ${renderRow("Last deleted tracker swipe", diagnostics.lastDeletedTrackerSwipeKey)}
+            ${renderRow("Last edited tracker message", diagnostics.lastEditedTrackerMessageId)}
+            ${renderRow("Last edited tracker swipe", diagnostics.lastEditedTrackerSwipeKey)}
+            ${renderRow("Last swipe detected message", diagnostics.lastSwipeDetectedMessageId)}
+            ${renderRow("Last swipe key", diagnostics.lastSwipeKey)}
+            ${renderRow("Last swipe key source", diagnostics.lastSwipeKeySource)}
+            ${renderRow("Active tracker jobs", diagnostics.activeTrackerJobs.map((job) => `${job.messageId}/${job.swipeKey}`).join(", "))}
             ${renderRow("Last widget regenerate message", diagnostics.lastWidgetRegenerateMessageId)}
             ${renderRow("Last widget regenerate started", diagnostics.lastWidgetRegenerateStartedAt)}
             ${renderRow("Last widget regenerate completed", diagnostics.lastWidgetRegenerateCompletedAt)}
@@ -1469,7 +1805,7 @@ function setup(ctx) {
   const onClick = (event) => {
     const target = event.target instanceof HTMLElement ? event.target.closest("[data-action]") : null;
     const action = target?.dataset.action;
-    const historyEntry = target?.dataset.messageId ? state.messageSnapshotHistory.find((entry) => entry.indexEntry.messageId === target.dataset.messageId) : null;
+    const historyEntry = findHistoryEntry(target?.dataset.messageId, target?.dataset.swipeKey ?? null);
     if (action === "generate") generateTracker();
     if (action === "refresh") requestState();
     if (action === "clear-snapshot") clearSnapshot();
@@ -1501,7 +1837,13 @@ function setup(ctx) {
     if (action === "copy-history-html") void copyText(historyEntry?.rendered.html ?? null, "message tracker HTML");
     if (action === "copy-history-text") void copyText(historyEntry?.rendered.textFallback ?? null, "message tracker text");
     if (action === "regenerate-history" && historyEntry) {
-      toggleMessageRegeneration(historyEntry.indexEntry.messageId, historyEntry.rendered.activeJobId);
+      toggleMessageRegeneration(historyEntry.indexEntry.messageId, historyEntry.indexEntry.swipeKey, historyEntry.rendered.activeJobId);
+    }
+    if (action === "edit-history" && historyEntry) {
+      openTrackerEditor(historyEntry);
+    }
+    if (action === "delete-history" && historyEntry) {
+      void deleteMessageTracker(historyEntry.indexEntry.messageId, historyEntry.indexEntry.swipeKey);
     }
     if (action === "save-preset-new") savePresetAsNew();
     if (action === "duplicate-preset") duplicatePreset();
@@ -1540,6 +1882,7 @@ function setup(ctx) {
     }
   }));
   cleanups.push(() => cleanupMessageWidgets());
+  cleanups.push(() => cleanupDomInjections());
   cleanups.push(() => inputAction.destroy());
   cleanups.push(() => tab.destroy());
   render();

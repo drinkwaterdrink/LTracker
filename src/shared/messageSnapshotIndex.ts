@@ -3,6 +3,11 @@ import type {
   MessageSnapshotIndexEntry,
   TrackerSnapshot,
 } from "./types";
+import {
+  DEFAULT_SWIPE_KEY,
+  swipeIdentityKey,
+  swipeKeySourceOrUnknown,
+} from "./swipeIdentity";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -16,6 +21,10 @@ function messageIndexOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
 }
 
+function swipeKeyOrDefault(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value : DEFAULT_SWIPE_KEY;
+}
+
 function repairIndexEntry(value: unknown): MessageSnapshotIndexEntry | null {
   if (!isRecord(value) || typeof value.messageId !== "string" || typeof value.storageKey !== "string") {
     return null;
@@ -23,6 +32,11 @@ function repairIndexEntry(value: unknown): MessageSnapshotIndexEntry | null {
   return {
     messageId: value.messageId,
     messageIndex: messageIndexOrNull(value.messageIndex),
+    swipeKey: swipeKeyOrDefault(value.swipeKey),
+    swipeIndex: messageIndexOrNull(value.swipeIndex),
+    swipeId: stringOrNull(value.swipeId),
+    swipeContentHash: stringOrNull(value.swipeContentHash),
+    swipeKeySource: swipeKeySourceOrUnknown(value.swipeKeySource),
     createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
     presetId: stringOrNull(value.presetId),
     presetName: stringOrNull(value.presetName),
@@ -36,8 +50,10 @@ export function repairMessageSnapshotIndex(value: unknown): MessageSnapshotIndex
   const repaired: MessageSnapshotIndexEntry[] = [];
   for (const item of value) {
     const entry = repairIndexEntry(item);
-    if (!entry || seen.has(entry.messageId)) continue;
-    seen.add(entry.messageId);
+    if (!entry) continue;
+    const key = swipeIdentityKey(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
     repaired.push(entry);
   }
   return sortMessageSnapshotIndex(repaired);
@@ -50,8 +66,14 @@ export function sortMessageSnapshotIndex(index: MessageSnapshotIndexEntry[]): Me
     }
     if (left.messageIndex !== null && right.messageIndex === null) return -1;
     if (left.messageIndex === null && right.messageIndex !== null) return 1;
+    if (left.messageId !== right.messageId) return left.messageId.localeCompare(right.messageId);
+    if (left.swipeIndex !== null && right.swipeIndex !== null && left.swipeIndex !== right.swipeIndex) {
+      return left.swipeIndex - right.swipeIndex;
+    }
+    if (left.swipeIndex !== null && right.swipeIndex === null) return -1;
+    if (left.swipeIndex === null && right.swipeIndex !== null) return 1;
     const created = left.createdAt.localeCompare(right.createdAt);
-    return created !== 0 ? created : left.messageId.localeCompare(right.messageId);
+    return created !== 0 ? created : left.swipeKey.localeCompare(right.swipeKey);
   });
 }
 
@@ -59,9 +81,17 @@ export function upsertMessageSnapshotIndexEntry(
   index: MessageSnapshotIndexEntry[],
   entry: MessageSnapshotIndexEntry,
 ): MessageSnapshotIndexEntry[] {
-  const next = index.filter((item) => item.messageId !== entry.messageId);
+  const next = index.filter((item) => swipeIdentityKey(item) !== swipeIdentityKey(entry));
   next.push(entry);
   return sortMessageSnapshotIndex(next);
+}
+
+export function removeMessageSnapshotIndexEntry(
+  index: MessageSnapshotIndexEntry[],
+  messageId: string,
+  swipeKey: string,
+): MessageSnapshotIndexEntry[] {
+  return sortMessageSnapshotIndex(index.filter((item) => item.messageId !== messageId || item.swipeKey !== swipeKey));
 }
 
 export function normalizeTrackerSnapshotPresetMetadata(snapshot: TrackerSnapshot): TrackerSnapshot {
@@ -81,6 +111,8 @@ export function normalizeTrackerSnapshotPresetMetadata(snapshot: TrackerSnapshot
       || snapshot.generationStatus === "failed"
       ? snapshot.generationStatus
       : null,
+    editedAt: snapshot.editedAt ?? null,
+    editedByUser: snapshot.editedByUser === true,
   };
 }
 
@@ -90,6 +122,11 @@ export function normalizeMessageAttachedSnapshotPresetMetadata(
   const normalizedSnapshot = normalizeTrackerSnapshotPresetMetadata(snapshot.snapshot);
   return {
     ...snapshot,
+    swipeKey: snapshot.swipeKey ?? DEFAULT_SWIPE_KEY,
+    swipeIndex: snapshot.swipeIndex ?? null,
+    swipeId: snapshot.swipeId ?? null,
+    swipeContentHash: snapshot.swipeContentHash ?? null,
+    swipeKeySource: swipeKeySourceOrUnknown(snapshot.swipeKeySource),
     presetId: snapshot.presetId ?? normalizedSnapshot.presetId ?? null,
     presetName: snapshot.presetName ?? normalizedSnapshot.presetName ?? null,
     presetVersion: snapshot.presetVersion ?? normalizedSnapshot.presetVersion ?? null,

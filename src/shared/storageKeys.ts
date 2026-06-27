@@ -12,8 +12,12 @@ export function messageSnapshotsPrefix(chatId: string): string {
   return `chats/${encodeStorageSegment(chatId)}/messages/`;
 }
 
-export function messageSnapshotPath(chatId: string, messageId: string): string {
+export function legacyMessageSnapshotPath(chatId: string, messageId: string): string {
   return `${messageSnapshotsPrefix(chatId)}${encodeStorageSegment(messageId)}/tracker-snapshot.json`;
+}
+
+export function messageSnapshotPath(chatId: string, messageId: string, swipeKey = "default"): string {
+  return `${messageSnapshotsPrefix(chatId)}${encodeStorageSegment(messageId)}/swipes/${encodeStorageSegment(swipeKey)}/tracker-snapshot.json`;
 }
 
 export function messageSnapshotIndexPath(chatId: string): string {

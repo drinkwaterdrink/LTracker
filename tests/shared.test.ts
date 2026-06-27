@@ -26,6 +26,7 @@ import {
   normalizeMessageAttachedSnapshotPresetMetadata,
   normalizeTrackerSnapshotPresetMetadata,
   repairMessageSnapshotIndex,
+  removeMessageSnapshotIndexEntry,
   upsertMessageSnapshotIndexEntry,
 } from "../src/shared/messageSnapshotIndex";
 import {
@@ -52,8 +53,14 @@ import {
 } from "../src/shared/snapshotFormat";
 import {
   messageSnapshotIndexPath,
+  legacyMessageSnapshotPath,
   messageSnapshotPath,
 } from "../src/shared/storageKeys";
+import {
+  DEFAULT_SWIPE_KEY,
+  deriveSwipeTrackerIdentity,
+  hashSwipeContent,
+} from "../src/shared/swipeIdentity";
 import {
   buildCompactTranscript,
   buildTrackerPrompt,
@@ -65,7 +72,7 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.09",
+  extensionVersion: "0.10",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -102,10 +109,15 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.09",
+  extensionVersion: "0.10",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
+  swipeKey: "index-0",
+  swipeIndex: 0,
+  swipeId: null,
+  swipeContentHash: hashSwipeContent("assistant swipe"),
+  swipeKeySource: "swipe_index",
   presetId: DEFAULT_TRACKER_PRESET.id,
   presetName: DEFAULT_TRACKER_PRESET.name,
   presetVersion: DEFAULT_TRACKER_PRESET.version,
@@ -117,6 +129,11 @@ const sampleMessageSnapshot: MessageAttachedSnapshot = {
     sourceMessageIndex: 7,
     generationId: "g1",
     generationType: "normal",
+    swipeKey: "index-0",
+    swipeIndex: 0,
+    swipeId: null,
+    swipeContentHash: hashSwipeContent("assistant swipe"),
+    swipeKeySource: "swipe_index",
   },
   snapshot: sampleSnapshot,
   attachedAt: "2003-09-22T16:19:00.000Z",
@@ -273,7 +290,11 @@ test("isQuietGenerationType recognizes quiet generations only", () => {
 
 test("messageSnapshotPath stores snapshots under chat and message ids", () => {
   assert.equal(
-    messageSnapshotPath("chat id/1", "message id/2"),
+    messageSnapshotPath("chat id/1", "message id/2", "swipe/1"),
+    "chats/chat%20id%2F1/messages/message%20id%2F2/swipes/swipe%2F1/tracker-snapshot.json",
+  );
+  assert.equal(
+    legacyMessageSnapshotPath("chat id/1", "message id/2"),
     "chats/chat%20id%2F1/messages/message%20id%2F2/tracker-snapshot.json",
   );
 });
@@ -285,7 +306,37 @@ test("messageSnapshotIndexPath stores the per-chat index under message-snapshots
   );
 });
 
-test("message snapshot index repairs, sorts, and updates by message id", () => {
+test("deriveSwipeTrackerIdentity uses official id, index, then content hash", () => {
+  const official = deriveSwipeTrackerIdentity("chat-a", {
+    id: "m2",
+    content: "active",
+    swipeId: "stable-swipe",
+    swipe_id: 1,
+    swipes: ["old", "active"],
+  });
+  assert.equal(official.swipeKey, "id-stable-swipe");
+  assert.equal(official.swipeKeySource, "swipe_id");
+  assert.equal(official.swipeIndex, 1);
+  assert.equal(official.swipeContentHash, hashSwipeContent("active"));
+
+  const indexed = deriveSwipeTrackerIdentity("chat-a", {
+    id: "m2",
+    content: "active",
+    swipe_id: 0,
+    swipes: ["active"],
+  });
+  assert.equal(indexed.swipeKey, "index-0");
+  assert.equal(indexed.swipeKeySource, "swipe_index");
+
+  const hashed = deriveSwipeTrackerIdentity("chat-a", {
+    id: "m2",
+    content: "active",
+  });
+  assert.equal(hashed.swipeKey, `hash-${hashSwipeContent("active")}`);
+  assert.equal(hashed.swipeKeySource, "content_hash");
+});
+
+test("message snapshot index repairs, sorts, and updates by message/swipe id", () => {
   const repaired = repairMessageSnapshotIndex([
     {
       messageId: "m3",
@@ -308,15 +359,25 @@ test("message snapshot index repairs, sorts, and updates by message id", () => {
   const updated = upsertMessageSnapshotIndexEntry(repaired, {
     messageId: "m3",
     messageIndex: 2,
+    swipeKey: "index-1",
+    swipeIndex: 1,
+    swipeId: null,
+    swipeContentHash: "hash-1",
+    swipeKeySource: "swipe_index",
     createdAt: "2003-09-22T16:22:00.000Z",
     presetId: "preset-b",
     presetName: "Preset B",
     storageKey: "key-3b",
   });
-  assert.deepEqual(updated.map((entry) => entry.messageId), ["m1", "m3"]);
+  assert.deepEqual(
+    updated.map((entry) => `${entry.messageId}:${entry.swipeKey}`),
+    ["m1:default", "m3:index-1", "m3:default"],
+  );
   assert.equal(updated[1]?.messageIndex, 2);
+  assert.equal(repaired[0]?.swipeKey, DEFAULT_SWIPE_KEY);
   assert.equal(updated[1]?.presetName, "Preset B");
   assert.equal(updated[1]?.storageKey, "key-3b");
+  assert.equal(updated[2]?.presetName, "Preset A");
 });
 
 test("message-specific regeneration updates only the target message index entry", () => {
@@ -324,6 +385,11 @@ test("message-specific regeneration updates only the target message index entry"
     {
       messageId: "m1",
       messageIndex: 1,
+      swipeKey: "index-0",
+      swipeIndex: 0,
+      swipeId: null,
+      swipeContentHash: "hash-m1",
+      swipeKeySource: "swipe_index",
       createdAt: "2003-09-22T16:18:00.000Z",
       presetId: "preset-a",
       presetName: "Preset A",
@@ -332,6 +398,11 @@ test("message-specific regeneration updates only the target message index entry"
     {
       messageId: "m2",
       messageIndex: 2,
+      swipeKey: "index-0",
+      swipeIndex: 0,
+      swipeId: null,
+      swipeContentHash: "hash-m2",
+      swipeKeySource: "swipe_index",
       createdAt: "2003-09-22T16:19:00.000Z",
       presetId: "preset-a",
       presetName: "Preset A",
@@ -341,16 +412,46 @@ test("message-specific regeneration updates only the target message index entry"
   const updated = upsertMessageSnapshotIndexEntry(original, {
     messageId: "m2",
     messageIndex: 2,
+    swipeKey: "index-1",
+    swipeIndex: 1,
+    swipeId: null,
+    swipeContentHash: "hash-m2b",
+    swipeKeySource: "swipe_index",
     createdAt: "2003-09-22T16:20:00.000Z",
     presetId: "preset-b",
     presetName: "Preset B",
     storageKey: "key-2-new",
   });
 
-  assert.deepEqual(updated.map((entry) => entry.messageId), ["m1", "m2"]);
+  assert.deepEqual(updated.map((entry) => `${entry.messageId}:${entry.swipeKey}`), ["m1:index-0", "m2:index-0", "m2:index-1"]);
   assert.deepEqual(updated[0], original[0]);
-  assert.equal(updated[1]?.presetName, "Preset B");
-  assert.equal(updated[1]?.storageKey, "key-2-new");
+  assert.equal(updated[2]?.presetName, "Preset B");
+  assert.equal(updated[2]?.storageKey, "key-2-new");
+});
+
+test("removeMessageSnapshotIndexEntry deletes only the selected message swipe", () => {
+  const index = repairMessageSnapshotIndex([
+    {
+      messageId: "m2",
+      messageIndex: 2,
+      swipeKey: "index-0",
+      swipeIndex: 0,
+      swipeKeySource: "swipe_index",
+      storageKey: "key-a",
+      createdAt: "2003-09-22T16:19:00.000Z",
+    },
+    {
+      messageId: "m2",
+      messageIndex: 2,
+      swipeKey: "index-1",
+      swipeIndex: 1,
+      swipeKeySource: "swipe_index",
+      storageKey: "key-b",
+      createdAt: "2003-09-22T16:20:00.000Z",
+    },
+  ]);
+  const next = removeMessageSnapshotIndexEntry(index, "m2", "index-1");
+  assert.deepEqual(next.map((entry) => `${entry.messageId}:${entry.swipeKey}`), ["m2:index-0"]);
 });
 
 test("snapshots preserve preset metadata and older snapshots normalize missing metadata", () => {
@@ -377,6 +478,11 @@ test("snapshots preserve preset metadata and older snapshots normalize missing m
 
   const olderAttached = normalizeMessageAttachedSnapshotPresetMetadata({
     ...sampleMessageSnapshot,
+    swipeKey: undefined,
+    swipeIndex: undefined,
+    swipeId: undefined,
+    swipeContentHash: undefined,
+    swipeKeySource: undefined,
     presetId: undefined,
     presetName: undefined,
     presetVersion: undefined,
@@ -385,6 +491,8 @@ test("snapshots preserve preset metadata and older snapshots normalize missing m
   assert.equal(olderAttached.presetId, null);
   assert.equal(olderAttached.presetName, null);
   assert.equal(olderAttached.presetVersion, null);
+  assert.equal(olderAttached.swipeKey, DEFAULT_SWIPE_KEY);
+  assert.equal(olderAttached.swipeKeySource, "unknown");
 });
 
 test("repairSettings repairs injection settings with defaults and clamping", () => {
@@ -779,10 +887,21 @@ test("renderMessageTracker widget is compact and omits copy buttons by default",
   assert.doesNotMatch(rendered.widgetHtml, /Copy JSON/);
   assert.doesNotMatch(rendered.widgetHtml, /Copy HTML/);
   assert.doesNotMatch(rendered.widgetHtml, /Copy Text/);
+  assert.doesNotMatch(rendered.domHtml, /Copy JSON/);
+  assert.doesNotMatch(rendered.domHtml, /Copy HTML/);
+  assert.doesNotMatch(rendered.domHtml, /Copy Text/);
   assert.match(rendered.widgetHtml, /class="ltr-icon-button"/);
   assert.match(rendered.widgetHtml, /title="Regenerate tracker"/);
   assert.match(rendered.widgetHtml, /aria-label="Regenerate tracker"/);
+  assert.match(rendered.domHtml, /data-ltracker-dom-action="toggle_regenerate"/);
+  assert.match(rendered.domHtml, /title="Regenerate tracker"/);
+  assert.match(rendered.domHtml, /aria-label="Regenerate tracker"/);
+  assert.match(rendered.domHtml, /title="View or edit tracker"/);
+  assert.match(rendered.domHtml, /aria-label="View or edit tracker"/);
+  assert.match(rendered.domHtml, /title="Delete tracker"/);
+  assert.match(rendered.domHtml, /aria-label="Delete tracker"/);
   assert.doesNotMatch(rendered.widgetHtml, />\s*Regenerate tracker\s*</);
+  assert.doesNotMatch(rendered.domHtml, />\s*(Regenerate tracker|View or edit tracker|Delete tracker)\s*</);
 });
 
 test("renderMessageTracker widget shows generation duration when available", () => {
@@ -797,6 +916,7 @@ test("renderMessageTracker widget shows generation duration when available", () 
 
   assert.equal(formatDurationMs(sampleSnapshot.generationDurationMs), "2.4s");
   assert.match(rendered.widgetHtml, /2\.4s/);
+  assert.match(rendered.domHtml, /2\.4s/);
   assert.equal(rendered.generationDurationMs, 2400);
   assert.equal(rendered.generationStatus, "completed");
 });
@@ -815,6 +935,7 @@ test("renderMessageTracker widget can hide regenerate control", () => {
   });
 
   assert.doesNotMatch(rendered.widgetHtml, /Regenerate tracker/);
+  assert.doesNotMatch(rendered.domHtml, /Regenerate tracker/);
   assert.doesNotMatch(rendered.widgetHtml, /ltracker_widget_action/);
 });
 
@@ -836,6 +957,9 @@ test("renderMessageTracker widget exposes cancel state while regenerating", () =
   assert.match(rendered.widgetHtml, /title="Cancel tracker generation"/);
   assert.match(rendered.widgetHtml, /aria-label="Cancel tracker generation"/);
   assert.match(rendered.widgetHtml, /ltr-spinning/);
+  assert.match(rendered.domHtml, /title="Cancel tracker generation"/);
+  assert.match(rendered.domHtml, /aria-label="Cancel tracker generation"/);
+  assert.match(rendered.domHtml, /ltd-spinning/);
   assert.match(rendered.widgetHtml, /job-widget-1/);
 });
 
@@ -901,10 +1025,15 @@ test("buildMessageTrackerHistory creates a persistent drawer history model", () 
       {
         messageId: "m2",
         messageIndex: 7,
+        swipeKey: sampleMessageSnapshot.swipeKey,
+        swipeIndex: sampleMessageSnapshot.swipeIndex,
+        swipeId: sampleMessageSnapshot.swipeId,
+        swipeContentHash: sampleMessageSnapshot.swipeContentHash,
+        swipeKeySource: sampleMessageSnapshot.swipeKeySource,
         createdAt: sampleMessageSnapshot.attachedAt,
         presetId: sampleMessageSnapshot.presetId,
         presetName: sampleMessageSnapshot.presetName,
-        storageKey: messageSnapshotPath(sampleMessageSnapshot.chatId, sampleMessageSnapshot.messageId),
+        storageKey: messageSnapshotPath(sampleMessageSnapshot.chatId, sampleMessageSnapshot.messageId, sampleMessageSnapshot.swipeKey),
       },
     ],
     snapshots: [sampleMessageSnapshot],
@@ -917,16 +1046,86 @@ test("buildMessageTrackerHistory creates a persistent drawer history model", () 
   assert.match(history[0]?.rendered.widgetHtml ?? "", /LTracker/);
 });
 
+test("buildMessageTrackerHistory displays only the selected swipe tracker when provided", () => {
+  const secondSnapshot: MessageAttachedSnapshot = {
+    ...sampleMessageSnapshot,
+    swipeKey: "index-1",
+    swipeIndex: 1,
+    swipeContentHash: hashSwipeContent("alternate swipe"),
+    snapshot: {
+      ...sampleSnapshot,
+      data: {
+        ...sampleSnapshot.data,
+        scene: { location: "Alternate Hall" },
+      },
+    },
+  };
+  const history = buildMessageTrackerHistory({
+    index: [
+      {
+        messageId: "m2",
+        messageIndex: 7,
+        swipeKey: "index-0",
+        swipeIndex: 0,
+        swipeId: null,
+        swipeContentHash: sampleMessageSnapshot.swipeContentHash,
+        swipeKeySource: "swipe_index",
+        createdAt: sampleMessageSnapshot.attachedAt,
+        presetId: sampleMessageSnapshot.presetId,
+        presetName: sampleMessageSnapshot.presetName,
+        storageKey: messageSnapshotPath(sampleMessageSnapshot.chatId, "m2", "index-0"),
+      },
+      {
+        messageId: "m2",
+        messageIndex: 7,
+        swipeKey: "index-1",
+        swipeIndex: 1,
+        swipeId: null,
+        swipeContentHash: secondSnapshot.swipeContentHash,
+        swipeKeySource: "swipe_index",
+        createdAt: secondSnapshot.attachedAt,
+        presetId: secondSnapshot.presetId,
+        presetName: secondSnapshot.presetName,
+        storageKey: messageSnapshotPath(secondSnapshot.chatId, "m2", "index-1"),
+      },
+    ],
+    snapshots: [sampleMessageSnapshot, secondSnapshot],
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: DEFAULT_SETTINGS.messageDisplay,
+    selectedSwipeIdentities: {
+      m2: {
+        chatId: "chat-a",
+        messageId: "m2",
+        swipeKey: "index-1",
+        swipeIndex: 1,
+        swipeId: null,
+        swipeContentHash: secondSnapshot.swipeContentHash,
+        swipeKeySource: "swipe_index",
+      },
+    },
+  });
+
+  assert.equal(history.length, 1);
+  assert.equal(history[0]?.indexEntry.swipeKey, "index-1");
+  assert.match(history[0]?.rendered.textFallback ?? "", /Alternate Hall/);
+});
+
 test("cancelled widget regeneration preserves the existing message snapshot in history", () => {
   const history = buildMessageTrackerHistory({
     index: [
       {
         messageId: "m2",
         messageIndex: 7,
+        swipeKey: sampleMessageSnapshot.swipeKey,
+        swipeIndex: sampleMessageSnapshot.swipeIndex,
+        swipeId: sampleMessageSnapshot.swipeId,
+        swipeContentHash: sampleMessageSnapshot.swipeContentHash,
+        swipeKeySource: sampleMessageSnapshot.swipeKeySource,
         createdAt: sampleMessageSnapshot.attachedAt,
         presetId: sampleMessageSnapshot.presetId,
         presetName: sampleMessageSnapshot.presetName,
-        storageKey: messageSnapshotPath(sampleMessageSnapshot.chatId, sampleMessageSnapshot.messageId),
+        storageKey: messageSnapshotPath(sampleMessageSnapshot.chatId, sampleMessageSnapshot.messageId, sampleMessageSnapshot.swipeKey),
       },
     ],
     snapshots: [sampleMessageSnapshot],
@@ -934,7 +1133,7 @@ test("cancelled widget regeneration preserves the existing message snapshot in h
     preset: DEFAULT_TRACKER_PRESET,
     settings: DEFAULT_SETTINGS.messageDisplay,
     activeWidgetJobs: {
-      m2: { jobId: "job-widget-1", startedAt: "2003-09-22T16:19:00.000Z" },
+      "m2:index-0": { jobId: "job-widget-1", startedAt: "2003-09-22T16:19:00.000Z" },
     },
   });
 
@@ -975,28 +1174,42 @@ test("repairSettings repairs message display settings with defaults and clamping
   const settings = repairSettings({
     messageDisplay: {
       enabled: false,
+      useDomInjection: false,
+      fallbackToIframeWidget: false,
       placement: "bottom",
       source: "latest_chat_snapshot",
       renderMode: "pretty_json",
       collapsedByDefault: true,
+      compactCollapsedHeader: false,
       showTimestamp: false,
       showPresetName: false,
       showDebugCopyButtonsInHistory: false,
       showWidgetRegenerateButton: false,
+      showEditButton: false,
+      showDeleteButton: false,
+      showNoTrackerForSwipe: true,
       showGenerationDuration: false,
+      minimizedMaxHeightPx: "999999",
       maxRenderedChars: "999999",
     },
   });
   assert.equal(settings.messageDisplay.enabled, false);
+  assert.equal(settings.messageDisplay.useDomInjection, false);
+  assert.equal(settings.messageDisplay.fallbackToIframeWidget, false);
   assert.equal(settings.messageDisplay.placement, "bottom");
   assert.equal(settings.messageDisplay.source, "latest_chat_snapshot");
   assert.equal(settings.messageDisplay.renderMode, "pretty_json");
   assert.equal(settings.messageDisplay.collapsedByDefault, true);
+  assert.equal(settings.messageDisplay.compactCollapsedHeader, false);
   assert.equal(settings.messageDisplay.showTimestamp, false);
   assert.equal(settings.messageDisplay.showPresetName, false);
   assert.equal(settings.messageDisplay.showDebugCopyButtonsInHistory, false);
   assert.equal(settings.messageDisplay.showWidgetRegenerateButton, false);
+  assert.equal(settings.messageDisplay.showEditButton, false);
+  assert.equal(settings.messageDisplay.showDeleteButton, false);
+  assert.equal(settings.messageDisplay.showNoTrackerForSwipe, true);
   assert.equal(settings.messageDisplay.showGenerationDuration, false);
+  assert.equal(settings.messageDisplay.minimizedMaxHeightPx, 400);
   assert.equal(settings.messageDisplay.maxRenderedChars, 200_000);
 
   const repaired = repairSettings({
@@ -1010,6 +1223,7 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(repaired.messageDisplay.placement, DEFAULT_SETTINGS.messageDisplay.placement);
   assert.equal(repaired.messageDisplay.source, DEFAULT_SETTINGS.messageDisplay.source);
   assert.equal(repaired.messageDisplay.renderMode, DEFAULT_SETTINGS.messageDisplay.renderMode);
+  assert.equal(repaired.messageDisplay.minimizedMaxHeightPx, 0);
   assert.equal(repaired.messageDisplay.maxRenderedChars, 1_000);
 });
 
@@ -1021,6 +1235,8 @@ test("repairSettings migrates old showCopyButton into drawer history debug copie
   });
   assert.equal(hidden.messageDisplay.showDebugCopyButtonsInHistory, false);
   assert.equal(hidden.messageDisplay.showWidgetRegenerateButton, DEFAULT_SETTINGS.messageDisplay.showWidgetRegenerateButton);
+  assert.equal(hidden.messageDisplay.showEditButton, true);
+  assert.equal(hidden.messageDisplay.showDeleteButton, true);
   assert.equal(hidden.messageDisplay.showGenerationDuration, DEFAULT_SETTINGS.messageDisplay.showGenerationDuration);
 
   const visible = repairSettings({
@@ -1056,7 +1272,7 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
 
 test("context handler hotfix is disabled by default", () => {
   assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
-  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.09/);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.10/);
 });
 
 test("context handler guard never mutates a frozen context object when disabled", async () => {
@@ -1187,15 +1403,22 @@ test("README settings reference covers the major setting groups", () => {
     "renderer.maxRenderedChars",
     "renderer.allowInlineStyles",
     "messageDisplay.enabled",
+    "messageDisplay.useDomInjection",
+    "messageDisplay.fallbackToIframeWidget",
     "messageDisplay.placement",
     "messageDisplay.source",
     "messageDisplay.renderMode",
     "messageDisplay.collapsedByDefault",
+    "messageDisplay.compactCollapsedHeader",
     "messageDisplay.showTimestamp",
     "messageDisplay.showPresetName",
     "messageDisplay.showDebugCopyButtonsInHistory",
     "messageDisplay.showWidgetRegenerateButton",
+    "messageDisplay.showEditButton",
+    "messageDisplay.showDeleteButton",
+    "messageDisplay.showNoTrackerForSwipe",
     "messageDisplay.showGenerationDuration",
+    "messageDisplay.minimizedMaxHeightPx",
     "messageDisplay.maxRenderedChars",
     "debounce",
     "missing value placeholder",

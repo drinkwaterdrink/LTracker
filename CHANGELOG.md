@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10 - Top swipe tracker controls
+- Added swipe-aware message tracker storage keyed by chat id, message id, and selected swipe key.
+- Added official Lumiverse DOM injection as the primary compact message tracker renderer.
+- Added top-of-message tracker placement with iframe widget fallback when DOM injection is unavailable.
+- Added icon-only regenerate/cancel, edit/view, and delete controls per message swipe.
+- Added an edit/view modal with rendered preview, JSON, text, HTML, metadata, and edited snapshot saves.
+- Added precise per-swipe delete behavior that removes only the selected message/swipe tracker.
+- Added swipe navigation and swipe edit event handling for auto tracker refreshes.
+- Added message display settings for DOM injection, iframe fallback, compact collapse, edit/delete controls, missing-swipe state, and minimized iframe height.
+- Added diagnostics for DOM injection, swipe detection, active tracker jobs, edits, deletes, and renderer fallback.
+- Added tests for swipe identity, per-swipe storage/indexing, DOM tracker HTML, selected-swipe filtering, settings migration, and README coverage.
+
 ## 0.09 - Message widget UX polish
 - Removed bulky setting explanations from the drawer UI and moved detailed setting documentation to README.
 - Audited message widget placement and resolved top/bottom behavior according to official Lumiverse APIs.

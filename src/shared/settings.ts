@@ -12,6 +12,7 @@ export const SETTINGS_LIMITS = {
   maxInjectedChars: { min: 500, max: 20_000, default: 3_000 },
   maxRenderedChars: { min: 1_000, max: 200_000, default: 50_000 },
   maxMessageDisplayRenderedChars: { min: 1_000, max: 200_000, default: 50_000 },
+  minimizedMaxHeightPx: { min: 0, max: 400, default: 0 },
 } as const;
 
 export const DEFAULT_SETTINGS: LTrackerSettings = {
@@ -49,15 +50,22 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
   },
   messageDisplay: {
     enabled: true,
+    useDomInjection: true,
+    fallbackToIframeWidget: true,
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
     collapsedByDefault: true,
+    compactCollapsedHeader: true,
     showTimestamp: true,
     showPresetName: true,
     showDebugCopyButtonsInHistory: true,
     showWidgetRegenerateButton: true,
+    showEditButton: true,
+    showDeleteButton: true,
+    showNoTrackerForSwipe: false,
     showGenerationDuration: true,
+    minimizedMaxHeightPx: SETTINGS_LIMITS.minimizedMaxHeightPx.default,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
   },
 };
@@ -207,12 +215,21 @@ export function repairSettings(value: unknown): LTrackerSettings {
       enabled: typeof messageDisplaySource.enabled === "boolean"
         ? messageDisplaySource.enabled
         : DEFAULT_SETTINGS.messageDisplay.enabled,
+      useDomInjection: typeof messageDisplaySource.useDomInjection === "boolean"
+        ? messageDisplaySource.useDomInjection
+        : DEFAULT_SETTINGS.messageDisplay.useDomInjection,
+      fallbackToIframeWidget: typeof messageDisplaySource.fallbackToIframeWidget === "boolean"
+        ? messageDisplaySource.fallbackToIframeWidget
+        : DEFAULT_SETTINGS.messageDisplay.fallbackToIframeWidget,
       placement: messageDisplayPlacement,
       source: messageDisplaySourceSetting,
       renderMode: messageDisplayRenderMode,
       collapsedByDefault: typeof messageDisplaySource.collapsedByDefault === "boolean"
         ? messageDisplaySource.collapsedByDefault
         : DEFAULT_SETTINGS.messageDisplay.collapsedByDefault,
+      compactCollapsedHeader: typeof messageDisplaySource.compactCollapsedHeader === "boolean"
+        ? messageDisplaySource.compactCollapsedHeader
+        : DEFAULT_SETTINGS.messageDisplay.compactCollapsedHeader,
       showTimestamp: typeof messageDisplaySource.showTimestamp === "boolean"
         ? messageDisplaySource.showTimestamp
         : DEFAULT_SETTINGS.messageDisplay.showTimestamp,
@@ -227,9 +244,24 @@ export function repairSettings(value: unknown): LTrackerSettings {
       showWidgetRegenerateButton: typeof messageDisplaySource.showWidgetRegenerateButton === "boolean"
         ? messageDisplaySource.showWidgetRegenerateButton
         : DEFAULT_SETTINGS.messageDisplay.showWidgetRegenerateButton,
+      showEditButton: typeof messageDisplaySource.showEditButton === "boolean"
+        ? messageDisplaySource.showEditButton
+        : DEFAULT_SETTINGS.messageDisplay.showEditButton,
+      showDeleteButton: typeof messageDisplaySource.showDeleteButton === "boolean"
+        ? messageDisplaySource.showDeleteButton
+        : DEFAULT_SETTINGS.messageDisplay.showDeleteButton,
+      showNoTrackerForSwipe: typeof messageDisplaySource.showNoTrackerForSwipe === "boolean"
+        ? messageDisplaySource.showNoTrackerForSwipe
+        : DEFAULT_SETTINGS.messageDisplay.showNoTrackerForSwipe,
       showGenerationDuration: typeof messageDisplaySource.showGenerationDuration === "boolean"
         ? messageDisplaySource.showGenerationDuration
         : DEFAULT_SETTINGS.messageDisplay.showGenerationDuration,
+      minimizedMaxHeightPx: clampNumber(
+        messageDisplaySource.minimizedMaxHeightPx,
+        SETTINGS_LIMITS.minimizedMaxHeightPx.default,
+        SETTINGS_LIMITS.minimizedMaxHeightPx.min,
+        SETTINGS_LIMITS.minimizedMaxHeightPx.max,
+      ),
       maxRenderedChars: clampNumber(
         messageDisplaySource.maxRenderedChars,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,

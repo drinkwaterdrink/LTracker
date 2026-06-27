@@ -11,15 +11,23 @@ import type {
   MessageSnapshotIndexEntry,
   MessageTrackerHistoryEntry,
   RenderedMessageTracker,
+  SwipeTrackerIdentity,
   TrackerSchemaPreset,
   TrackerSnapshot,
 } from "./types";
+import {
+  DEFAULT_SWIPE_KEY,
+  defaultSwipeIdentity,
+  swipeIdentityKey,
+} from "./swipeIdentity";
 
 export const MESSAGE_LOCAL_UI_SUPPORTED = true;
 export const MESSAGE_LOCAL_UI_FALLBACK_REASON: string | null = null;
 export const MESSAGE_WIDGET_ID = "ltracker-message-tracker";
 export const MESSAGE_WIDGET_PLACEMENT_REASON =
   "lumiverse-spindle-types@0.5.21 exposes ctx.messages.renderWidget() as a below-message widget surface and does not expose a top-placement option.";
+export const MESSAGE_DOM_INJECTION_REASON =
+  "lumiverse-spindle-types@0.5.21 exposes ctx.dom.inject() with InsertPosition, so LTracker uses afterbegin for top placement.";
 
 interface RenderMessageTrackerInput {
   messageId: string;
@@ -28,6 +36,7 @@ interface RenderMessageTrackerInput {
   latestChatSnapshot: TrackerSnapshot | null;
   preset: TrackerSchemaPreset;
   settings: LTrackerMessageDisplaySettings;
+  swipeIdentity?: SwipeTrackerIdentity | null;
   isRegenerating?: boolean;
   activeJobId?: string | null;
   activeJobStartedAt?: string | null;
@@ -40,6 +49,7 @@ interface BuildMessageTrackerHistoryInput {
   preset: TrackerSchemaPreset;
   settings: LTrackerMessageDisplaySettings;
   activeWidgetJobs?: Record<string, { jobId: string; startedAt: string | null }>;
+  selectedSwipeIdentities?: Record<string, SwipeTrackerIdentity>;
 }
 
 function snapshotForDisplay(input: RenderMessageTrackerInput): TrackerSnapshot | null {
@@ -58,6 +68,22 @@ function metadataFromSnapshot(
     snapshotCreatedAt: snapshot?.createdAt ?? null,
     attachedAt: attachedSnapshot?.attachedAt ?? null,
   };
+}
+
+function identityFromInput(input: RenderMessageTrackerInput): SwipeTrackerIdentity {
+  if (input.swipeIdentity) return input.swipeIdentity;
+  if (input.attachedSnapshot) {
+    return {
+      chatId: input.attachedSnapshot.chatId,
+      messageId: input.messageId,
+      swipeKey: input.attachedSnapshot.swipeKey ?? DEFAULT_SWIPE_KEY,
+      swipeIndex: input.attachedSnapshot.swipeIndex ?? null,
+      swipeId: input.attachedSnapshot.swipeId ?? null,
+      swipeContentHash: input.attachedSnapshot.swipeContentHash ?? null,
+      swipeKeySource: input.attachedSnapshot.swipeKeySource ?? "unknown",
+    };
+  }
+  return defaultSwipeIdentity(input.latestChatSnapshot?.chatId ?? "", input.messageId);
 }
 
 function generationMetadataFromSnapshot(
@@ -119,6 +145,8 @@ function displayJson(
     generationDurationMs: snapshot.generationDurationMs ?? null,
     generationCancelledAt: snapshot.generationCancelledAt ?? null,
     generationStatus: snapshot.generationStatus ?? null,
+    editedAt: snapshot.editedAt ?? null,
+    editedByUser: snapshot.editedByUser === true,
     data: snapshot.data,
   }, null, 2), settings.maxRenderedChars);
 }
@@ -142,7 +170,7 @@ function currentRunningDuration(startedAt: string | null): string | null {
 }
 
 function buildWidgetHtml(
-  rendered: Omit<RenderedMessageTracker, "widgetHtml">,
+  rendered: Omit<RenderedMessageTracker, "widgetHtml" | "domHtml">,
   settings: LTrackerMessageDisplaySettings,
 ): string {
   const duration = settings.showGenerationDuration
@@ -256,15 +284,107 @@ function buildWidgetHtml(
 </html>`;
 }
 
+function iconSvg(kind: "refresh" | "stop" | "edit" | "delete"): string {
+  if (kind === "stop") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 7h10v10H7z"/></svg>`;
+  }
+  if (kind === "edit") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m5 16.2 9.9-9.9 2.8 2.8-9.9 9.9H5v-2.8Zm11.3-11.3 1.1-1.1a1.5 1.5 0 0 1 2.1 0l.7.7a1.5 1.5 0 0 1 0 2.1l-1.1 1.1-2.8-2.8Z"/></svg>`;
+  }
+  if (kind === "delete") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2 .2 7h1.6l-.2-7H10Zm3.4 0-.2 7h1.6l.2-7h-1.6Z"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17.7 6.3A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.67 4.22 1.76L13 11h8V3l-3.3 3.3Z"/></svg>`;
+}
+
+function domButton(action: string, label: string, icon: "refresh" | "stop" | "edit" | "delete", enabled: boolean): string {
+  if (!enabled) return "";
+  return `<button class="ltd-icon-button" type="button" data-ltracker-dom-action="${escapeHtml(action)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${iconSvg(icon)}</button>`;
+}
+
+function buildDomHtml(
+  rendered: Omit<RenderedMessageTracker, "widgetHtml" | "domHtml">,
+  settings: LTrackerMessageDisplaySettings,
+): string {
+  const duration = settings.showGenerationDuration
+    ? formatDurationMs(rendered.generationDurationMs)
+    : null;
+  const meta = [
+    settings.showPresetName && rendered.presetName ? rendered.presetName : null,
+    settings.showTimestamp && rendered.snapshotCreatedAt ? rendered.snapshotCreatedAt : null,
+    rendered.snapshotCreatedAt && rendered.snapshotCreatedAt !== rendered.attachedAt ? null : null,
+  ].filter((item): item is string => Boolean(item)).join(" / ");
+  const elapsedMarkup = settings.showGenerationDuration
+    ? rendered.isRegenerating && rendered.generationStartedAt
+      ? `<span class="ltd-pill" data-ltracker-elapsed data-started-at="${escapeHtml(rendered.generationStartedAt)}">${escapeHtml(currentRunningDuration(rendered.generationStartedAt) ?? "0ms")}</span>`
+      : duration ? `<span class="ltd-pill">${escapeHtml(duration)}</span>` : ""
+    : "";
+  const statusMarkup = rendered.isRegenerating ? `<span class="ltd-pill" data-ltracker-status>generating</span>` : "";
+  const editedMarkup = rendered.json.includes("\"editedByUser\": true") ? `<span class="ltd-pill">edited</span>` : "";
+  const body = rendered.html || `<pre class="ltd-pre">${escapeHtml(rendered.textFallback)}</pre>`;
+  const actionLabel = rendered.isRegenerating ? "Cancel tracker generation" : "Regenerate tracker";
+  const actionKind = rendered.isRegenerating ? "stop" : "refresh";
+  const open = settings.collapsedByDefault ? "" : " open";
+  const compactClass = settings.compactCollapsedHeader ? " ltd-compact" : "";
+  return `
+<section class="ltracker-dom-tracker${compactClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}">
+  <style>
+    .ltracker-dom-tracker { margin: 0 0 6px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 8px; background: color-mix(in srgb, currentColor 4%, transparent); color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .ltracker-dom-tracker details { margin: 0; min-width: 0; }
+    .ltracker-dom-tracker summary { cursor: pointer; list-style-position: outside; min-height: 30px; padding: 4px 7px; }
+    .ltd-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+    .ltd-head { display: flex; align-items: center; gap: 5px 7px; flex-wrap: wrap; min-width: 0; }
+    .ltd-title { font-weight: 700; }
+    .ltd-meta { opacity: .72; overflow-wrap: anywhere; }
+    .ltd-pill { border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 999px; padding: 1px 6px; opacity: .82; }
+    .ltd-actions { display: inline-flex; align-items: center; gap: 4px; }
+    .ltd-icon-button { width: 26px; height: 26px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 7%, transparent); color: inherit; cursor: pointer; padding: 0; }
+    .ltd-icon-button svg { width: 15px; height: 15px; }
+    .ltd-icon-button:hover, .ltd-icon-button:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); outline: 2px solid color-mix(in srgb, currentColor 30%, transparent); }
+    .ltd-spinning svg { animation: ltd-spin .9s linear infinite; }
+    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; }
+    .ltd-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .ltracker-dom-tracker details:not([open]) { min-height: 0; }
+    @keyframes ltd-spin { to { transform: rotate(360deg); } }
+    @media (max-width: 520px) { .ltd-meta { display: none; } .ltd-icon-button { width: 28px; height: 28px; } }
+  </style>
+  <details${open}>
+    <summary>
+      <span class="ltd-summary">
+        <span class="ltd-head">
+          <span class="ltd-title">LTracker</span>
+          ${meta ? `<span class="ltd-meta">${escapeHtml(meta)}</span>` : ""}
+          ${elapsedMarkup}
+          ${statusMarkup}
+          ${editedMarkup}
+        </span>
+        <span class="ltd-actions">
+          ${domButton("toggle_regenerate", actionLabel, actionKind, settings.showWidgetRegenerateButton).replace("ltd-icon-button", `ltd-icon-button${rendered.isRegenerating ? " ltd-spinning" : ""}`)}
+          ${domButton("edit", "View or edit tracker", "edit", settings.showEditButton)}
+          ${domButton("delete", "Delete tracker", "delete", settings.showDeleteButton)}
+        </span>
+      </span>
+    </summary>
+    <div class="ltd-body">${body}</div>
+  </details>
+</section>`;
+}
+
 export function renderMessageTracker(input: RenderMessageTrackerInput): RenderedMessageTracker {
   const snapshot = snapshotForDisplay(input);
   const metadata = metadataFromSnapshot(input.attachedSnapshot, snapshot);
   const generationMetadata = generationMetadataFromSnapshot(snapshot, input);
+  const identity = identityFromInput(input);
   if (!snapshot) {
     const textFallback = "No tracker snapshot is available for this message.";
     const base = {
       messageId: input.messageId,
       messageIndex: input.messageIndex,
+      swipeKey: identity.swipeKey,
+      swipeIndex: identity.swipeIndex,
+      swipeId: identity.swipeId,
+      swipeContentHash: identity.swipeContentHash,
+      swipeKeySource: identity.swipeKeySource,
       ...metadata,
       ...generationMetadata,
       renderMode: input.settings.renderMode,
@@ -277,6 +397,7 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
     return {
       ...base,
       widgetHtml: buildWidgetHtml(base, input.settings),
+      domHtml: buildDomHtml(base, input.settings),
     };
   }
 
@@ -314,6 +435,11 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
   const base = {
     messageId: input.messageId,
     messageIndex: input.messageIndex,
+    swipeKey: identity.swipeKey,
+    swipeIndex: identity.swipeIndex,
+    swipeId: identity.swipeId,
+    swipeContentHash: identity.swipeContentHash,
+    swipeKeySource: identity.swipeKeySource,
     ...metadata,
     ...generationMetadata,
     renderMode: input.settings.renderMode,
@@ -326,13 +452,21 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
   return {
     ...base,
     widgetHtml: buildWidgetHtml(base, input.settings),
+    domHtml: buildDomHtml(base, input.settings),
   };
 }
 
 export function buildMessageTrackerHistory(input: BuildMessageTrackerHistoryInput): MessageTrackerHistoryEntry[] {
-  return input.index.map((entry, index) => {
-    const snapshot = input.snapshots[index] ?? null;
-    const activeJob = input.activeWidgetJobs?.[entry.messageId] ?? null;
+  const filteredIndex = input.selectedSwipeIdentities
+    ? input.index.filter((entry) => {
+        const selected = input.selectedSwipeIdentities?.[entry.messageId];
+        return !selected || selected.swipeKey === entry.swipeKey;
+      })
+    : input.index;
+  return filteredIndex.map((entry) => {
+    const originalIndex = input.index.findIndex((item) => swipeIdentityKey(item) === swipeIdentityKey(entry));
+    const snapshot = input.snapshots[originalIndex] ?? null;
+    const activeJob = input.activeWidgetJobs?.[swipeIdentityKey(entry)] ?? null;
     return {
       indexEntry: entry,
       snapshot,
@@ -343,6 +477,15 @@ export function buildMessageTrackerHistory(input: BuildMessageTrackerHistoryInpu
         latestChatSnapshot: input.latestChatSnapshot,
         preset: input.preset,
         settings: input.settings,
+        swipeIdentity: {
+          chatId: snapshot?.chatId ?? input.latestChatSnapshot?.chatId ?? "",
+          messageId: entry.messageId,
+          swipeKey: entry.swipeKey,
+          swipeIndex: entry.swipeIndex,
+          swipeId: entry.swipeId,
+          swipeContentHash: entry.swipeContentHash,
+          swipeKeySource: entry.swipeKeySource,
+        },
         isRegenerating: Boolean(activeJob),
         activeJobId: activeJob?.jobId ?? null,
         activeJobStartedAt: activeJob?.startedAt ?? null,
