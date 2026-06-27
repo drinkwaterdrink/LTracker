@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { DEFAULT_TRACKER_SCHEMA } from "../src/shared/defaultSchema";
 import {
@@ -15,6 +16,17 @@ import {
   renderHtmlTemplate,
   sanitizeHtml,
 } from "../src/shared/htmlTemplateRenderer";
+import {
+  buildMessageTrackerHistory,
+  claimMessageWidget,
+  renderMessageTracker,
+} from "../src/shared/messageDisplay";
+import {
+  normalizeMessageAttachedSnapshotPresetMetadata,
+  normalizeTrackerSnapshotPresetMetadata,
+  repairMessageSnapshotIndex,
+  upsertMessageSnapshotIndexEntry,
+} from "../src/shared/messageSnapshotIndex";
 import {
   isQuietGenerationType,
   shouldScheduleAutoTracker,
@@ -37,7 +49,10 @@ import {
   formatSnapshotForInjection,
   truncateSafe,
 } from "../src/shared/snapshotFormat";
-import { messageSnapshotPath } from "../src/shared/storageKeys";
+import {
+  messageSnapshotIndexPath,
+  messageSnapshotPath,
+} from "../src/shared/storageKeys";
 import {
   buildCompactTranscript,
   buildTrackerPrompt,
@@ -49,11 +64,14 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.07",
+  extensionVersion: "0.08",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
   sourceMessageIds: ["m1", "m2"],
+  presetId: DEFAULT_TRACKER_PRESET.id,
+  presetName: DEFAULT_TRACKER_PRESET.name,
+  presetVersion: DEFAULT_TRACKER_PRESET.version,
   data: {
     scene: {
       location: "Grand Meridian Court",
@@ -78,10 +96,13 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.07",
+  extensionVersion: "0.08",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
+  presetId: DEFAULT_TRACKER_PRESET.id,
+  presetName: DEFAULT_TRACKER_PRESET.name,
+  presetVersion: DEFAULT_TRACKER_PRESET.version,
   trigger: {
     kind: "auto",
     requestId: "auto",
@@ -251,6 +272,76 @@ test("messageSnapshotPath stores snapshots under chat and message ids", () => {
   );
 });
 
+test("messageSnapshotIndexPath stores the per-chat index under message-snapshots", () => {
+  assert.equal(
+    messageSnapshotIndexPath("chat id/1"),
+    "chats/chat%20id%2F1/message-snapshots/index.json",
+  );
+});
+
+test("message snapshot index repairs, sorts, and updates by message id", () => {
+  const repaired = repairMessageSnapshotIndex([
+    {
+      messageId: "m3",
+      messageIndex: 3,
+      createdAt: "2003-09-22T16:21:00.000Z",
+      presetId: "preset-a",
+      presetName: "Preset A",
+      storageKey: "key-3",
+    },
+    {
+      messageId: "m1",
+      messageIndex: 1,
+      createdAt: "2003-09-22T16:20:00.000Z",
+      storageKey: "key-1",
+    },
+    { bad: true },
+  ]);
+  assert.deepEqual(repaired.map((entry) => entry.messageId), ["m1", "m3"]);
+
+  const updated = upsertMessageSnapshotIndexEntry(repaired, {
+    messageId: "m3",
+    messageIndex: 2,
+    createdAt: "2003-09-22T16:22:00.000Z",
+    presetId: "preset-b",
+    presetName: "Preset B",
+    storageKey: "key-3b",
+  });
+  assert.deepEqual(updated.map((entry) => entry.messageId), ["m1", "m3"]);
+  assert.equal(updated[1]?.messageIndex, 2);
+  assert.equal(updated[1]?.presetName, "Preset B");
+  assert.equal(updated[1]?.storageKey, "key-3b");
+});
+
+test("snapshots preserve preset metadata and older snapshots normalize to null metadata", () => {
+  assert.equal(sampleSnapshot.presetId, DEFAULT_TRACKER_PRESET.id);
+  assert.equal(sampleMessageSnapshot.presetName, DEFAULT_TRACKER_PRESET.name);
+
+  const olderSnapshot = normalizeTrackerSnapshotPresetMetadata({
+    schemaVersion: 1,
+    extensionVersion: "0.06",
+    chatId: "chat-old",
+    createdAt: "2003-09-22T16:00:00.000Z",
+    messageCount: 2,
+    sourceMessageIds: ["old-1"],
+    data: { scene: { location: "Archive" } },
+  } as TrackerSnapshot);
+  assert.equal(olderSnapshot.presetId, null);
+  assert.equal(olderSnapshot.presetName, null);
+  assert.equal(olderSnapshot.presetVersion, null);
+
+  const olderAttached = normalizeMessageAttachedSnapshotPresetMetadata({
+    ...sampleMessageSnapshot,
+    presetId: undefined,
+    presetName: undefined,
+    presetVersion: undefined,
+    snapshot: olderSnapshot,
+  } as unknown as MessageAttachedSnapshot);
+  assert.equal(olderAttached.presetId, null);
+  assert.equal(olderAttached.presetName, null);
+  assert.equal(olderAttached.presetVersion, null);
+});
+
 test("repairSettings repairs injection settings with defaults and clamping", () => {
   const settings = repairSettings({
     ...DEFAULT_SETTINGS,
@@ -337,6 +428,9 @@ test("formatSnapshotForInjection renders minimal snapshots", () => {
 test("formatSnapshotForInjection strips unsafe control characters and escapes HTML", () => {
   const snapshot: TrackerSnapshot = {
     ...sampleSnapshot,
+    presetId: sampleSnapshot.presetId,
+    presetName: sampleSnapshot.presetName,
+    presetVersion: sampleSnapshot.presetVersion,
     data: {
       ...sampleSnapshot.data,
       important_facts: ["<script>alert(1)</script>\u0007"],
@@ -607,6 +701,104 @@ test("renderHtmlTemplate returns fallback when no template exists", () => {
   assert.match(result.textFallback, /Scene:/);
 });
 
+test("renderMessageTracker selects HTML template rendering when available", () => {
+  const rendered = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: sampleSnapshot,
+    preset: {
+      ...DEFAULT_TRACKER_PRESET,
+      htmlTemplate: "<section>{{scene.location}}</section>",
+    },
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "html_template",
+    },
+  });
+  assert.match(rendered.html, /Grand Meridian Court/);
+  assert.match(rendered.widgetHtml, /LTracker/);
+  assert.match(rendered.json, /"messageId": "m2"/);
+});
+
+test("renderMessageTracker falls back to compact text when HTML template is absent", () => {
+  const rendered = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: null,
+    preset: {
+      ...DEFAULT_TRACKER_PRESET,
+      htmlTemplate: "",
+    },
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "html_template",
+    },
+  });
+  assert.match(rendered.html, /<pre/);
+  assert.match(rendered.textFallback, /Scene:/);
+});
+
+test("renderMessageTracker renders compact text and pretty JSON modes", () => {
+  const compact = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: null,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "compact_text",
+    },
+  });
+  assert.match(compact.textFallback, /Grand Meridian Court/);
+  assert.doesNotMatch(compact.textFallback, /\[LTracker Snapshot\]/);
+
+  const json = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: null,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "pretty_json",
+    },
+  });
+  assert.match(json.html, /&quot;messageId&quot;/);
+  assert.match(json.textFallback, /"messageId": "m2"/);
+});
+
+test("claimMessageWidget prevents duplicate widget claims", () => {
+  const registry = new Set<string>();
+  assert.equal(claimMessageWidget(registry, "m2"), true);
+  assert.equal(claimMessageWidget(registry, "m2"), false);
+  assert.equal(claimMessageWidget(registry, "m3"), true);
+});
+
+test("buildMessageTrackerHistory creates a persistent drawer history model", () => {
+  const history = buildMessageTrackerHistory({
+    index: [
+      {
+        messageId: "m2",
+        messageIndex: 7,
+        createdAt: sampleMessageSnapshot.attachedAt,
+        presetId: sampleMessageSnapshot.presetId,
+        presetName: sampleMessageSnapshot.presetName,
+        storageKey: messageSnapshotPath(sampleMessageSnapshot.chatId, sampleMessageSnapshot.messageId),
+      },
+    ],
+    snapshots: [sampleMessageSnapshot],
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: DEFAULT_SETTINGS.messageDisplay,
+  });
+  assert.equal(history.length, 1);
+  assert.equal(history[0]?.indexEntry.messageId, "m2");
+  assert.match(history[0]?.rendered.widgetHtml ?? "", /LTracker/);
+});
+
 test("formatTemplateTextFallback includes tracker continuity fields", () => {
   const fallback = formatTemplateTextFallback(sampleSnapshot.data);
   assert.match(fallback, /Present characters: Aleister Crowley; Sable Mareth/);
@@ -634,6 +826,44 @@ test("repairSettings repairs renderer settings with defaults and clamping", () =
   assert.equal(repaired.renderer.maxRenderedChars, 1_000);
 });
 
+test("repairSettings repairs message display settings with defaults and clamping", () => {
+  const settings = repairSettings({
+    messageDisplay: {
+      enabled: false,
+      placement: "bottom",
+      source: "latest_chat_snapshot",
+      renderMode: "pretty_json",
+      collapsedByDefault: true,
+      showTimestamp: false,
+      showPresetName: false,
+      showCopyButton: false,
+      maxRenderedChars: "999999",
+    },
+  });
+  assert.equal(settings.messageDisplay.enabled, false);
+  assert.equal(settings.messageDisplay.placement, "bottom");
+  assert.equal(settings.messageDisplay.source, "latest_chat_snapshot");
+  assert.equal(settings.messageDisplay.renderMode, "pretty_json");
+  assert.equal(settings.messageDisplay.collapsedByDefault, true);
+  assert.equal(settings.messageDisplay.showTimestamp, false);
+  assert.equal(settings.messageDisplay.showPresetName, false);
+  assert.equal(settings.messageDisplay.showCopyButton, false);
+  assert.equal(settings.messageDisplay.maxRenderedChars, 200_000);
+
+  const repaired = repairSettings({
+    messageDisplay: {
+      placement: "middle",
+      source: "bad",
+      renderMode: "markdown",
+      maxRenderedChars: 10,
+    },
+  });
+  assert.equal(repaired.messageDisplay.placement, DEFAULT_SETTINGS.messageDisplay.placement);
+  assert.equal(repaired.messageDisplay.source, DEFAULT_SETTINGS.messageDisplay.source);
+  assert.equal(repaired.messageDisplay.renderMode, DEFAULT_SETTINGS.messageDisplay.renderMode);
+  assert.equal(repaired.messageDisplay.maxRenderedChars, 1_000);
+});
+
 test("renderHtmlTemplate truncates large rendered output", () => {
   const result = renderHtmlTemplate({
     template: `<p>${"x".repeat(200)}</p>`,
@@ -659,7 +889,7 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
 
 test("context handler hotfix is disabled by default", () => {
   assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
-  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.07/);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.08/);
 });
 
 test("context handler guard never mutates a frozen context object when disabled", async () => {
@@ -758,4 +988,24 @@ test("normal generation can call the disabled context handler guard without thro
     });
     assert.equal(result, null);
   });
+});
+
+test("README settings reference covers the major setting groups", () => {
+  const readme = readFileSync("README.md", "utf8");
+  for (const text of [
+    "Settings Reference",
+    "recentMessageLimit",
+    "generationTimeoutMs",
+    "autoDebounceMs",
+    "attachSnapshotToMessage",
+    "injection.enabled",
+    "injection.format",
+    "renderer.missingValuePlaceholder",
+    "renderer.allowInlineStyles",
+    "messageDisplay.enabled",
+    "messageDisplay.renderMode",
+    "messageDisplay.maxRenderedChars",
+  ]) {
+    assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 });

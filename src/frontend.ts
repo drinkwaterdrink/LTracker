@@ -3,6 +3,7 @@ import {
   DEFAULT_TRACKER_PRESET,
   exportTrackerPreset,
 } from "./shared/presets";
+import { MESSAGE_WIDGET_ID } from "./shared/messageDisplay";
 import { DEFAULT_SETTINGS } from "./shared/settings";
 import type {
   BackendMessage,
@@ -187,6 +188,32 @@ const STYLES = `
   font-weight: 650;
   margin-bottom: 8px;
 }
+.ltracker-history-list {
+  display: grid;
+  gap: 10px;
+}
+.ltracker-history-entry {
+  border: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  border-radius: 8px;
+  padding: 9px;
+}
+.ltracker-history-entry summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+.ltracker-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 4px;
+  opacity: 0.74;
+  font-size: 0.78rem;
+}
+.ltr-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 @media (max-width: 520px) {
   .ltracker-shell {
     padding: 10px;
@@ -296,11 +323,21 @@ function emptyState(): FrontendState {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection is disabled in 0.07 while the Lumiverse context handler return contract is being verified.",
+      contextHandlerDisabledReason: "Context handler injection is disabled in 0.08 while the Lumiverse context handler return contract is being verified.",
       lastContextHandlerError: null,
+      messageDisplayEnabled: false,
+      messageDisplayMode: null,
+      messageDisplayPlacement: null,
+      messageDisplayHydratedCount: 0,
+      lastMessageDisplayHydratedAt: null,
+      lastMessageDisplayError: null,
+      messageLocalUiSupported: false,
+      messageLocalUiFallbackReason: null,
+      messageSnapshotIndexCount: 0,
     },
     injectionPreview: null,
     renderPreview: null,
+    messageSnapshotHistory: [],
     presets: [DEFAULT_TRACKER_PRESET],
     activePreset: DEFAULT_TRACKER_PRESET,
     activePresetState: {
@@ -363,6 +400,10 @@ function renderJson(value: unknown, fallback: string): string {
   return JSON.stringify(value, null, 2);
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function requestId(prefix: string): string {
   return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
@@ -371,6 +412,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const cleanups: Array<() => void> = [];
   let state = emptyState();
   let disposed = false;
+  const widgetCleanups = new Map<string, () => void>();
+  const widgetSignatures = new Map<string, string>();
 
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
@@ -399,6 +442,58 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   function send(message: FrontendMessage): void {
     if (!disposed) ctx.sendToBackend(message);
+  }
+
+  function cleanupMessageWidgets(keepKeys: Set<string> = new Set()): void {
+    for (const [key, cleanup] of widgetCleanups) {
+      if (keepKeys.has(key)) continue;
+      cleanup();
+      widgetCleanups.delete(key);
+      widgetSignatures.delete(key);
+    }
+  }
+
+  function hydrateMessageWidgets(): void {
+    const renderWidget = ctx.messages?.renderWidget;
+    if (!state.settings.messageDisplay.enabled || !renderWidget) {
+      cleanupMessageWidgets();
+      return;
+    }
+
+    const keepKeys = new Set<string>();
+    for (const entry of state.messageSnapshotHistory) {
+      if (!entry.snapshot) continue;
+      const key = `${entry.indexEntry.messageId}:${MESSAGE_WIDGET_ID}`;
+      keepKeys.add(key);
+      const signature = [
+        entry.rendered.renderMode,
+        entry.rendered.snapshotCreatedAt,
+        entry.rendered.presetId,
+        entry.rendered.widgetHtml,
+      ].join("\n");
+      if (widgetSignatures.get(key) === signature) continue;
+      try {
+        widgetCleanups.get(key)?.();
+        const cleanup = renderWidget({
+          messageId: entry.indexEntry.messageId,
+          widgetId: MESSAGE_WIDGET_ID,
+          html: entry.rendered.widgetHtml,
+          minHeight: 40,
+          maxHeight: 4000,
+        });
+        widgetCleanups.set(key, cleanup);
+        widgetSignatures.set(key, signature);
+      } catch (error) {
+        state = {
+          ...state,
+          diagnostics: {
+            ...state.diagnostics,
+            lastMessageDisplayError: errorMessage(error),
+          },
+        };
+      }
+    }
+    cleanupMessageWidgets(keepKeys);
   }
 
   function requestState(): void {
@@ -458,12 +553,32 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const input = tab.root.querySelector<HTMLInputElement>(`[data-renderer-setting="${name}"]`);
       return input ? input.value : state.settings.renderer[name];
     };
+    const messageDisplayNumberValue = (name: keyof Pick<LTrackerSettings["messageDisplay"], "maxRenderedChars">): number => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-message-display-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.messageDisplay[name];
+    };
+    const messageDisplayBooleanValue = (
+      name: keyof Pick<
+        LTrackerSettings["messageDisplay"],
+        "enabled" | "collapsedByDefault" | "showTimestamp" | "showPresetName" | "showCopyButton"
+      >,
+    ): boolean => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-message-display-setting="${name}"]`);
+      return input ? input.checked : state.settings.messageDisplay[name];
+    };
     const selectValue = <T extends string>(name: keyof LTrackerSettings["injection"], fallback: T): T => {
       const input = tab.root.querySelector<HTMLSelectElement>(`[data-setting="${name}"]`);
       return input ? input.value as T : fallback;
     };
     const rendererSelectValue = <T extends string>(name: keyof Pick<LTrackerSettings["renderer"], "previewSource">, fallback: T): T => {
       const input = tab.root.querySelector<HTMLSelectElement>(`[data-renderer-setting="${name}"]`);
+      return input ? input.value as T : fallback;
+    };
+    const messageDisplaySelectValue = <T extends string>(
+      name: keyof Pick<LTrackerSettings["messageDisplay"], "placement" | "source" | "renderMode">,
+      fallback: T,
+    ): T => {
+      const input = tab.root.querySelector<HTMLSelectElement>(`[data-message-display-setting="${name}"]`);
       return input ? input.value as T : fallback;
     };
     return {
@@ -498,6 +613,17 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         missingValuePlaceholder: rendererTextValue("missingValuePlaceholder"),
         maxRenderedChars: rendererNumberValue("maxRenderedChars"),
         allowInlineStyles: rendererBooleanValue("allowInlineStyles"),
+      },
+      messageDisplay: {
+        enabled: messageDisplayBooleanValue("enabled"),
+        placement: messageDisplaySelectValue("placement", state.settings.messageDisplay.placement),
+        source: messageDisplaySelectValue("source", state.settings.messageDisplay.source),
+        renderMode: messageDisplaySelectValue("renderMode", state.settings.messageDisplay.renderMode),
+        collapsedByDefault: messageDisplayBooleanValue("collapsedByDefault"),
+        showTimestamp: messageDisplayBooleanValue("showTimestamp"),
+        showPresetName: messageDisplayBooleanValue("showPresetName"),
+        showCopyButton: messageDisplayBooleanValue("showCopyButton"),
+        maxRenderedChars: messageDisplayNumberValue("maxRenderedChars"),
       },
     };
   }
@@ -685,6 +811,53 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
   }
 
+  function renderMessageHistory(): string {
+    if (state.messageSnapshotHistory.length === 0) {
+      return `<div class="ltracker-render-placeholder">${escapeHtml("No message-attached tracker snapshots are indexed for this chat yet.")}</div>`;
+    }
+    return `
+      <div class="ltracker-history-list">
+        ${state.messageSnapshotHistory.map((entry) => {
+          const rendered = entry.rendered;
+          const open = state.settings.messageDisplay.collapsedByDefault ? "" : " open";
+          const title = [
+            entry.indexEntry.messageIndex !== null ? `Message #${entry.indexEntry.messageIndex}` : "Message",
+            rendered.presetName ? rendered.presetName : "No preset metadata",
+          ].join(" - ");
+          const meta = [
+            `id ${entry.indexEntry.messageId}`,
+            rendered.snapshotCreatedAt ? `snapshot ${rendered.snapshotCreatedAt}` : "snapshot unavailable",
+            rendered.attachedAt ? `attached ${rendered.attachedAt}` : null,
+            `mode ${rendered.renderMode}`,
+          ].filter((item): item is string => Boolean(item)).join(" / ");
+          const htmlPreview = rendered.html
+            ? `<div class="ltracker-render-preview">${rendered.html}</div>`
+            : `<pre class="ltracker-text">${escapeHtml(rendered.textFallback)}</pre>`;
+          return `
+            <article class="ltracker-history-entry">
+              <details${open}>
+                <summary>${escapeHtml(title)}</summary>
+                <div class="ltracker-history-meta">${escapeHtml(meta)}</div>
+                ${htmlPreview}
+                <div class="ltracker-copy-actions" style="margin-top: 8px;">
+                  <button class="ltracker-button" type="button" data-action="copy-history-json" data-message-id="${escapeHtml(entry.indexEntry.messageId)}"${disabled(!rendered.json)}>
+                    Copy JSON
+                  </button>
+                  <button class="ltracker-button" type="button" data-action="copy-history-html" data-message-id="${escapeHtml(entry.indexEntry.messageId)}"${disabled(!rendered.html)}>
+                    Copy HTML
+                  </button>
+                  <button class="ltracker-button" type="button" data-action="copy-history-text" data-message-id="${escapeHtml(entry.indexEntry.messageId)}"${disabled(!rendered.textFallback)}>
+                    Copy Text
+                  </button>
+                </div>
+              </details>
+            </article>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
   function render(): void {
     inputAction.setEnabled(state.status !== "generating");
     const canGenerate = state.status !== "generating";
@@ -722,14 +895,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const renderErrorsText = renderPreview?.errors.length
       ? renderPreview.errors.join("\n")
       : "None";
+    const messageHistoryHtml = renderMessageHistory();
+    const messageDisplaySupportText = diagnostics.messageLocalUiSupported
+      ? "Lumiverse message widgets are available. LTracker renders sandboxed per-message widgets when message display is enabled."
+      : diagnostics.messageLocalUiFallbackReason ?? "Message-local UI is unavailable; use the drawer history fallback.";
     const activePreset = state.activePreset;
     const activePresetIsBuiltIn = activePreset.origin === "built_in";
     const presetSchemaText = JSON.stringify(activePreset.jsonSchema, null, 2);
     const presetHtmlWarning = activePreset.htmlTemplate?.trim()
-      ? "Templates are sanitized and only rendered in the drawer preview. They are not inserted into chat messages."
+      ? "Templates are sanitized before drawer preview and message-widget display. They are not inserted into chat message text."
       : activePresetIsBuiltIn
         ? "This built-in preset has no HTML template. Duplicate it before adding one."
-        : "HTML template is optional. It is sanitized and rendered only in the drawer preview.";
+        : "HTML template is optional. It is sanitized before drawer preview and message-widget display.";
     const presetOptions = state.presets.map((preset) => {
       return `<option value="${escapeHtml(preset.id)}"${selected(preset.id === activePreset.id)}>${escapeHtml(preset.name)} (${escapeHtml(preset.origin)})</option>`;
     }).join("");
@@ -816,6 +993,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               Active chat only
             </label>
           </div>
+          <p class="ltracker-note">Debounce is the wait after a qualifying message before LTracker generates. Skip first messages avoids early-chat noise. Attach snapshot saves an exact message-id copy for history/widgets. Active chat only cancels stale jobs when you switch chats.</p>
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="save-settings">Save Settings</button>
             <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
@@ -866,6 +1044,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             </label>
           </div>
           <p class="ltracker-note">${escapeHtml(injectionDisabledReason ?? "Injection uses cached snapshots only. It does not generate a tracker by itself, and no snapshot means nothing is injected.")}</p>
+          <p class="ltracker-note">Mode chooses chat-wide or message-attached cache. Format chooses compact text, minimal text, or pretty JSON. Include header adds a label to injected text; injection remains disabled by the 0.08 safety hotfix.</p>
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="copy-injection-preview" ${disabled(!state.injectionPreview)}>
               Copy Injection Preview
@@ -904,7 +1083,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               Allow sanitized inline styles
             </label>
           </div>
-          <p class="ltracker-note">HTML templates render only in this drawer preview. They never mutate chat messages and are not used for context injection.</p>
+          <p class="ltracker-note">Missing value placeholder fills template fields that do not exist. Inline styles stay stripped unless enabled here. Templates are sanitized before drawer preview or message-widget display and are never used for context injection.</p>
           <div class="ltracker-grid ltracker-details">
             ${renderRow("Active preset", activePreset.name)}
             ${renderRow("Has HTML template", renderHasTemplate)}
@@ -944,6 +1123,66 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         </section>
 
         <section class="ltracker-panel">
+          <span class="ltracker-label">Message Display</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="enabled"${checked(state.settings.messageDisplay.enabled)}>
+              Enable message display
+            </label>
+            <label class="ltracker-field">
+              Placement
+              <select data-message-display-setting="placement">
+                <option value="top"${selected(state.settings.messageDisplay.placement === "top")}>Top</option>
+                <option value="bottom"${selected(state.settings.messageDisplay.placement === "bottom")}>Bottom</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Source
+              <select data-message-display-setting="source">
+                <option value="message_attached_snapshot"${selected(state.settings.messageDisplay.source === "message_attached_snapshot")}>Message-attached snapshot</option>
+                <option value="latest_chat_snapshot"${selected(state.settings.messageDisplay.source === "latest_chat_snapshot")}>Latest chat snapshot</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Render mode
+              <select data-message-display-setting="renderMode">
+                <option value="html_template"${selected(state.settings.messageDisplay.renderMode === "html_template")}>HTML template</option>
+                <option value="compact_text"${selected(state.settings.messageDisplay.renderMode === "compact_text")}>Compact text</option>
+                <option value="pretty_json"${selected(state.settings.messageDisplay.renderMode === "pretty_json")}>Pretty JSON</option>
+              </select>
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="collapsedByDefault"${checked(state.settings.messageDisplay.collapsedByDefault)}>
+              Collapsed by default
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showTimestamp"${checked(state.settings.messageDisplay.showTimestamp)}>
+              Show timestamp
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showPresetName"${checked(state.settings.messageDisplay.showPresetName)}>
+              Show preset name
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showCopyButton"${checked(state.settings.messageDisplay.showCopyButton)}>
+              Show copy buttons
+            </label>
+            <label class="ltracker-field">
+              Max rendered chars
+              <input type="number" min="1000" max="200000" step="1000" data-message-display-setting="maxRenderedChars" value="${escapeHtml(String(state.settings.messageDisplay.maxRenderedChars))}">
+            </label>
+          </div>
+          <p class="ltracker-note">Placement is a preference; the verified Lumiverse widget API currently mounts below messages. Render mode chooses template HTML, compact text, or JSON. Collapsed by default keeps long trackers tucked away.</p>
+          <p class="ltracker-note">${escapeHtml(messageDisplaySupportText)}</p>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Message Tracker History</span>
+          <p class="ltracker-note">Every auto-generated message-attached snapshot is indexed by message id and shown here, even when the chat message is off-screen.</p>
+          ${messageHistoryHtml}
+        </section>
+
+        <section class="ltracker-panel">
           <span class="ltracker-label">Schema Presets</span>
           <p class="ltracker-note">zTracker-style layout: Schema Box 1 is active JSON Schema, Schema Box 2 is sanitized drawer-preview HTML, and Prompt Box instructions guide tracker extraction.</p>
           <div class="ltracker-settings">
@@ -974,7 +1213,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml(presetSchemaText)}</textarea>
             </label>
             <label class="ltracker-field ltracker-field-wide">
-              Schema Box 2 - HTML Template (Sanitized drawer preview only)
+              Schema Box 2 - HTML Template (Sanitized preview/message display)
               <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.htmlTemplate ?? "")}</textarea>
             </label>
             <label class="ltracker-field ltracker-field-wide">
@@ -1014,6 +1253,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Current status", state.status)}
             ${renderRow("Auto mode", autoStatus)}
             ${renderRow("Permission status", permissionText)}
+            ${renderRow("Message display enabled", diagnostics.messageDisplayEnabled ? "yes" : "no")}
+            ${renderRow("Message display mode", diagnostics.messageDisplayMode)}
+            ${renderRow("Message display placement", diagnostics.messageDisplayPlacement)}
+            ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
+            ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
+            ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
+            ${renderRow("Message-local UI supported", diagnostics.messageLocalUiSupported ? "yes" : "no")}
+            ${renderRow("Message-local fallback reason", diagnostics.messageLocalUiFallbackReason)}
+            ${renderRow("Message snapshot index count", diagnostics.messageSnapshotIndexCount)}
             ${renderRow("Injection enabled", diagnostics.injectionEnabled ? "yes" : "no")}
             ${renderRow("Context handler registered", diagnostics.contextHandlerRegistered ? "yes" : "no")}
             ${renderRow("Context handler disabled reason", diagnostics.contextHandlerDisabledReason)}
@@ -1116,6 +1364,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         </section>
       </section>
     `;
+    hydrateMessageWidgets();
   }
 
   const onClick = (event: Event): void => {
@@ -1123,6 +1372,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ? event.target.closest<HTMLElement>("[data-action]")
       : null;
     const action = target?.dataset.action;
+    const historyEntry = target?.dataset.messageId
+      ? state.messageSnapshotHistory.find((entry) => entry.indexEntry.messageId === target.dataset.messageId)
+      : null;
     if (action === "generate") generateTracker();
     if (action === "refresh") requestState();
     if (action === "clear-snapshot") clearSnapshot();
@@ -1152,6 +1404,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         : null;
       void copyText(renderLog, "render errors");
     }
+    if (action === "copy-history-json") void copyText(historyEntry?.rendered.json ?? null, "message tracker JSON");
+    if (action === "copy-history-html") void copyText(historyEntry?.rendered.html ?? null, "message tracker HTML");
+    if (action === "copy-history-text") void copyText(historyEntry?.rendered.textFallback ?? null, "message tracker text");
     if (action === "save-preset-new") savePresetAsNew();
     if (action === "duplicate-preset") duplicatePreset();
     if (action === "update-preset") updatePreset();
@@ -1194,6 +1449,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       render();
     }
   }));
+  cleanups.push(() => cleanupMessageWidgets());
   cleanups.push(() => inputAction.destroy());
   cleanups.push(() => tab.destroy());
 

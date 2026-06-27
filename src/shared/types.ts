@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.07";
+export const EXTENSION_VERSION = "0.08";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -11,6 +11,10 @@ export type LTrackerInjectionMode = "latest_chat_snapshot" | "latest_message_sna
 export type LTrackerInjectionFormat = "compact" | "pretty_json" | "minimal";
 export type LTrackerRenderSource = "latest_chat_snapshot" | "latest_message_snapshot";
 export type LTrackerRenderStatus = "rendered" | "fallback" | "no_template" | "no_snapshot" | "error";
+export type LTrackerMessageDisplayPlacement = "top" | "bottom";
+export type LTrackerMessageDisplaySource = "message_attached_snapshot" | "latest_chat_snapshot";
+export type LTrackerMessageDisplayRenderMode = "html_template" | "compact_text" | "pretty_json";
+export type LTrackerMessageDisplayMode = "message_widget" | "drawer_history" | "disabled";
 export type TrackerPresetOrigin = "built_in" | "user_imported" | "user_created";
 export type LTrackerErrorStage =
   | "active_chat"
@@ -84,6 +88,9 @@ export interface TrackerSnapshot {
   createdAt: string;
   messageCount: number;
   sourceMessageIds: string[];
+  presetId: string | null;
+  presetName: string | null;
+  presetVersion: string | null;
   data: Record<string, unknown>;
 }
 
@@ -110,9 +117,21 @@ export interface MessageAttachedSnapshot {
   chatId: string;
   messageId: string;
   messageIndex: number | null;
+  presetId: string | null;
+  presetName: string | null;
+  presetVersion: string | null;
   trigger: AutoTrackerTriggerSource;
   snapshot: TrackerSnapshot;
   attachedAt: string;
+}
+
+export interface MessageSnapshotIndexEntry {
+  messageId: string;
+  messageIndex: number | null;
+  createdAt: string;
+  presetId: string | null;
+  presetName: string | null;
+  storageKey: string;
 }
 
 export interface LTrackerAutoSettings {
@@ -144,6 +163,18 @@ export interface LTrackerRendererSettings {
   allowInlineStyles: boolean;
 }
 
+export interface LTrackerMessageDisplaySettings {
+  enabled: boolean;
+  placement: LTrackerMessageDisplayPlacement;
+  source: LTrackerMessageDisplaySource;
+  renderMode: LTrackerMessageDisplayRenderMode;
+  collapsedByDefault: boolean;
+  showTimestamp: boolean;
+  showPresetName: boolean;
+  showCopyButton: boolean;
+  maxRenderedChars: number;
+}
+
 export interface LTrackerSettings {
   schemaVersion: typeof SETTINGS_SCHEMA_VERSION;
   recentMessageLimit: number;
@@ -154,6 +185,7 @@ export interface LTrackerSettings {
   auto: LTrackerAutoSettings;
   injection: LTrackerInjectionSettings;
   renderer: LTrackerRendererSettings;
+  messageDisplay: LTrackerMessageDisplaySettings;
 }
 
 export interface LTrackerError {
@@ -239,6 +271,15 @@ export interface LTrackerDiagnostics {
   contextHandlerRegistered: boolean;
   contextHandlerDisabledReason: string | null;
   lastContextHandlerError: string | null;
+  messageDisplayEnabled: boolean;
+  messageDisplayMode: LTrackerMessageDisplayMode | null;
+  messageDisplayPlacement: LTrackerMessageDisplayPlacement | null;
+  messageDisplayHydratedCount: number;
+  lastMessageDisplayHydratedAt: string | null;
+  lastMessageDisplayError: string | null;
+  messageLocalUiSupported: boolean;
+  messageLocalUiFallbackReason: string | null;
+  messageSnapshotIndexCount: number;
 }
 
 export interface PermissionState {
@@ -256,6 +297,7 @@ export interface FrontendState {
   latestMessageSnapshot: MessageAttachedSnapshot | null;
   injectionPreview: string | null;
   renderPreview: RenderedTrackerPreview | null;
+  messageSnapshotHistory: MessageTrackerHistoryEntry[];
   presets: TrackerSchemaPreset[];
   activePreset: TrackerSchemaPreset;
   activePresetState: ActiveTrackerPresetState;
@@ -275,6 +317,29 @@ export interface RenderedTrackerPreview {
   textFallback: string;
   warnings: string[];
   errors: string[];
+}
+
+export interface RenderedMessageTracker {
+  messageId: string;
+  messageIndex: number | null;
+  presetId: string | null;
+  presetName: string | null;
+  presetVersion: string | null;
+  snapshotCreatedAt: string | null;
+  attachedAt: string | null;
+  renderMode: LTrackerMessageDisplayRenderMode;
+  html: string;
+  textFallback: string;
+  json: string;
+  widgetHtml: string;
+  warnings: string[];
+  errors: string[];
+}
+
+export interface MessageTrackerHistoryEntry {
+  indexEntry: MessageSnapshotIndexEntry;
+  snapshot: MessageAttachedSnapshot | null;
+  rendered: RenderedMessageTracker;
 }
 
 export type FrontendMessage =

@@ -16,6 +16,10 @@ export function messageSnapshotPath(chatId: string, messageId: string): string {
   return `${messageSnapshotsPrefix(chatId)}${encodeStorageSegment(messageId)}/tracker-snapshot.json`;
 }
 
+export function messageSnapshotIndexPath(chatId: string): string {
+  return `chats/${encodeStorageSegment(chatId)}/message-snapshots/index.json`;
+}
+
 export function diagnosticsPath(chatId: string): string {
   return `chats/${encodeStorageSegment(chatId)}/diagnostics.json`;
 }

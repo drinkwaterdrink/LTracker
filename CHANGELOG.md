@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.08 - Visible message tracker blocks
+- Added persistent message-attached tracker display groundwork.
+- Added message snapshot index storage.
+- Added preset metadata to tracker snapshots.
+- Added message display settings.
+- Added visible message tracker rendering when supported by Lumiverse message-local UI APIs.
+- Added drawer-based Message Tracker History fallback when message-local rendering is unavailable.
+- Added concise drawer help text for confusing settings.
+- Expanded README with a full settings reference.
+- Added diagnostics for message display support and hydration.
+- Added tests for message display settings, snapshot indexing, fallback rendering, and snapshot compatibility.
+
 ## 0.07 - Readonly generation hotfix
 - Fixed a blocker where enabling LTracker could cause normal Lumiverse generations to fail with `Attempted to assign to readonly property`.
 - Made context-handler injection fail-safe.

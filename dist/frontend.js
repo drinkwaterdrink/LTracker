@@ -69,8 +69,17 @@ function exportTrackerPreset(preset) {
   };
 }
 
+// src/shared/htmlTemplateRenderer.ts
+var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
+var EACH_BLOCK_PATTERN = new RegExp(`{{#each\\s+(${TEMPLATE_PATH})\\s*}}([\\s\\S]*?){{/each}}`, "g");
+var JSON_HELPER_PATTERN = new RegExp(`{{\\s*json\\s+(${TEMPLATE_PATH})\\s*}}`, "g");
+var VALUE_PATTERN = new RegExp(`{{\\s*(${TEMPLATE_PATH})\\s*}}`, "g");
+
+// src/shared/messageDisplay.ts
+var MESSAGE_WIDGET_ID = "ltracker-message-tracker";
+
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.07";
+var EXTENSION_VERSION = "0.08";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -83,7 +92,8 @@ var SETTINGS_LIMITS = {
   autoDebounceMs: { min: 250, max: 3e4, default: 1500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
   maxInjectedChars: { min: 500, max: 2e4, default: 3e3 },
-  maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 }
+  maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
+  maxMessageDisplayRenderedChars: { min: 1e3, max: 2e5, default: 5e4 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -117,6 +127,17 @@ var DEFAULT_SETTINGS = {
     missingValuePlaceholder: "",
     maxRenderedChars: SETTINGS_LIMITS.maxRenderedChars.default,
     allowInlineStyles: false
+  },
+  messageDisplay: {
+    enabled: true,
+    placement: "top",
+    source: "message_attached_snapshot",
+    renderMode: "html_template",
+    collapsedByDefault: false,
+    showTimestamp: true,
+    showPresetName: true,
+    showCopyButton: true,
+    maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default
   }
 };
 
@@ -287,6 +308,32 @@ var STYLES = `
   font-weight: 650;
   margin-bottom: 8px;
 }
+.ltracker-history-list {
+  display: grid;
+  gap: 10px;
+}
+.ltracker-history-entry {
+  border: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  border-radius: 8px;
+  padding: 9px;
+}
+.ltracker-history-entry summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+.ltracker-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 4px;
+  opacity: 0.74;
+  font-size: 0.78rem;
+}
+.ltr-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 @media (max-width: 520px) {
   .ltracker-shell {
     padding: 10px;
@@ -394,11 +441,21 @@ function emptyState() {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection is disabled in 0.07 while the Lumiverse context handler return contract is being verified.",
-      lastContextHandlerError: null
+      contextHandlerDisabledReason: "Context handler injection is disabled in 0.08 while the Lumiverse context handler return contract is being verified.",
+      lastContextHandlerError: null,
+      messageDisplayEnabled: false,
+      messageDisplayMode: null,
+      messageDisplayPlacement: null,
+      messageDisplayHydratedCount: 0,
+      lastMessageDisplayHydratedAt: null,
+      lastMessageDisplayError: null,
+      messageLocalUiSupported: false,
+      messageLocalUiFallbackReason: null,
+      messageSnapshotIndexCount: 0
     },
     injectionPreview: null,
     renderPreview: null,
+    messageSnapshotHistory: [],
     presets: [DEFAULT_TRACKER_PRESET],
     activePreset: DEFAULT_TRACKER_PRESET,
     activePresetState: {
@@ -413,7 +470,7 @@ function isRecord(value) {
 function isBackendMessage(payload) {
   return isRecord(payload) && typeof payload.type === "string";
 }
-function escapeHtml(value) {
+function escapeHtml2(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 function checked(value) {
@@ -432,8 +489,8 @@ function labelForStatus(status) {
 }
 function renderRow(label, value) {
   return `
-    <div class="ltracker-key">${escapeHtml(label)}</div>
-    <div class="ltracker-value">${escapeHtml(value === null || value === "" ? "None" : String(value))}</div>
+    <div class="ltracker-key">${escapeHtml2(label)}</div>
+    <div class="ltracker-value">${escapeHtml2(value === null || value === "" ? "None" : String(value))}</div>
   `;
 }
 function renderError(error) {
@@ -447,6 +504,9 @@ function renderJson(value, fallback) {
   if (value === null || value === void 0) return fallback;
   return JSON.stringify(value, null, 2);
 }
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
 function requestId(prefix) {
   return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
@@ -454,6 +514,8 @@ function setup(ctx) {
   const cleanups = [];
   let state = emptyState();
   let disposed = false;
+  const widgetCleanups = /* @__PURE__ */ new Map();
+  const widgetSignatures = /* @__PURE__ */ new Map();
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
   const tab = ctx.ui.registerDrawerTab({
@@ -477,6 +539,55 @@ function setup(ctx) {
   }
   function send(message) {
     if (!disposed) ctx.sendToBackend(message);
+  }
+  function cleanupMessageWidgets(keepKeys = /* @__PURE__ */ new Set()) {
+    for (const [key, cleanup] of widgetCleanups) {
+      if (keepKeys.has(key)) continue;
+      cleanup();
+      widgetCleanups.delete(key);
+      widgetSignatures.delete(key);
+    }
+  }
+  function hydrateMessageWidgets() {
+    const renderWidget = ctx.messages?.renderWidget;
+    if (!state.settings.messageDisplay.enabled || !renderWidget) {
+      cleanupMessageWidgets();
+      return;
+    }
+    const keepKeys = /* @__PURE__ */ new Set();
+    for (const entry of state.messageSnapshotHistory) {
+      if (!entry.snapshot) continue;
+      const key = `${entry.indexEntry.messageId}:${MESSAGE_WIDGET_ID}`;
+      keepKeys.add(key);
+      const signature = [
+        entry.rendered.renderMode,
+        entry.rendered.snapshotCreatedAt,
+        entry.rendered.presetId,
+        entry.rendered.widgetHtml
+      ].join("\n");
+      if (widgetSignatures.get(key) === signature) continue;
+      try {
+        widgetCleanups.get(key)?.();
+        const cleanup = renderWidget({
+          messageId: entry.indexEntry.messageId,
+          widgetId: MESSAGE_WIDGET_ID,
+          html: entry.rendered.widgetHtml,
+          minHeight: 40,
+          maxHeight: 4e3
+        });
+        widgetCleanups.set(key, cleanup);
+        widgetSignatures.set(key, signature);
+      } catch (error) {
+        state = {
+          ...state,
+          diagnostics: {
+            ...state.diagnostics,
+            lastMessageDisplayError: errorMessage(error)
+          }
+        };
+      }
+    }
+    cleanupMessageWidgets(keepKeys);
   }
   function requestState() {
     send({ type: "refresh_state", chatId: activeChatId() });
@@ -532,12 +643,24 @@ function setup(ctx) {
       const input = tab.root.querySelector(`[data-renderer-setting="${name}"]`);
       return input ? input.value : state.settings.renderer[name];
     };
+    const messageDisplayNumberValue = (name) => {
+      const input = tab.root.querySelector(`[data-message-display-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.messageDisplay[name];
+    };
+    const messageDisplayBooleanValue = (name) => {
+      const input = tab.root.querySelector(`[data-message-display-setting="${name}"]`);
+      return input ? input.checked : state.settings.messageDisplay[name];
+    };
     const selectValue = (name, fallback) => {
       const input = tab.root.querySelector(`[data-setting="${name}"]`);
       return input ? input.value : fallback;
     };
     const rendererSelectValue = (name, fallback) => {
       const input = tab.root.querySelector(`[data-renderer-setting="${name}"]`);
+      return input ? input.value : fallback;
+    };
+    const messageDisplaySelectValue = (name, fallback) => {
+      const input = tab.root.querySelector(`[data-message-display-setting="${name}"]`);
       return input ? input.value : fallback;
     };
     return {
@@ -572,6 +695,17 @@ function setup(ctx) {
         missingValuePlaceholder: rendererTextValue("missingValuePlaceholder"),
         maxRenderedChars: rendererNumberValue("maxRenderedChars"),
         allowInlineStyles: rendererBooleanValue("allowInlineStyles")
+      },
+      messageDisplay: {
+        enabled: messageDisplayBooleanValue("enabled"),
+        placement: messageDisplaySelectValue("placement", state.settings.messageDisplay.placement),
+        source: messageDisplaySelectValue("source", state.settings.messageDisplay.source),
+        renderMode: messageDisplaySelectValue("renderMode", state.settings.messageDisplay.renderMode),
+        collapsedByDefault: messageDisplayBooleanValue("collapsedByDefault"),
+        showTimestamp: messageDisplayBooleanValue("showTimestamp"),
+        showPresetName: messageDisplayBooleanValue("showPresetName"),
+        showCopyButton: messageDisplayBooleanValue("showCopyButton"),
+        maxRenderedChars: messageDisplayNumberValue("maxRenderedChars")
       }
     };
   }
@@ -741,6 +875,50 @@ function setup(ctx) {
       render();
     }
   }
+  function renderMessageHistory() {
+    if (state.messageSnapshotHistory.length === 0) {
+      return `<div class="ltracker-render-placeholder">${escapeHtml2("No message-attached tracker snapshots are indexed for this chat yet.")}</div>`;
+    }
+    return `
+      <div class="ltracker-history-list">
+        ${state.messageSnapshotHistory.map((entry) => {
+      const rendered = entry.rendered;
+      const open = state.settings.messageDisplay.collapsedByDefault ? "" : " open";
+      const title = [
+        entry.indexEntry.messageIndex !== null ? `Message #${entry.indexEntry.messageIndex}` : "Message",
+        rendered.presetName ? rendered.presetName : "No preset metadata"
+      ].join(" - ");
+      const meta = [
+        `id ${entry.indexEntry.messageId}`,
+        rendered.snapshotCreatedAt ? `snapshot ${rendered.snapshotCreatedAt}` : "snapshot unavailable",
+        rendered.attachedAt ? `attached ${rendered.attachedAt}` : null,
+        `mode ${rendered.renderMode}`
+      ].filter((item) => Boolean(item)).join(" / ");
+      const htmlPreview = rendered.html ? `<div class="ltracker-render-preview">${rendered.html}</div>` : `<pre class="ltracker-text">${escapeHtml2(rendered.textFallback)}</pre>`;
+      return `
+            <article class="ltracker-history-entry">
+              <details${open}>
+                <summary>${escapeHtml2(title)}</summary>
+                <div class="ltracker-history-meta">${escapeHtml2(meta)}</div>
+                ${htmlPreview}
+                <div class="ltracker-copy-actions" style="margin-top: 8px;">
+                  <button class="ltracker-button" type="button" data-action="copy-history-json" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}"${disabled(!rendered.json)}>
+                    Copy JSON
+                  </button>
+                  <button class="ltracker-button" type="button" data-action="copy-history-html" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}"${disabled(!rendered.html)}>
+                    Copy HTML
+                  </button>
+                  <button class="ltracker-button" type="button" data-action="copy-history-text" data-message-id="${escapeHtml2(entry.indexEntry.messageId)}"${disabled(!rendered.textFallback)}>
+                    Copy Text
+                  </button>
+                </div>
+              </details>
+            </article>
+          `;
+    }).join("")}
+      </div>
+    `;
+  }
   function render() {
     inputAction.setEnabled(state.status !== "generating");
     const canGenerate = state.status !== "generating";
@@ -758,16 +936,18 @@ function setup(ctx) {
     const renderStatus = renderPreview?.status ?? "not rendered";
     const renderSnapshotAt = renderPreview?.snapshotCreatedAt ?? "None";
     const renderHasTemplate = state.activePreset.htmlTemplate?.trim() ? "yes" : "no";
-    const renderHtmlPreview = renderPreview?.html ? `<div class="ltracker-render-preview">${renderPreview.html}</div>` : `<div class="ltracker-render-preview ltracker-render-placeholder">${escapeHtml("No sanitized HTML preview yet. Render a snapshot to preview the active template.")}</div>`;
+    const renderHtmlPreview = renderPreview?.html ? `<div class="ltracker-render-preview">${renderPreview.html}</div>` : `<div class="ltracker-render-preview ltracker-render-placeholder">${escapeHtml2("No sanitized HTML preview yet. Render a snapshot to preview the active template.")}</div>`;
     const renderTextFallback = renderPreview?.textFallback ?? "No text fallback preview yet. Render a snapshot to create one.";
     const renderWarningsText = renderPreview?.warnings.length ? renderPreview.warnings.join("\n") : "None";
     const renderErrorsText = renderPreview?.errors.length ? renderPreview.errors.join("\n") : "None";
+    const messageHistoryHtml = renderMessageHistory();
+    const messageDisplaySupportText = diagnostics.messageLocalUiSupported ? "Lumiverse message widgets are available. LTracker renders sandboxed per-message widgets when message display is enabled." : diagnostics.messageLocalUiFallbackReason ?? "Message-local UI is unavailable; use the drawer history fallback.";
     const activePreset = state.activePreset;
     const activePresetIsBuiltIn = activePreset.origin === "built_in";
     const presetSchemaText = JSON.stringify(activePreset.jsonSchema, null, 2);
-    const presetHtmlWarning = activePreset.htmlTemplate?.trim() ? "Templates are sanitized and only rendered in the drawer preview. They are not inserted into chat messages." : activePresetIsBuiltIn ? "This built-in preset has no HTML template. Duplicate it before adding one." : "HTML template is optional. It is sanitized and rendered only in the drawer preview.";
+    const presetHtmlWarning = activePreset.htmlTemplate?.trim() ? "Templates are sanitized before drawer preview and message-widget display. They are not inserted into chat message text." : activePresetIsBuiltIn ? "This built-in preset has no HTML template. Duplicate it before adding one." : "HTML template is optional. It is sanitized before drawer preview and message-widget display.";
     const presetOptions = state.presets.map((preset) => {
-      return `<option value="${escapeHtml(preset.id)}"${selected(preset.id === activePreset.id)}>${escapeHtml(preset.name)} (${escapeHtml(preset.origin)})</option>`;
+      return `<option value="${escapeHtml2(preset.id)}"${selected(preset.id === activePreset.id)}>${escapeHtml2(preset.name)} (${escapeHtml2(preset.origin)})</option>`;
     }).join("");
     const permissionText = [
       state.permissions.generation ? "generation granted" : "generation missing",
@@ -780,9 +960,9 @@ function setup(ctx) {
         <header class="ltracker-header">
           <div>
             <h2 class="ltracker-title">LTracker</h2>
-            <div class="ltracker-version">Version ${escapeHtml(state.version)}</div>
+            <div class="ltracker-version">Version ${escapeHtml2(state.version)}</div>
           </div>
-          <span class="ltracker-status">${escapeHtml(labelForStatus(state.status))}</span>
+          <span class="ltracker-status">${escapeHtml2(labelForStatus(state.status))}</span>
         </header>
 
         <div class="ltracker-actions">
@@ -802,15 +982,15 @@ function setup(ctx) {
           <div class="ltracker-settings">
             <label class="ltracker-field">
               Recent message limit
-              <input type="number" min="1" max="200" step="1" data-setting="recentMessageLimit" value="${escapeHtml(String(state.settings.recentMessageLimit))}">
+              <input type="number" min="1" max="200" step="1" data-setting="recentMessageLimit" value="${escapeHtml2(String(state.settings.recentMessageLimit))}">
             </label>
             <label class="ltracker-field">
               Max chars per message
-              <input type="number" min="500" max="50000" step="100" data-setting="maxMessageChars" value="${escapeHtml(String(state.settings.maxMessageChars))}">
+              <input type="number" min="500" max="50000" step="100" data-setting="maxMessageChars" value="${escapeHtml2(String(state.settings.maxMessageChars))}">
             </label>
             <label class="ltracker-field">
               Timeout ms
-              <input type="number" min="10000" max="180000" step="1000" data-setting="generationTimeoutMs" value="${escapeHtml(String(state.settings.generationTimeoutMs))}">
+              <input type="number" min="10000" max="180000" step="1000" data-setting="generationTimeoutMs" value="${escapeHtml2(String(state.settings.generationTimeoutMs))}">
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-setting="saveRawOutput"${checked(state.settings.saveRawOutput)}>
@@ -826,11 +1006,11 @@ function setup(ctx) {
             </label>
             <label class="ltracker-field">
               Auto debounce ms
-              <input type="number" min="250" max="30000" step="250" data-setting="autoDebounceMs" value="${escapeHtml(String(state.settings.auto.autoDebounceMs))}">
+              <input type="number" min="250" max="30000" step="250" data-setting="autoDebounceMs" value="${escapeHtml2(String(state.settings.auto.autoDebounceMs))}">
             </label>
             <label class="ltracker-field">
               Skip first messages
-              <input type="number" min="0" max="100" step="1" data-setting="skipFirstMessages" value="${escapeHtml(String(state.settings.auto.skipFirstMessages))}">
+              <input type="number" min="0" max="100" step="1" data-setting="skipFirstMessages" value="${escapeHtml2(String(state.settings.auto.skipFirstMessages))}">
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-setting="triggerAfterAssistantMessages"${checked(state.settings.auto.triggerAfterAssistantMessages)}>
@@ -849,6 +1029,7 @@ function setup(ctx) {
               Active chat only
             </label>
           </div>
+          <p class="ltracker-note">Debounce is the wait after a qualifying message before LTracker generates. Skip first messages avoids early-chat noise. Attach snapshot saves an exact message-id copy for history/widgets. Active chat only cancels stale jobs when you switch chats.</p>
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="save-settings">Save Settings</button>
             <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
@@ -879,7 +1060,7 @@ function setup(ctx) {
             </label>
             <label class="ltracker-field">
               Max injected chars
-              <input type="number" min="500" max="20000" step="250" data-setting="maxInjectedChars" value="${escapeHtml(String(state.settings.injection.maxInjectedChars))}">
+              <input type="number" min="500" max="20000" step="250" data-setting="maxInjectedChars" value="${escapeHtml2(String(state.settings.injection.maxInjectedChars))}">
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-setting="includeHeader"${checked(state.settings.injection.includeHeader)}>
@@ -898,7 +1079,8 @@ function setup(ctx) {
               Only inject when snapshot exists
             </label>
           </div>
-          <p class="ltracker-note">${escapeHtml(injectionDisabledReason ?? "Injection uses cached snapshots only. It does not generate a tracker by itself, and no snapshot means nothing is injected.")}</p>
+          <p class="ltracker-note">${escapeHtml2(injectionDisabledReason ?? "Injection uses cached snapshots only. It does not generate a tracker by itself, and no snapshot means nothing is injected.")}</p>
+          <p class="ltracker-note">Mode chooses chat-wide or message-attached cache. Format chooses compact text, minimal text, or pretty JSON. Include header adds a label to injected text; injection remains disabled by the 0.08 safety hotfix.</p>
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="copy-injection-preview" ${disabled(!state.injectionPreview)}>
               Copy Injection Preview
@@ -906,7 +1088,7 @@ function setup(ctx) {
           </div>
           <details class="ltracker-details" open>
             <summary>Current injection preview</summary>
-            <pre class="ltracker-text">${escapeHtml(injectionPreviewText)}</pre>
+            <pre class="ltracker-text">${escapeHtml2(injectionPreviewText)}</pre>
           </details>
         </section>
 
@@ -926,18 +1108,18 @@ function setup(ctx) {
             </label>
             <label class="ltracker-field">
               Missing value placeholder
-              <input type="text" data-renderer-setting="missingValuePlaceholder" value="${escapeHtml(state.settings.renderer.missingValuePlaceholder)}">
+              <input type="text" data-renderer-setting="missingValuePlaceholder" value="${escapeHtml2(state.settings.renderer.missingValuePlaceholder)}">
             </label>
             <label class="ltracker-field">
               Max rendered chars
-              <input type="number" min="1000" max="200000" step="1000" data-renderer-setting="maxRenderedChars" value="${escapeHtml(String(state.settings.renderer.maxRenderedChars))}">
+              <input type="number" min="1000" max="200000" step="1000" data-renderer-setting="maxRenderedChars" value="${escapeHtml2(String(state.settings.renderer.maxRenderedChars))}">
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-renderer-setting="allowInlineStyles"${checked(state.settings.renderer.allowInlineStyles)}>
               Allow sanitized inline styles
             </label>
           </div>
-          <p class="ltracker-note">HTML templates render only in this drawer preview. They never mutate chat messages and are not used for context injection.</p>
+          <p class="ltracker-note">Missing value placeholder fills template fields that do not exist. Inline styles stay stripped unless enabled here. Templates are sanitized before drawer preview or message-widget display and are never used for context injection.</p>
           <div class="ltracker-grid ltracker-details">
             ${renderRow("Active preset", activePreset.name)}
             ${renderRow("Has HTML template", renderHasTemplate)}
@@ -964,16 +1146,76 @@ function setup(ctx) {
           </details>
           <details class="ltracker-details">
             <summary>Plain-text fallback preview</summary>
-            <pre class="ltracker-text">${escapeHtml(renderTextFallback)}</pre>
+            <pre class="ltracker-text">${escapeHtml2(renderTextFallback)}</pre>
           </details>
           <details class="ltracker-details">
             <summary>Render warnings</summary>
-            <pre class="ltracker-text">${escapeHtml(renderWarningsText)}</pre>
+            <pre class="ltracker-text">${escapeHtml2(renderWarningsText)}</pre>
           </details>
           <details class="ltracker-details">
             <summary>Render errors</summary>
-            <pre class="ltracker-text ltracker-error">${escapeHtml(renderErrorsText)}</pre>
+            <pre class="ltracker-text ltracker-error">${escapeHtml2(renderErrorsText)}</pre>
           </details>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Message Display</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="enabled"${checked(state.settings.messageDisplay.enabled)}>
+              Enable message display
+            </label>
+            <label class="ltracker-field">
+              Placement
+              <select data-message-display-setting="placement">
+                <option value="top"${selected(state.settings.messageDisplay.placement === "top")}>Top</option>
+                <option value="bottom"${selected(state.settings.messageDisplay.placement === "bottom")}>Bottom</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Source
+              <select data-message-display-setting="source">
+                <option value="message_attached_snapshot"${selected(state.settings.messageDisplay.source === "message_attached_snapshot")}>Message-attached snapshot</option>
+                <option value="latest_chat_snapshot"${selected(state.settings.messageDisplay.source === "latest_chat_snapshot")}>Latest chat snapshot</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Render mode
+              <select data-message-display-setting="renderMode">
+                <option value="html_template"${selected(state.settings.messageDisplay.renderMode === "html_template")}>HTML template</option>
+                <option value="compact_text"${selected(state.settings.messageDisplay.renderMode === "compact_text")}>Compact text</option>
+                <option value="pretty_json"${selected(state.settings.messageDisplay.renderMode === "pretty_json")}>Pretty JSON</option>
+              </select>
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="collapsedByDefault"${checked(state.settings.messageDisplay.collapsedByDefault)}>
+              Collapsed by default
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showTimestamp"${checked(state.settings.messageDisplay.showTimestamp)}>
+              Show timestamp
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showPresetName"${checked(state.settings.messageDisplay.showPresetName)}>
+              Show preset name
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showCopyButton"${checked(state.settings.messageDisplay.showCopyButton)}>
+              Show copy buttons
+            </label>
+            <label class="ltracker-field">
+              Max rendered chars
+              <input type="number" min="1000" max="200000" step="1000" data-message-display-setting="maxRenderedChars" value="${escapeHtml2(String(state.settings.messageDisplay.maxRenderedChars))}">
+            </label>
+          </div>
+          <p class="ltracker-note">Placement is a preference; the verified Lumiverse widget API currently mounts below messages. Render mode chooses template HTML, compact text, or JSON. Collapsed by default keeps long trackers tucked away.</p>
+          <p class="ltracker-note">${escapeHtml2(messageDisplaySupportText)}</p>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Message Tracker History</span>
+          <p class="ltracker-note">Every auto-generated message-attached snapshot is indexed by message id and shown here, even when the chat message is off-screen.</p>
+          ${messageHistoryHtml}
         </section>
 
         <section class="ltracker-panel">
@@ -988,42 +1230,42 @@ function setup(ctx) {
             </label>
             <label class="ltracker-field">
               Preset name
-              <input type="text" data-preset-field="name" value="${escapeHtml(activePreset.name)}"${disabled(activePresetIsBuiltIn)}>
+              <input type="text" data-preset-field="name" value="${escapeHtml2(activePreset.name)}"${disabled(activePresetIsBuiltIn)}>
             </label>
             <label class="ltracker-field">
               Preset version
-              <input type="text" data-preset-field="version" value="${escapeHtml(activePreset.version)}"${disabled(activePresetIsBuiltIn)}>
+              <input type="text" data-preset-field="version" value="${escapeHtml2(activePreset.version)}"${disabled(activePresetIsBuiltIn)}>
             </label>
             <label class="ltracker-field">
               Origin
-              <input type="text" value="${escapeHtml(activePreset.origin)}" disabled>
+              <input type="text" value="${escapeHtml2(activePreset.origin)}" disabled>
             </label>
             <label class="ltracker-field ltracker-field-wide">
               Preset description
-              <textarea data-preset-field="description"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.description)}</textarea>
+              <textarea data-preset-field="description"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.description)}</textarea>
             </label>
             <label class="ltracker-field ltracker-field-wide">
               Schema Box 1 - JSON Schema
-              <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml(presetSchemaText)}</textarea>
+              <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(presetSchemaText)}</textarea>
             </label>
             <label class="ltracker-field ltracker-field-wide">
-              Schema Box 2 - HTML Template (Sanitized drawer preview only)
-              <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.htmlTemplate ?? "")}</textarea>
+              Schema Box 2 - HTML Template (Sanitized preview/message display)
+              <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.htmlTemplate ?? "")}</textarea>
             </label>
             <label class="ltracker-field ltracker-field-wide">
               Prompt Box - AI Instructions
-              <textarea data-preset-field="promptInstructions"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.promptInstructions)}</textarea>
+              <textarea data-preset-field="promptInstructions"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.promptInstructions)}</textarea>
             </label>
             <label class="ltracker-field ltracker-field-wide">
               Notes
-              <textarea data-preset-field="notes"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.notes ?? "")}</textarea>
+              <textarea data-preset-field="notes"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.notes ?? "")}</textarea>
             </label>
             <label class="ltracker-field ltracker-field-wide">
               Import Preset JSON
               <textarea data-preset-import placeholder="Paste exported ltracker_schema_preset JSON here"></textarea>
             </label>
           </div>
-          <p class="ltracker-note">${escapeHtml(presetHtmlWarning)}</p>
+          <p class="ltracker-note">${escapeHtml2(presetHtmlWarning)}</p>
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
               Render With Latest Snapshot
@@ -1047,6 +1289,15 @@ function setup(ctx) {
             ${renderRow("Current status", state.status)}
             ${renderRow("Auto mode", autoStatus)}
             ${renderRow("Permission status", permissionText)}
+            ${renderRow("Message display enabled", diagnostics.messageDisplayEnabled ? "yes" : "no")}
+            ${renderRow("Message display mode", diagnostics.messageDisplayMode)}
+            ${renderRow("Message display placement", diagnostics.messageDisplayPlacement)}
+            ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
+            ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
+            ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
+            ${renderRow("Message-local UI supported", diagnostics.messageLocalUiSupported ? "yes" : "no")}
+            ${renderRow("Message-local fallback reason", diagnostics.messageLocalUiFallbackReason)}
+            ${renderRow("Message snapshot index count", diagnostics.messageSnapshotIndexCount)}
             ${renderRow("Injection enabled", diagnostics.injectionEnabled ? "yes" : "no")}
             ${renderRow("Context handler registered", diagnostics.contextHandlerRegistered ? "yes" : "no")}
             ${renderRow("Context handler disabled reason", diagnostics.contextHandlerDisabledReason)}
@@ -1104,19 +1355,19 @@ function setup(ctx) {
           </div>
           <details class="ltracker-details">
             <summary>Last raw model output</summary>
-            <pre class="ltracker-text">${escapeHtml(rawOutput ?? "None")}</pre>
+            <pre class="ltracker-text">${escapeHtml2(rawOutput ?? "None")}</pre>
           </details>
           <details class="ltracker-details">
             <summary>Last prompt preview</summary>
-            <pre class="ltracker-text">${escapeHtml(prompt ?? "None")}</pre>
+            <pre class="ltracker-text">${escapeHtml2(prompt ?? "None")}</pre>
           </details>
           <div class="ltracker-details">
             <span class="ltracker-label">Last parsed tracker JSON</span>
-            <pre class="ltracker-json">${escapeHtml(renderJson(parsedTracker, "None"))}</pre>
+            <pre class="ltracker-json">${escapeHtml2(renderJson(parsedTracker, "None"))}</pre>
           </div>
           <div class="ltracker-details">
             <span class="ltracker-label">Last parse/generation/storage error</span>
-            <pre class="ltracker-text ltracker-error">${escapeHtml(renderError(error))}</pre>
+            <pre class="ltracker-text ltracker-error">${escapeHtml2(renderError(error))}</pre>
           </div>
         </section>
 
@@ -1140,19 +1391,21 @@ function setup(ctx) {
 
         <section class="ltracker-panel">
           <span class="ltracker-label">Latest message-attached snapshot</span>
-          <pre class="ltracker-json">${escapeHtml(latestMessageSnapshotText)}</pre>
+          <pre class="ltracker-json">${escapeHtml2(latestMessageSnapshotText)}</pre>
         </section>
 
         <section class="ltracker-panel">
           <span class="ltracker-label">Latest tracker snapshot</span>
-          <pre class="ltracker-json">${escapeHtml(snapshotText)}</pre>
+          <pre class="ltracker-json">${escapeHtml2(snapshotText)}</pre>
         </section>
       </section>
     `;
+    hydrateMessageWidgets();
   }
   const onClick = (event) => {
     const target = event.target instanceof HTMLElement ? event.target.closest("[data-action]") : null;
     const action = target?.dataset.action;
+    const historyEntry = target?.dataset.messageId ? state.messageSnapshotHistory.find((entry) => entry.indexEntry.messageId === target.dataset.messageId) : null;
     if (action === "generate") generateTracker();
     if (action === "refresh") requestState();
     if (action === "clear-snapshot") clearSnapshot();
@@ -1180,6 +1433,9 @@ function setup(ctx) {
       ].join("\n") : null;
       void copyText(renderLog, "render errors");
     }
+    if (action === "copy-history-json") void copyText(historyEntry?.rendered.json ?? null, "message tracker JSON");
+    if (action === "copy-history-html") void copyText(historyEntry?.rendered.html ?? null, "message tracker HTML");
+    if (action === "copy-history-text") void copyText(historyEntry?.rendered.textFallback ?? null, "message tracker text");
     if (action === "save-preset-new") savePresetAsNew();
     if (action === "duplicate-preset") duplicatePreset();
     if (action === "update-preset") updatePreset();
@@ -1216,6 +1472,7 @@ function setup(ctx) {
       render();
     }
   }));
+  cleanups.push(() => cleanupMessageWidgets());
   cleanups.push(() => inputAction.destroy());
   cleanups.push(() => tab.destroy());
   render();

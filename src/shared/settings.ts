@@ -11,6 +11,7 @@ export const SETTINGS_LIMITS = {
   skipFirstMessages: { min: 0, max: 100, default: 2 },
   maxInjectedChars: { min: 500, max: 20_000, default: 3_000 },
   maxRenderedChars: { min: 1_000, max: 200_000, default: 50_000 },
+  maxMessageDisplayRenderedChars: { min: 1_000, max: 200_000, default: 50_000 },
 } as const;
 
 export const DEFAULT_SETTINGS: LTrackerSettings = {
@@ -46,6 +47,17 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     maxRenderedChars: SETTINGS_LIMITS.maxRenderedChars.default,
     allowInlineStyles: false,
   },
+  messageDisplay: {
+    enabled: true,
+    placement: "top",
+    source: "message_attached_snapshot",
+    renderMode: "html_template",
+    collapsedByDefault: false,
+    showTimestamp: true,
+    showPresetName: true,
+    showCopyButton: true,
+    maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
+  },
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -70,6 +82,7 @@ export function repairSettings(value: unknown): LTrackerSettings {
   const autoSource = isRecord(source.auto) ? source.auto : {};
   const injectionSource = isRecord(source.injection) ? source.injection : {};
   const rendererSource = isRecord(source.renderer) ? source.renderer : {};
+  const messageDisplaySource = isRecord(source.messageDisplay) ? source.messageDisplay : {};
   const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot"
     ? injectionSource.mode
     : DEFAULT_SETTINGS.injection.mode;
@@ -79,6 +92,17 @@ export function repairSettings(value: unknown): LTrackerSettings {
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot"
     ? rendererSource.previewSource
     : DEFAULT_SETTINGS.renderer.previewSource;
+  const messageDisplayPlacement = messageDisplaySource.placement === "bottom" || messageDisplaySource.placement === "top"
+    ? messageDisplaySource.placement
+    : DEFAULT_SETTINGS.messageDisplay.placement;
+  const messageDisplaySourceSetting = messageDisplaySource.source === "latest_chat_snapshot" || messageDisplaySource.source === "message_attached_snapshot"
+    ? messageDisplaySource.source
+    : DEFAULT_SETTINGS.messageDisplay.source;
+  const messageDisplayRenderMode = messageDisplaySource.renderMode === "compact_text"
+    || messageDisplaySource.renderMode === "pretty_json"
+    || messageDisplaySource.renderMode === "html_template"
+    ? messageDisplaySource.renderMode
+    : DEFAULT_SETTINGS.messageDisplay.renderMode;
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -176,6 +200,32 @@ export function repairSettings(value: unknown): LTrackerSettings {
       allowInlineStyles: typeof rendererSource.allowInlineStyles === "boolean"
         ? rendererSource.allowInlineStyles
         : DEFAULT_SETTINGS.renderer.allowInlineStyles,
+    },
+    messageDisplay: {
+      enabled: typeof messageDisplaySource.enabled === "boolean"
+        ? messageDisplaySource.enabled
+        : DEFAULT_SETTINGS.messageDisplay.enabled,
+      placement: messageDisplayPlacement,
+      source: messageDisplaySourceSetting,
+      renderMode: messageDisplayRenderMode,
+      collapsedByDefault: typeof messageDisplaySource.collapsedByDefault === "boolean"
+        ? messageDisplaySource.collapsedByDefault
+        : DEFAULT_SETTINGS.messageDisplay.collapsedByDefault,
+      showTimestamp: typeof messageDisplaySource.showTimestamp === "boolean"
+        ? messageDisplaySource.showTimestamp
+        : DEFAULT_SETTINGS.messageDisplay.showTimestamp,
+      showPresetName: typeof messageDisplaySource.showPresetName === "boolean"
+        ? messageDisplaySource.showPresetName
+        : DEFAULT_SETTINGS.messageDisplay.showPresetName,
+      showCopyButton: typeof messageDisplaySource.showCopyButton === "boolean"
+        ? messageDisplaySource.showCopyButton
+        : DEFAULT_SETTINGS.messageDisplay.showCopyButton,
+      maxRenderedChars: clampNumber(
+        messageDisplaySource.maxRenderedChars,
+        SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
+        SETTINGS_LIMITS.maxMessageDisplayRenderedChars.min,
+        SETTINGS_LIMITS.maxMessageDisplayRenderedChars.max,
+      ),
     },
   };
 }

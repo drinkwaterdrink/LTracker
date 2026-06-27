@@ -22,6 +22,17 @@ import {
   formatTemplateTextFallback,
   renderHtmlTemplate,
 } from "./shared/htmlTemplateRenderer";
+import {
+  buildMessageTrackerHistory,
+  MESSAGE_LOCAL_UI_FALLBACK_REASON,
+  MESSAGE_LOCAL_UI_SUPPORTED,
+} from "./shared/messageDisplay";
+import {
+  normalizeMessageAttachedSnapshotPresetMetadata,
+  normalizeTrackerSnapshotPresetMetadata,
+  repairMessageSnapshotIndex,
+  upsertMessageSnapshotIndexEntry,
+} from "./shared/messageSnapshotIndex";
 import { parseTrackerJson } from "./shared/parser";
 import {
   canModifyPreset,
@@ -42,6 +53,7 @@ import {
 import {
   activePresetPath,
   diagnosticsPath,
+  messageSnapshotIndexPath,
   messageSnapshotPath,
   PRESETS_INDEX_PATH,
   presetPath,
@@ -70,10 +82,13 @@ import {
   type LTrackerErrorStage,
   type LTrackerInjectionFormat,
   type LTrackerInjectionMode,
+  type LTrackerMessageDisplayMode,
+  type LTrackerMessageDisplayPlacement,
   type LTrackerRenderSource,
   type LTrackerRenderStatus,
   type LTrackerSettings,
   type MessageAttachedSnapshot,
+  type MessageSnapshotIndexEntry,
   type PermissionState,
   type RenderedTrackerPreview,
   type TrackerPresetDraft,
@@ -295,6 +310,15 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     contextHandlerRegistered,
     contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? null : CONTEXT_HANDLER_DISABLED_REASON,
     lastContextHandlerError: null,
+    messageDisplayEnabled: false,
+    messageDisplayMode: null,
+    messageDisplayPlacement: null,
+    messageDisplayHydratedCount: 0,
+    lastMessageDisplayHydratedAt: null,
+    lastMessageDisplayError: null,
+    messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
+    messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
+    messageSnapshotIndexCount: 0,
   };
 }
 
@@ -346,6 +370,14 @@ function renderStatusOrNull(value: unknown): LTrackerRenderStatus | null {
     || value === "error"
     ? value
     : null;
+}
+
+function messageDisplayModeOrNull(value: unknown): LTrackerMessageDisplayMode | null {
+  return value === "message_widget" || value === "drawer_history" || value === "disabled" ? value : null;
+}
+
+function messageDisplayPlacementOrNull(value: unknown): LTrackerMessageDisplayPlacement | null {
+  return value === "top" || value === "bottom" ? value : null;
 }
 
 function errorOrNull(value: unknown): LTrackerError | null {
@@ -444,6 +476,21 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
       ? stringOrNull(value.contextHandlerDisabledReason)
       : CONTEXT_HANDLER_DISABLED_REASON,
     lastContextHandlerError: stringOrNull(value.lastContextHandlerError),
+    messageDisplayEnabled: typeof value.messageDisplayEnabled === "boolean" ? value.messageDisplayEnabled : base.messageDisplayEnabled,
+    messageDisplayMode: messageDisplayModeOrNull(value.messageDisplayMode),
+    messageDisplayPlacement: messageDisplayPlacementOrNull(value.messageDisplayPlacement),
+    messageDisplayHydratedCount: typeof value.messageDisplayHydratedCount === "number" && Number.isFinite(value.messageDisplayHydratedCount)
+      ? Math.max(0, Math.round(value.messageDisplayHydratedCount))
+      : 0,
+    lastMessageDisplayHydratedAt: stringOrNull(value.lastMessageDisplayHydratedAt),
+    lastMessageDisplayError: stringOrNull(value.lastMessageDisplayError),
+    messageLocalUiSupported: typeof value.messageLocalUiSupported === "boolean"
+      ? value.messageLocalUiSupported
+      : MESSAGE_LOCAL_UI_SUPPORTED,
+    messageLocalUiFallbackReason: stringOrNull(value.messageLocalUiFallbackReason) ?? MESSAGE_LOCAL_UI_FALLBACK_REASON,
+    messageSnapshotIndexCount: typeof value.messageSnapshotIndexCount === "number" && Number.isFinite(value.messageSnapshotIndexCount)
+      ? Math.max(0, Math.round(value.messageSnapshotIndexCount))
+      : 0,
   };
 }
 
@@ -593,10 +640,11 @@ async function deleteUserPreset(presetId: string, userId: string): Promise<void>
 
 async function loadSnapshot(chatId: string | null, userId: string): Promise<TrackerSnapshot | null> {
   if (!chatId) return null;
-  return spindle.userStorage.getJson<TrackerSnapshot | null>(snapshotPath(chatId), {
+  const snapshot = await spindle.userStorage.getJson<TrackerSnapshot | null>(snapshotPath(chatId), {
     fallback: null,
     userId,
   });
+  return snapshot ? normalizeTrackerSnapshotPresetMetadata(snapshot) : null;
 }
 
 async function loadMessageSnapshot(
@@ -605,8 +653,33 @@ async function loadMessageSnapshot(
   userId: string,
 ): Promise<MessageAttachedSnapshot | null> {
   if (!chatId || !messageId) return null;
-  return spindle.userStorage.getJson<MessageAttachedSnapshot | null>(messageSnapshotPath(chatId, messageId), {
+  const snapshot = await spindle.userStorage.getJson<MessageAttachedSnapshot | null>(messageSnapshotPath(chatId, messageId), {
     fallback: null,
+    userId,
+  });
+  return snapshot ? normalizeMessageAttachedSnapshotPresetMetadata(snapshot) : null;
+}
+
+async function loadMessageSnapshotIndex(chatId: string | null, userId: string): Promise<MessageSnapshotIndexEntry[]> {
+  if (!chatId) return [];
+  const raw = await spindle.userStorage.getJson<unknown>(messageSnapshotIndexPath(chatId), {
+    fallback: [],
+    userId,
+  });
+  const repaired = repairMessageSnapshotIndex(raw);
+  if (JSON.stringify(raw) !== JSON.stringify(repaired)) {
+    await spindle.userStorage.setJson(messageSnapshotIndexPath(chatId), repaired, { indent: 2, userId });
+  }
+  return repaired;
+}
+
+async function saveMessageSnapshotIndex(
+  chatId: string,
+  index: MessageSnapshotIndexEntry[],
+  userId: string,
+): Promise<void> {
+  await spindle.userStorage.setJson(messageSnapshotIndexPath(chatId), repairMessageSnapshotIndex(index), {
+    indent: 2,
     userId,
   });
 }
@@ -650,11 +723,28 @@ async function buildState(
   const diagnostics = await loadDiagnostics(chatId, userId);
   const presetState = await resolveActivePreset(chatId, userId);
   const snapshot = await loadSnapshot(chatId, userId);
+  const messageSnapshotIndex = await loadMessageSnapshotIndex(chatId, userId);
+  const historySnapshots = await Promise.all(
+    messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId)),
+  );
+  const messageSnapshotHistory = buildMessageTrackerHistory({
+    index: messageSnapshotIndex,
+    snapshots: historySnapshots,
+    latestChatSnapshot: snapshot,
+    preset: presetState.activePreset,
+    settings: settings.messageDisplay,
+  });
   const latestMessageSnapshot = await loadMessageSnapshot(
     chatId,
     diagnostics.latestAttachedMessageId,
     userId,
   );
+  const messageDisplayMode: LTrackerMessageDisplayMode = !settings.messageDisplay.enabled
+    ? "disabled"
+    : MESSAGE_LOCAL_UI_SUPPORTED ? "message_widget" : "drawer_history";
+  const messageDisplayHydratedCount = settings.messageDisplay.enabled
+    ? messageSnapshotHistory.filter((entry) => entry.snapshot !== null).length
+    : 0;
   const injectionPreview = CONTEXT_HANDLER_EXPERIMENTAL_ENABLED
     ? buildInjectionDecision({
         settings,
@@ -672,6 +762,7 @@ async function buildState(
     latestMessageSnapshot,
     injectionPreview,
     renderPreview,
+    messageSnapshotHistory,
     presets: presetState.presets,
     activePreset: presetState.activePreset,
     activePresetState: presetState.activePresetState,
@@ -691,6 +782,16 @@ async function buildState(
       contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED
         ? diagnostics.contextHandlerDisabledReason
         : CONTEXT_HANDLER_DISABLED_REASON,
+      messageDisplayEnabled: settings.messageDisplay.enabled,
+      messageDisplayMode,
+      messageDisplayPlacement: settings.messageDisplay.placement,
+      messageDisplayHydratedCount,
+      lastMessageDisplayHydratedAt: messageDisplayHydratedCount > 0
+        ? nowIso()
+        : diagnostics.lastMessageDisplayHydratedAt,
+      messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
+      messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
+      messageSnapshotIndexCount: messageSnapshotIndex.length,
     },
   };
 }
@@ -831,6 +932,25 @@ async function saveMessageAttachedSnapshot(snapshot: MessageAttachedSnapshot, us
     indent: 2,
     userId,
   });
+}
+
+async function saveMessageAttachedSnapshotWithIndex(
+  snapshot: MessageAttachedSnapshot,
+  userId: string,
+): Promise<MessageSnapshotIndexEntry[]> {
+  await saveMessageAttachedSnapshot(snapshot, userId);
+  const storageKey = messageSnapshotPath(snapshot.chatId, snapshot.messageId);
+  const index = await loadMessageSnapshotIndex(snapshot.chatId, userId);
+  const nextIndex = upsertMessageSnapshotIndexEntry(index, {
+    messageId: snapshot.messageId,
+    messageIndex: snapshot.messageIndex,
+    createdAt: snapshot.attachedAt,
+    presetId: snapshot.presetId,
+    presetName: snapshot.presetName,
+    storageKey,
+  });
+  await saveMessageSnapshotIndex(snapshot.chatId, nextIndex, userId);
+  return nextIndex;
 }
 
 function promptPreview(messages: LlmMessageDTO[]): string {
@@ -1478,6 +1598,9 @@ async function generateTracker(
       createdAt: completedAt,
       messageCount: transcriptMessages.length,
       sourceMessageIds,
+      presetId: presetState.activePreset.id,
+      presetName: presetState.activePreset.name,
+      presetVersion: presetState.activePreset.version,
       data,
     };
 
@@ -1502,17 +1625,21 @@ async function generateTracker(
         chatId: resolvedChatId,
         messageId: trigger.sourceMessageId,
         messageIndex: trigger.sourceMessageIndex,
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        presetVersion: presetState.activePreset.version,
         trigger,
         snapshot,
         attachedAt,
       };
-      await saveMessageAttachedSnapshot(attachedSnapshot, userId);
+      const index = await saveMessageAttachedSnapshotWithIndex(attachedSnapshot, userId);
       diagnostics = {
         ...diagnostics,
         latestAttachedMessageId: trigger.sourceMessageId,
         latestAttachedMessageIndex: trigger.sourceMessageIndex,
         latestAttachedSnapshotAt: attachedAt,
         latestAttachedSnapshotStorageKey: storageKey,
+        messageSnapshotIndexCount: index.length,
       };
     }
 

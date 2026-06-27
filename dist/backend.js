@@ -228,7 +228,7 @@ function emptyDecision(skippedReason) {
 
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
-var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.07 while the Lumiverse context handler return contract is being verified.";
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.08 while the Lumiverse context handler return contract is being verified.";
 
 // src/shared/htmlTemplateRenderer.ts
 var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
@@ -582,6 +582,279 @@ function renderHtmlTemplate(input, options = {}) {
   }
 }
 
+// src/shared/messageDisplay.ts
+var MESSAGE_LOCAL_UI_SUPPORTED = true;
+var MESSAGE_LOCAL_UI_FALLBACK_REASON = null;
+function snapshotForDisplay(input) {
+  if (input.settings.source === "latest_chat_snapshot" && input.latestChatSnapshot) return input.latestChatSnapshot;
+  return input.attachedSnapshot?.snapshot ?? null;
+}
+function metadataFromSnapshot(attachedSnapshot, snapshot) {
+  return {
+    presetId: attachedSnapshot?.presetId ?? snapshot?.presetId ?? null,
+    presetName: attachedSnapshot?.presetName ?? snapshot?.presetName ?? null,
+    presetVersion: attachedSnapshot?.presetVersion ?? snapshot?.presetVersion ?? null,
+    snapshotCreatedAt: snapshot?.createdAt ?? null,
+    attachedAt: attachedSnapshot?.attachedAt ?? null
+  };
+}
+function injectionSettings(settings) {
+  return {
+    enabled: true,
+    mode: "latest_message_snapshot",
+    format: "compact",
+    maxInjectedChars: settings.maxRenderedChars,
+    includeHeader: false,
+    includeTimestamp: false,
+    includeSourceMessageId: false,
+    onlyInjectWhenSnapshotExists: true
+  };
+}
+function displayJson(messageId, messageIndex, attachedSnapshot, snapshot, settings) {
+  return truncateSafe(JSON.stringify({
+    messageId,
+    messageIndex,
+    attachedAt: attachedSnapshot?.attachedAt ?? null,
+    snapshotCreatedAt: snapshot.createdAt,
+    presetId: attachedSnapshot?.presetId ?? snapshot.presetId ?? null,
+    presetName: attachedSnapshot?.presetName ?? snapshot.presetName ?? null,
+    presetVersion: attachedSnapshot?.presetVersion ?? snapshot.presetVersion ?? null,
+    data: snapshot.data
+  }, null, 2), settings.maxRenderedChars);
+}
+function safeScriptJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003C");
+}
+function buildWidgetHtml(rendered, settings) {
+  const titleParts = [
+    "LTracker",
+    settings.showPresetName && rendered.presetName ? rendered.presetName : null,
+    settings.showTimestamp && rendered.snapshotCreatedAt ? rendered.snapshotCreatedAt : null
+  ].filter((item) => Boolean(item));
+  const meta = [
+    rendered.messageIndex !== null ? `message #${rendered.messageIndex}` : null,
+    `id ${rendered.messageId}`
+  ].filter((item) => Boolean(item)).join(" / ");
+  const body = rendered.html || `<pre class="ltr-pre">${escapeHtml(rendered.textFallback)}</pre>`;
+  const copyButtons = settings.showCopyButton ? `
+      <div class="ltr-actions">
+        <button type="button" data-copy="json">Copy JSON</button>
+        <button type="button" data-copy="html">Copy HTML</button>
+        <button type="button" data-copy="text">Copy Text</button>
+      </div>
+      <script>
+      (() => {
+        const payloads = {
+          json: ${safeScriptJson(rendered.json)},
+          html: ${safeScriptJson(rendered.html)},
+          text: ${safeScriptJson(rendered.textFallback)}
+        };
+        document.addEventListener("click", async (event) => {
+          const button = event.target && event.target.closest ? event.target.closest("[data-copy]") : null;
+          if (!button) return;
+          const value = payloads[button.dataset.copy] || "";
+          if (!value || !navigator.clipboard) return;
+          const original = button.textContent;
+          try {
+            await navigator.clipboard.writeText(value);
+            button.textContent = "Copied";
+            setTimeout(() => { button.textContent = original; }, 1200);
+          } catch {
+            button.textContent = "Copy failed";
+            setTimeout(() => { button.textContent = original; }, 1200);
+          }
+        });
+      })();
+      <\/script>` : "";
+  const open = settings.collapsedByDefault ? "" : " open";
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; color: inherit; font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .ltr-card { border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 8px; padding: 8px 10px; background: color-mix(in srgb, currentColor 5%, transparent); }
+    summary { cursor: pointer; list-style-position: outside; }
+    .ltr-summary { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+    .ltr-title { font-weight: 700; }
+    .ltr-meta { opacity: .72; font-size: 12px; }
+    .ltr-body { margin-top: 8px; overflow-wrap: anywhere; }
+    .ltr-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .ltr-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    button { border: 1px solid color-mix(in srgb, currentColor 24%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 8%, transparent); color: inherit; cursor: pointer; min-height: 28px; padding: 4px 8px; font: inherit; }
+  </style>
+</head>
+<body>
+  <section class="ltr-card" data-ltracker-message-id="${escapeHtml(rendered.messageId)}">
+    <details${open}>
+      <summary>
+        <span class="ltr-summary">
+          <span class="ltr-title">${escapeHtml(titleParts.join(" - "))}</span>
+          <span class="ltr-meta">${escapeHtml(meta)}</span>
+        </span>
+      </summary>
+      <div class="ltr-body">${body}</div>
+      ${copyButtons}
+    </details>
+  </section>
+</body>
+</html>`;
+}
+function renderMessageTracker(input) {
+  const snapshot = snapshotForDisplay(input);
+  const metadata = metadataFromSnapshot(input.attachedSnapshot, snapshot);
+  if (!snapshot) {
+    const textFallback2 = "No tracker snapshot is available for this message.";
+    const base2 = {
+      messageId: input.messageId,
+      messageIndex: input.messageIndex,
+      ...metadata,
+      renderMode: input.settings.renderMode,
+      html: "",
+      textFallback: textFallback2,
+      json: "",
+      warnings: [],
+      errors: [textFallback2]
+    };
+    return {
+      ...base2,
+      widgetHtml: buildWidgetHtml(base2, input.settings)
+    };
+  }
+  const warnings = [];
+  const errors = [];
+  const json = displayJson(input.messageId, input.messageIndex, input.attachedSnapshot, snapshot, input.settings);
+  let html = "";
+  let textFallback = truncateSafe(formatTemplateTextFallback(snapshot.data), input.settings.maxRenderedChars);
+  if (input.settings.renderMode === "pretty_json") {
+    textFallback = json;
+    html = `<pre class="ltr-pre">${escapeHtml(json)}</pre>`;
+  } else if (input.settings.renderMode === "compact_text") {
+    const source = input.attachedSnapshot ?? snapshot;
+    textFallback = formatSnapshotForInjection(source, injectionSettings(input.settings));
+    html = `<pre class="ltr-pre">${escapeHtml(textFallback)}</pre>`;
+  } else {
+    const template = input.preset.htmlTemplate ?? "";
+    const result = renderHtmlTemplate({
+      template,
+      snapshotData: snapshot.data,
+      presetId: input.preset.id,
+      presetName: input.preset.name
+    }, {
+      missingValuePlaceholder: "",
+      maxRenderedChars: input.settings.maxRenderedChars,
+      allowInlineStyles: false
+    });
+    warnings.push(...result.warnings);
+    errors.push(...result.errors);
+    textFallback = result.textFallback;
+    html = result.html || `<pre class="ltr-pre">${escapeHtml(result.textFallback)}</pre>`;
+  }
+  const base = {
+    messageId: input.messageId,
+    messageIndex: input.messageIndex,
+    ...metadata,
+    renderMode: input.settings.renderMode,
+    html,
+    textFallback,
+    json,
+    warnings,
+    errors
+  };
+  return {
+    ...base,
+    widgetHtml: buildWidgetHtml(base, input.settings)
+  };
+}
+function buildMessageTrackerHistory(input) {
+  return input.index.map((entry, index) => {
+    const snapshot = input.snapshots[index] ?? null;
+    return {
+      indexEntry: entry,
+      snapshot,
+      rendered: renderMessageTracker({
+        messageId: entry.messageId,
+        messageIndex: entry.messageIndex,
+        attachedSnapshot: snapshot,
+        latestChatSnapshot: input.latestChatSnapshot,
+        preset: input.preset,
+        settings: input.settings
+      })
+    };
+  });
+}
+
+// src/shared/messageSnapshotIndex.ts
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringOrNull(value) {
+  return typeof value === "string" ? value : null;
+}
+function messageIndexOrNull(value) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
+}
+function repairIndexEntry(value) {
+  if (!isRecord3(value) || typeof value.messageId !== "string" || typeof value.storageKey !== "string") {
+    return null;
+  }
+  return {
+    messageId: value.messageId,
+    messageIndex: messageIndexOrNull(value.messageIndex),
+    createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
+    presetId: stringOrNull(value.presetId),
+    presetName: stringOrNull(value.presetName),
+    storageKey: value.storageKey
+  };
+}
+function repairMessageSnapshotIndex(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = /* @__PURE__ */ new Set();
+  const repaired = [];
+  for (const item of value) {
+    const entry = repairIndexEntry(item);
+    if (!entry || seen.has(entry.messageId)) continue;
+    seen.add(entry.messageId);
+    repaired.push(entry);
+  }
+  return sortMessageSnapshotIndex(repaired);
+}
+function sortMessageSnapshotIndex(index) {
+  return [...index].sort((left, right) => {
+    if (left.messageIndex !== null && right.messageIndex !== null && left.messageIndex !== right.messageIndex) {
+      return left.messageIndex - right.messageIndex;
+    }
+    if (left.messageIndex !== null && right.messageIndex === null) return -1;
+    if (left.messageIndex === null && right.messageIndex !== null) return 1;
+    const created = left.createdAt.localeCompare(right.createdAt);
+    return created !== 0 ? created : left.messageId.localeCompare(right.messageId);
+  });
+}
+function upsertMessageSnapshotIndexEntry(index, entry) {
+  const next = index.filter((item) => item.messageId !== entry.messageId);
+  next.push(entry);
+  return sortMessageSnapshotIndex(next);
+}
+function normalizeTrackerSnapshotPresetMetadata(snapshot) {
+  return {
+    ...snapshot,
+    presetId: snapshot.presetId ?? null,
+    presetName: snapshot.presetName ?? null,
+    presetVersion: snapshot.presetVersion ?? null
+  };
+}
+function normalizeMessageAttachedSnapshotPresetMetadata(snapshot) {
+  const normalizedSnapshot = normalizeTrackerSnapshotPresetMetadata(snapshot.snapshot);
+  return {
+    ...snapshot,
+    presetId: snapshot.presetId ?? normalizedSnapshot.presetId ?? null,
+    presetName: snapshot.presetName ?? normalizedSnapshot.presetName ?? null,
+    presetVersion: snapshot.presetVersion ?? normalizedSnapshot.presetVersion ?? null,
+    snapshot: normalizedSnapshot
+  };
+}
+
 // src/shared/parser.ts
 function normalizeJsonText(raw) {
   return raw.trim().replace(/^\uFEFF/, "").replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
@@ -716,7 +989,7 @@ var DEFAULT_TRACKER_PRESET = {
     supportsSequentialGeneration: false
   }
 };
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringValue(value, fallback = "") {
@@ -729,7 +1002,7 @@ function validOrigin(value) {
   return value === "built_in" || value === "user_imported" || value === "user_created";
 }
 function repairCapabilities(value) {
-  if (!isRecord3(value)) return void 0;
+  if (!isRecord4(value)) return void 0;
   const result = {};
   if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
   if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
@@ -751,13 +1024,13 @@ function createPresetId(name, existingIds) {
   return `${base}_${Date.now()}`;
 }
 function validateJsonSchema(value) {
-  if (!isRecord3(value)) {
+  if (!isRecord4(value)) {
     return { ok: false, error: "JSON Schema must be a JSON object." };
   }
   return { ok: true, error: null };
 }
 function validateTrackerPreset(value) {
-  if (!isRecord3(value)) return { ok: false, error: "Preset must be a JSON object." };
+  if (!isRecord4(value)) return { ok: false, error: "Preset must be a JSON object." };
   if (typeof value.id !== "string" || !sanitizePresetId(value.id)) {
     return { ok: false, error: "Preset id is required." };
   }
@@ -781,7 +1054,7 @@ function validateTrackerPreset(value) {
   return { ok: true, error: null };
 }
 function repairTrackerPreset(value) {
-  if (!isRecord3(value)) return null;
+  if (!isRecord4(value)) return null;
   const origin = validOrigin(value.origin) ? value.origin : null;
   if (!origin) return null;
   const preset = {
@@ -791,7 +1064,7 @@ function repairTrackerPreset(value) {
     version: stringValue(value.version, "1.0"),
     createdAt: stringValue(value.createdAt, (/* @__PURE__ */ new Date()).toISOString()),
     updatedAt: stringValue(value.updatedAt, (/* @__PURE__ */ new Date()).toISOString()),
-    jsonSchema: isRecord3(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord4(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: stringValue(value.promptInstructions),
     origin
   };
@@ -821,7 +1094,7 @@ function draftToPreset(draft, options) {
   return preset;
 }
 function importTrackerPresetEnvelope(value, existingIds, now) {
-  if (!isRecord3(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
+  if (!isRecord4(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
   if (value.kind !== PRESET_EXPORT_KIND) {
     return { ok: false, preset: null, error: "Import kind must be ltracker_schema_preset." };
   }
@@ -858,7 +1131,7 @@ function resolveSelectedPreset(presets, selectedPresetId) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.07";
+var EXTENSION_VERSION = "0.08";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -871,7 +1144,8 @@ var SETTINGS_LIMITS = {
   autoDebounceMs: { min: 250, max: 3e4, default: 1500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
   maxInjectedChars: { min: 500, max: 2e4, default: 3e3 },
-  maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 }
+  maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
+  maxMessageDisplayRenderedChars: { min: 1e3, max: 2e5, default: 5e4 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -905,9 +1179,20 @@ var DEFAULT_SETTINGS = {
     missingValuePlaceholder: "",
     maxRenderedChars: SETTINGS_LIMITS.maxRenderedChars.default,
     allowInlineStyles: false
+  },
+  messageDisplay: {
+    enabled: true,
+    placement: "top",
+    source: "message_attached_snapshot",
+    renderMode: "html_template",
+    collapsedByDefault: false,
+    showTimestamp: true,
+    showPresetName: true,
+    showCopyButton: true,
+    maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default
   }
 };
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null;
 }
 function clampNumber(value, fallback, min, max) {
@@ -916,13 +1201,17 @@ function clampNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.round(numeric)));
 }
 function repairSettings(value) {
-  const source = isRecord4(value) ? value : {};
-  const autoSource = isRecord4(source.auto) ? source.auto : {};
-  const injectionSource = isRecord4(source.injection) ? source.injection : {};
-  const rendererSource = isRecord4(source.renderer) ? source.renderer : {};
+  const source = isRecord5(value) ? value : {};
+  const autoSource = isRecord5(source.auto) ? source.auto : {};
+  const injectionSource = isRecord5(source.injection) ? source.injection : {};
+  const rendererSource = isRecord5(source.renderer) ? source.renderer : {};
+  const messageDisplaySource = isRecord5(source.messageDisplay) ? source.messageDisplay : {};
   const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot" ? injectionSource.mode : DEFAULT_SETTINGS.injection.mode;
   const format = injectionSource.format === "pretty_json" || injectionSource.format === "minimal" || injectionSource.format === "compact" ? injectionSource.format : DEFAULT_SETTINGS.injection.format;
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot" ? rendererSource.previewSource : DEFAULT_SETTINGS.renderer.previewSource;
+  const messageDisplayPlacement = messageDisplaySource.placement === "bottom" || messageDisplaySource.placement === "top" ? messageDisplaySource.placement : DEFAULT_SETTINGS.messageDisplay.placement;
+  const messageDisplaySourceSetting = messageDisplaySource.source === "latest_chat_snapshot" || messageDisplaySource.source === "message_attached_snapshot" ? messageDisplaySource.source : DEFAULT_SETTINGS.messageDisplay.source;
+  const messageDisplayRenderMode = messageDisplaySource.renderMode === "compact_text" || messageDisplaySource.renderMode === "pretty_json" || messageDisplaySource.renderMode === "html_template" ? messageDisplaySource.renderMode : DEFAULT_SETTINGS.messageDisplay.renderMode;
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -990,6 +1279,22 @@ function repairSettings(value) {
         SETTINGS_LIMITS.maxRenderedChars.max
       ),
       allowInlineStyles: typeof rendererSource.allowInlineStyles === "boolean" ? rendererSource.allowInlineStyles : DEFAULT_SETTINGS.renderer.allowInlineStyles
+    },
+    messageDisplay: {
+      enabled: typeof messageDisplaySource.enabled === "boolean" ? messageDisplaySource.enabled : DEFAULT_SETTINGS.messageDisplay.enabled,
+      placement: messageDisplayPlacement,
+      source: messageDisplaySourceSetting,
+      renderMode: messageDisplayRenderMode,
+      collapsedByDefault: typeof messageDisplaySource.collapsedByDefault === "boolean" ? messageDisplaySource.collapsedByDefault : DEFAULT_SETTINGS.messageDisplay.collapsedByDefault,
+      showTimestamp: typeof messageDisplaySource.showTimestamp === "boolean" ? messageDisplaySource.showTimestamp : DEFAULT_SETTINGS.messageDisplay.showTimestamp,
+      showPresetName: typeof messageDisplaySource.showPresetName === "boolean" ? messageDisplaySource.showPresetName : DEFAULT_SETTINGS.messageDisplay.showPresetName,
+      showCopyButton: typeof messageDisplaySource.showCopyButton === "boolean" ? messageDisplaySource.showCopyButton : DEFAULT_SETTINGS.messageDisplay.showCopyButton,
+      maxRenderedChars: clampNumber(
+        messageDisplaySource.maxRenderedChars,
+        SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
+        SETTINGS_LIMITS.maxMessageDisplayRenderedChars.min,
+        SETTINGS_LIMITS.maxMessageDisplayRenderedChars.max
+      )
     }
   };
 }
@@ -1008,6 +1313,9 @@ function messageSnapshotsPrefix(chatId) {
 }
 function messageSnapshotPath(chatId, messageId) {
   return `${messageSnapshotsPrefix(chatId)}${encodeStorageSegment(messageId)}/tracker-snapshot.json`;
+}
+function messageSnapshotIndexPath(chatId) {
+  return `chats/${encodeStorageSegment(chatId)}/message-snapshots/index.json`;
 }
 function diagnosticsPath(chatId) {
   return `chats/${encodeStorageSegment(chatId)}/diagnostics.json`;
@@ -1094,7 +1402,7 @@ var autoSubscriptionsActive = false;
 var contextHandlerRegistered = false;
 var internalTrackerGenerationDepth = 0;
 var disposed = false;
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null;
 }
 function nowIso() {
@@ -1123,7 +1431,7 @@ function diagnosticError(error, fallbackStage) {
   return result;
 }
 function isFrontendMessage(payload) {
-  if (!isRecord5(payload) || typeof payload.type !== "string") return false;
+  if (!isRecord6(payload) || typeof payload.type !== "string") return false;
   if (![
     "ready",
     "refresh_state",
@@ -1157,8 +1465,8 @@ function isFrontendMessage(payload) {
     "validate_preset",
     "render_template"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
-  if (payload.type === "save_settings" && !isRecord5(payload.settings)) return false;
-  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord5(payload.preset)) return false;
+  if (payload.type === "save_settings" && !isRecord6(payload.settings)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord6(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
   if (payload.type === "render_template" && "source" in payload && payload.source !== void 0 && payload.source !== "latest_chat_snapshot" && payload.source !== "latest_message_snapshot") return false;
@@ -1236,10 +1544,19 @@ function defaultDiagnostics(chatId) {
     lastFallbackTextChars: 0,
     contextHandlerRegistered,
     contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? null : CONTEXT_HANDLER_DISABLED_REASON,
-    lastContextHandlerError: null
+    lastContextHandlerError: null,
+    messageDisplayEnabled: false,
+    messageDisplayMode: null,
+    messageDisplayPlacement: null,
+    messageDisplayHydratedCount: 0,
+    lastMessageDisplayHydratedAt: null,
+    lastMessageDisplayError: null,
+    messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
+    messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
+    messageSnapshotIndexCount: 0
   };
 }
-function stringOrNull(value) {
+function stringOrNull2(value) {
   return typeof value === "string" ? value : null;
 }
 function numberOrNull(value) {
@@ -1252,7 +1569,7 @@ function stringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 function recordOrNull(value) {
-  return isRecord5(value) && !Array.isArray(value) ? value : null;
+  return isRecord6(value) && !Array.isArray(value) ? value : null;
 }
 function sourceKindOrNull(value) {
   return value === "manual" || value === "auto" ? value : null;
@@ -1272,8 +1589,14 @@ function renderSourceOrNull(value) {
 function renderStatusOrNull(value) {
   return value === "rendered" || value === "fallback" || value === "no_template" || value === "no_snapshot" || value === "error" ? value : null;
 }
+function messageDisplayModeOrNull(value) {
+  return value === "message_widget" || value === "drawer_history" || value === "disabled" ? value : null;
+}
+function messageDisplayPlacementOrNull(value) {
+  return value === "top" || value === "bottom" ? value : null;
+}
 function errorOrNull(value) {
-  if (!isRecord5(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
+  if (!isRecord6(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
   const error = {
     stage: value.stage,
     message: value.message,
@@ -1283,7 +1606,7 @@ function errorOrNull(value) {
   return error;
 }
 function cancellationOrNull(value) {
-  if (!isRecord5(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
+  if (!isRecord6(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
   return {
     jobId: value.jobId,
     requestId: value.requestId,
@@ -1293,55 +1616,55 @@ function cancellationOrNull(value) {
 }
 function repairDiagnostics(value, chatId) {
   const base = defaultDiagnostics(chatId);
-  if (!isRecord5(value)) return base;
+  if (!isRecord6(value)) return base;
   return {
     ...base,
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
-    lastJobId: stringOrNull(value.lastJobId),
-    lastRequestId: stringOrNull(value.lastRequestId),
+    lastJobId: stringOrNull2(value.lastJobId),
+    lastRequestId: stringOrNull2(value.lastRequestId),
     lastGenerationSource: sourceKindOrNull(value.lastGenerationSource),
-    lastGenerationStartedAt: stringOrNull(value.lastGenerationStartedAt),
-    lastGenerationCompletedAt: stringOrNull(value.lastGenerationCompletedAt),
+    lastGenerationStartedAt: stringOrNull2(value.lastGenerationStartedAt),
+    lastGenerationCompletedAt: stringOrNull2(value.lastGenerationCompletedAt),
     lastGenerationDurationMs: numberOrNull(value.lastGenerationDurationMs),
     lastMessagesRead: typeof value.lastMessagesRead === "number" && Number.isFinite(value.lastMessagesRead) ? Math.max(0, Math.round(value.lastMessagesRead)) : 0,
     lastSourceMessageIds: stringArray(value.lastSourceMessageIds),
-    lastSourceMessageRange: stringOrNull(value.lastSourceMessageRange),
-    lastRawOutput: stringOrNull(value.lastRawOutput),
+    lastSourceMessageRange: stringOrNull2(value.lastSourceMessageRange),
+    lastRawOutput: stringOrNull2(value.lastRawOutput),
     lastParsedTracker: recordOrNull(value.lastParsedTracker),
-    lastPromptPreview: stringOrNull(value.lastPromptPreview),
+    lastPromptPreview: stringOrNull2(value.lastPromptPreview),
     lastError: errorOrNull(value.lastError),
     lastCancellation: cancellationOrNull(value.lastCancellation),
     autoSubscriptionActive: autoSubscriptionsActive,
-    lastAutoEventAt: stringOrNull(value.lastAutoEventAt),
+    lastAutoEventAt: stringOrNull2(value.lastAutoEventAt),
     lastAutoEventType: autoEventTypeOrNull(value.lastAutoEventType),
-    lastAutoSkippedReason: stringOrNull(value.lastAutoSkippedReason),
-    lastAutoScheduledAt: stringOrNull(value.lastAutoScheduledAt),
-    lastAutoTriggeredAt: stringOrNull(value.lastAutoTriggeredAt),
-    lastAutoSourceMessageId: stringOrNull(value.lastAutoSourceMessageId),
+    lastAutoSkippedReason: stringOrNull2(value.lastAutoSkippedReason),
+    lastAutoScheduledAt: stringOrNull2(value.lastAutoScheduledAt),
+    lastAutoTriggeredAt: stringOrNull2(value.lastAutoTriggeredAt),
+    lastAutoSourceMessageId: stringOrNull2(value.lastAutoSourceMessageId),
     lastAutoSourceMessageIndex: nonNegativeInteger(value.lastAutoSourceMessageIndex),
-    lastAutoGenerationId: stringOrNull(value.lastAutoGenerationId),
-    latestAttachedMessageId: stringOrNull(value.latestAttachedMessageId),
+    lastAutoGenerationId: stringOrNull2(value.lastAutoGenerationId),
+    latestAttachedMessageId: stringOrNull2(value.latestAttachedMessageId),
     latestAttachedMessageIndex: nonNegativeInteger(value.latestAttachedMessageIndex),
-    latestAttachedSnapshotAt: stringOrNull(value.latestAttachedSnapshotAt),
-    latestAttachedSnapshotStorageKey: stringOrNull(value.latestAttachedSnapshotStorageKey),
+    latestAttachedSnapshotAt: stringOrNull2(value.latestAttachedSnapshotAt),
+    latestAttachedSnapshotStorageKey: stringOrNull2(value.latestAttachedSnapshotStorageKey),
     injectionEnabled: typeof value.injectionEnabled === "boolean" ? value.injectionEnabled : false,
-    lastInjectionAt: stringOrNull(value.lastInjectionAt),
+    lastInjectionAt: stringOrNull2(value.lastInjectionAt),
     lastInjectionMode: injectionModeOrNull(value.lastInjectionMode),
     lastInjectionFormat: injectionFormatOrNull(value.lastInjectionFormat),
     lastInjectedChars: typeof value.lastInjectedChars === "number" && Number.isFinite(value.lastInjectedChars) ? Math.max(0, Math.round(value.lastInjectedChars)) : 0,
-    lastInjectionSkippedReason: stringOrNull(value.lastInjectionSkippedReason),
-    lastInjectionSnapshotCreatedAt: stringOrNull(value.lastInjectionSnapshotCreatedAt),
-    lastInjectionSourceMessageId: stringOrNull(value.lastInjectionSourceMessageId),
-    selectedPresetId: stringOrNull(value.selectedPresetId),
-    selectedPresetName: stringOrNull(value.selectedPresetName),
-    lastPresetFallbackReason: stringOrNull(value.lastPresetFallbackReason),
-    lastPresetValidationError: stringOrNull(value.lastPresetValidationError),
-    lastPromptUsedPresetId: stringOrNull(value.lastPromptUsedPresetId),
-    lastPromptUsedPresetName: stringOrNull(value.lastPromptUsedPresetName),
-    lastRenderAt: stringOrNull(value.lastRenderAt),
-    lastRenderPresetId: stringOrNull(value.lastRenderPresetId),
-    lastRenderPresetName: stringOrNull(value.lastRenderPresetName),
-    lastRenderSnapshotCreatedAt: stringOrNull(value.lastRenderSnapshotCreatedAt),
+    lastInjectionSkippedReason: stringOrNull2(value.lastInjectionSkippedReason),
+    lastInjectionSnapshotCreatedAt: stringOrNull2(value.lastInjectionSnapshotCreatedAt),
+    lastInjectionSourceMessageId: stringOrNull2(value.lastInjectionSourceMessageId),
+    selectedPresetId: stringOrNull2(value.selectedPresetId),
+    selectedPresetName: stringOrNull2(value.selectedPresetName),
+    lastPresetFallbackReason: stringOrNull2(value.lastPresetFallbackReason),
+    lastPresetValidationError: stringOrNull2(value.lastPresetValidationError),
+    lastPromptUsedPresetId: stringOrNull2(value.lastPromptUsedPresetId),
+    lastPromptUsedPresetName: stringOrNull2(value.lastPromptUsedPresetName),
+    lastRenderAt: stringOrNull2(value.lastRenderAt),
+    lastRenderPresetId: stringOrNull2(value.lastRenderPresetId),
+    lastRenderPresetName: stringOrNull2(value.lastRenderPresetName),
+    lastRenderSnapshotCreatedAt: stringOrNull2(value.lastRenderSnapshotCreatedAt),
     lastRenderSource: renderSourceOrNull(value.lastRenderSource),
     lastRenderStatus: renderStatusOrNull(value.lastRenderStatus),
     lastRenderWarnings: stringArray(value.lastRenderWarnings),
@@ -1349,8 +1672,17 @@ function repairDiagnostics(value, chatId) {
     lastSanitizedHtmlChars: typeof value.lastSanitizedHtmlChars === "number" && Number.isFinite(value.lastSanitizedHtmlChars) ? Math.max(0, Math.round(value.lastSanitizedHtmlChars)) : 0,
     lastFallbackTextChars: typeof value.lastFallbackTextChars === "number" && Number.isFinite(value.lastFallbackTextChars) ? Math.max(0, Math.round(value.lastFallbackTextChars)) : 0,
     contextHandlerRegistered,
-    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? stringOrNull(value.contextHandlerDisabledReason) : CONTEXT_HANDLER_DISABLED_REASON,
-    lastContextHandlerError: stringOrNull(value.lastContextHandlerError)
+    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? stringOrNull2(value.contextHandlerDisabledReason) : CONTEXT_HANDLER_DISABLED_REASON,
+    lastContextHandlerError: stringOrNull2(value.lastContextHandlerError),
+    messageDisplayEnabled: typeof value.messageDisplayEnabled === "boolean" ? value.messageDisplayEnabled : base.messageDisplayEnabled,
+    messageDisplayMode: messageDisplayModeOrNull(value.messageDisplayMode),
+    messageDisplayPlacement: messageDisplayPlacementOrNull(value.messageDisplayPlacement),
+    messageDisplayHydratedCount: typeof value.messageDisplayHydratedCount === "number" && Number.isFinite(value.messageDisplayHydratedCount) ? Math.max(0, Math.round(value.messageDisplayHydratedCount)) : 0,
+    lastMessageDisplayHydratedAt: stringOrNull2(value.lastMessageDisplayHydratedAt),
+    lastMessageDisplayError: stringOrNull2(value.lastMessageDisplayError),
+    messageLocalUiSupported: typeof value.messageLocalUiSupported === "boolean" ? value.messageLocalUiSupported : MESSAGE_LOCAL_UI_SUPPORTED,
+    messageLocalUiFallbackReason: stringOrNull2(value.messageLocalUiFallbackReason) ?? MESSAGE_LOCAL_UI_FALLBACK_REASON,
+    messageSnapshotIndexCount: typeof value.messageSnapshotIndexCount === "number" && Number.isFinite(value.messageSnapshotIndexCount) ? Math.max(0, Math.round(value.messageSnapshotIndexCount)) : 0
   };
 }
 async function getSettings(userId) {
@@ -1417,7 +1749,7 @@ async function loadActivePresetState(chatId, userId) {
     fallback: null,
     userId
   });
-  if (!isRecord5(raw) || typeof raw.selectedPresetId !== "string") {
+  if (!isRecord6(raw) || typeof raw.selectedPresetId !== "string") {
     return defaultActivePresetState();
   }
   return {
@@ -1468,15 +1800,35 @@ async function deleteUserPreset(presetId, userId) {
 }
 async function loadSnapshot(chatId, userId) {
   if (!chatId) return null;
-  return spindle.userStorage.getJson(snapshotPath(chatId), {
+  const snapshot = await spindle.userStorage.getJson(snapshotPath(chatId), {
     fallback: null,
     userId
   });
+  return snapshot ? normalizeTrackerSnapshotPresetMetadata(snapshot) : null;
 }
 async function loadMessageSnapshot(chatId, messageId, userId) {
   if (!chatId || !messageId) return null;
-  return spindle.userStorage.getJson(messageSnapshotPath(chatId, messageId), {
+  const snapshot = await spindle.userStorage.getJson(messageSnapshotPath(chatId, messageId), {
     fallback: null,
+    userId
+  });
+  return snapshot ? normalizeMessageAttachedSnapshotPresetMetadata(snapshot) : null;
+}
+async function loadMessageSnapshotIndex(chatId, userId) {
+  if (!chatId) return [];
+  const raw = await spindle.userStorage.getJson(messageSnapshotIndexPath(chatId), {
+    fallback: [],
+    userId
+  });
+  const repaired = repairMessageSnapshotIndex(raw);
+  if (JSON.stringify(raw) !== JSON.stringify(repaired)) {
+    await spindle.userStorage.setJson(messageSnapshotIndexPath(chatId), repaired, { indent: 2, userId });
+  }
+  return repaired;
+}
+async function saveMessageSnapshotIndex(chatId, index, userId) {
+  await spindle.userStorage.setJson(messageSnapshotIndexPath(chatId), repairMessageSnapshotIndex(index), {
+    indent: 2,
     userId
   });
 }
@@ -1510,11 +1862,24 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
   const diagnostics = await loadDiagnostics(chatId, userId);
   const presetState = await resolveActivePreset(chatId, userId);
   const snapshot = await loadSnapshot(chatId, userId);
+  const messageSnapshotIndex = await loadMessageSnapshotIndex(chatId, userId);
+  const historySnapshots = await Promise.all(
+    messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId))
+  );
+  const messageSnapshotHistory = buildMessageTrackerHistory({
+    index: messageSnapshotIndex,
+    snapshots: historySnapshots,
+    latestChatSnapshot: snapshot,
+    preset: presetState.activePreset,
+    settings: settings.messageDisplay
+  });
   const latestMessageSnapshot = await loadMessageSnapshot(
     chatId,
     diagnostics.latestAttachedMessageId,
     userId
   );
+  const messageDisplayMode = !settings.messageDisplay.enabled ? "disabled" : MESSAGE_LOCAL_UI_SUPPORTED ? "message_widget" : "drawer_history";
+  const messageDisplayHydratedCount = settings.messageDisplay.enabled ? messageSnapshotHistory.filter((entry) => entry.snapshot !== null).length : 0;
   const injectionPreview = CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? buildInjectionDecision({
     settings,
     chatSnapshot: snapshot,
@@ -1530,6 +1895,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     latestMessageSnapshot,
     injectionPreview,
     renderPreview,
+    messageSnapshotHistory,
     presets: presetState.presets,
     activePreset: presetState.activePreset,
     activePresetState: presetState.activePresetState,
@@ -1546,7 +1912,15 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       selectedPresetName: presetState.activePreset.name,
       lastPresetFallbackReason: presetState.fallbackReason ?? diagnostics.lastPresetFallbackReason,
       contextHandlerRegistered,
-      contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? diagnostics.contextHandlerDisabledReason : CONTEXT_HANDLER_DISABLED_REASON
+      contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? diagnostics.contextHandlerDisabledReason : CONTEXT_HANDLER_DISABLED_REASON,
+      messageDisplayEnabled: settings.messageDisplay.enabled,
+      messageDisplayMode,
+      messageDisplayPlacement: settings.messageDisplay.placement,
+      messageDisplayHydratedCount,
+      lastMessageDisplayHydratedAt: messageDisplayHydratedCount > 0 ? nowIso() : diagnostics.lastMessageDisplayHydratedAt,
+      messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
+      messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
+      messageSnapshotIndexCount: messageSnapshotIndex.length
     }
   };
 }
@@ -1594,7 +1968,7 @@ function normalizeMessages(messages) {
 }
 function normalizeGenerationText(result) {
   if (typeof result === "string" && result.trim()) return result;
-  if (!isRecord5(result)) {
+  if (!isRecord6(result)) {
     throw new Error("Lumiverse generation returned an unsupported response.");
   }
   for (const key of ["content", "text", "output", "response"]) {
@@ -1603,7 +1977,7 @@ function normalizeGenerationText(result) {
   }
   const message = result.message;
   if (typeof message === "string" && message.trim()) return message;
-  if (isRecord5(message) && typeof message.content === "string" && message.content.trim()) {
+  if (isRecord6(message) && typeof message.content === "string" && message.content.trim()) {
     return message.content;
   }
   throw new Error("Lumiverse generation completed without textual content.");
@@ -1657,6 +2031,21 @@ async function saveMessageAttachedSnapshot(snapshot, userId) {
     indent: 2,
     userId
   });
+}
+async function saveMessageAttachedSnapshotWithIndex(snapshot, userId) {
+  await saveMessageAttachedSnapshot(snapshot, userId);
+  const storageKey = messageSnapshotPath(snapshot.chatId, snapshot.messageId);
+  const index = await loadMessageSnapshotIndex(snapshot.chatId, userId);
+  const nextIndex = upsertMessageSnapshotIndexEntry(index, {
+    messageId: snapshot.messageId,
+    messageIndex: snapshot.messageIndex,
+    createdAt: snapshot.attachedAt,
+    presetId: snapshot.presetId,
+    presetName: snapshot.presetName,
+    storageKey
+  });
+  await saveMessageSnapshotIndex(snapshot.chatId, nextIndex, userId);
+  return nextIndex;
 }
 function promptPreview(messages) {
   return messages.map((message) => {
@@ -1751,11 +2140,11 @@ function targetUsersForChat(chatId, userId) {
   return [...usersByChat.get(chatId) ?? []];
 }
 function isChatMessage(value) {
-  return isRecord5(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
+  return isRecord6(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
 }
 function messageFromEventPayload(payload) {
   if (isChatMessage(payload)) return payload;
-  if (isRecord5(payload) && isChatMessage(payload.message)) return payload.message;
+  if (isRecord6(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
 }
 async function scheduleAutoForMessage(input) {
@@ -1911,7 +2300,7 @@ async function handleMessageSent(payload, userId) {
   }
 }
 function handleChatSwitched(payload, userId) {
-  if (!userId || !isRecord5(payload)) return;
+  if (!userId || !isRecord6(payload)) return;
   const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
   rememberActiveChat(userId, chatId);
 }
@@ -2051,6 +2440,9 @@ async function generateTracker(chatId, userId, trigger) {
       createdAt: completedAt,
       messageCount: transcriptMessages.length,
       sourceMessageIds,
+      presetId: presetState.activePreset.id,
+      presetName: presetState.activePreset.name,
+      presetVersion: presetState.activePreset.version,
       data
     };
     stage = "storage";
@@ -2072,17 +2464,21 @@ async function generateTracker(chatId, userId, trigger) {
         chatId: resolvedChatId,
         messageId: trigger.sourceMessageId,
         messageIndex: trigger.sourceMessageIndex,
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        presetVersion: presetState.activePreset.version,
         trigger,
         snapshot,
         attachedAt
       };
-      await saveMessageAttachedSnapshot(attachedSnapshot, userId);
+      const index = await saveMessageAttachedSnapshotWithIndex(attachedSnapshot, userId);
       diagnostics = {
         ...diagnostics,
         latestAttachedMessageId: trigger.sourceMessageId,
         latestAttachedMessageIndex: trigger.sourceMessageIndex,
         latestAttachedSnapshotAt: attachedAt,
-        latestAttachedSnapshotStorageKey: storageKey
+        latestAttachedSnapshotStorageKey: storageKey,
+        messageSnapshotIndexCount: index.length
       };
     }
     await persistDiagnostics(diagnostics, userId);
@@ -2253,13 +2649,13 @@ function normalizePresetDraft(value) {
     name: typeof value.name === "string" ? value.name : "",
     description: typeof value.description === "string" ? value.description : "",
     version: typeof value.version === "string" ? value.version : "1.0",
-    jsonSchema: isRecord5(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord6(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: typeof value.promptInstructions === "string" ? value.promptInstructions : ""
   };
   if (typeof value.id === "string") draft.id = value.id;
   if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
   if (typeof value.notes === "string") draft.notes = value.notes;
-  if (isRecord5(value.capabilities)) {
+  if (isRecord6(value.capabilities)) {
     const capabilities = {};
     if (typeof value.capabilities.supportsHtmlTemplate === "boolean") {
       capabilities.supportsHtmlTemplate = value.capabilities.supportsHtmlTemplate;
