@@ -15,12 +15,27 @@ import {
 } from "./shared/contextInjection";
 import { parseTrackerJson } from "./shared/parser";
 import {
+  canModifyPreset,
+  createPresetId,
+  DEFAULT_TRACKER_PRESET,
+  DEFAULT_TRACKER_PRESET_ID,
+  draftToPreset,
+  importTrackerPresetEnvelope,
+  repairTrackerPreset,
+  resolveSelectedPreset,
+  validateJsonSchema,
+  validateTrackerPreset,
+} from "./shared/presets";
+import {
   DEFAULT_SETTINGS,
   repairSettings,
 } from "./shared/settings";
 import {
+  activePresetPath,
   diagnosticsPath,
   messageSnapshotPath,
+  PRESETS_INDEX_PATH,
+  presetPath,
   SETTINGS_PATH,
   snapshotPath,
 } from "./shared/storageKeys";
@@ -33,6 +48,7 @@ import {
   SETTINGS_SCHEMA_VERSION,
   SPINDLE_TYPES_VERSION,
   STORAGE_SCHEMA_VERSION,
+  type ActiveTrackerPresetState,
   type AutoTriggerEventType,
   type AutoTrackerTriggerSource,
   type BackendMessage,
@@ -48,9 +64,11 @@ import {
   type LTrackerSettings,
   type MessageAttachedSnapshot,
   type PermissionState,
+  type TrackerPresetDraft,
   type TrackerGenerationSourceKind,
   type TrackerSnapshot,
   type TrackerTriggerSource,
+  type TrackerSchemaPreset,
   type TranscriptMessage,
   type TranscriptRole,
 } from "./shared/types";
@@ -147,13 +165,37 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "clear_snapshot",
     "save_settings",
     "reset_settings",
+    "select_preset",
+    "save_preset_as_new",
+    "duplicate_preset",
+    "update_preset",
+    "delete_preset",
+    "reset_preset",
+    "import_preset",
+    "validate_preset",
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if (
-    ["generate_tracker", "clear_snapshot", "save_settings", "reset_settings"].includes(payload.type)
+    [
+      "generate_tracker",
+      "clear_snapshot",
+      "save_settings",
+      "reset_settings",
+      "select_preset",
+      "save_preset_as_new",
+      "duplicate_preset",
+      "update_preset",
+      "delete_preset",
+      "reset_preset",
+      "import_preset",
+      "validate_preset",
+    ].includes(payload.type)
     && typeof payload.requestId !== "string"
   ) return false;
   if (payload.type === "save_settings" && !isRecord(payload.settings)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord(payload.preset)) return false;
+  if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
+  if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
   return true;
 }
 
@@ -213,6 +255,12 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastInjectionSkippedReason: null,
     lastInjectionSnapshotCreatedAt: null,
     lastInjectionSourceMessageId: null,
+    selectedPresetId: null,
+    selectedPresetName: null,
+    lastPresetFallbackReason: null,
+    lastPresetValidationError: null,
+    lastPromptUsedPresetId: null,
+    lastPromptUsedPresetName: null,
   };
 }
 
@@ -323,6 +371,12 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastInjectionSkippedReason: stringOrNull(value.lastInjectionSkippedReason),
     lastInjectionSnapshotCreatedAt: stringOrNull(value.lastInjectionSnapshotCreatedAt),
     lastInjectionSourceMessageId: stringOrNull(value.lastInjectionSourceMessageId),
+    selectedPresetId: stringOrNull(value.selectedPresetId),
+    selectedPresetName: stringOrNull(value.selectedPresetName),
+    lastPresetFallbackReason: stringOrNull(value.lastPresetFallbackReason),
+    lastPresetValidationError: stringOrNull(value.lastPresetValidationError),
+    lastPromptUsedPresetId: stringOrNull(value.lastPromptUsedPresetId),
+    lastPromptUsedPresetName: stringOrNull(value.lastPromptUsedPresetName),
   };
 }
 
@@ -347,6 +401,127 @@ async function saveSettings(settings: unknown, userId: string): Promise<LTracker
 async function resetSettings(userId: string): Promise<LTrackerSettings> {
   await spindle.userStorage.setJson(SETTINGS_PATH, DEFAULT_SETTINGS, { indent: 2, userId });
   return DEFAULT_SETTINGS;
+}
+
+async function loadPresetIndex(userId: string): Promise<string[]> {
+  const raw = await spindle.userStorage.getJson<unknown>(PRESETS_INDEX_PATH, {
+    fallback: [],
+    userId,
+  });
+  const ids = Array.isArray(raw)
+    ? raw.filter((item): item is string => typeof item === "string" && item !== DEFAULT_TRACKER_PRESET_ID)
+    : [];
+  if (JSON.stringify(raw) !== JSON.stringify(ids)) {
+    await spindle.userStorage.setJson(PRESETS_INDEX_PATH, ids, { indent: 2, userId });
+  }
+  return ids;
+}
+
+async function savePresetIndex(ids: string[], userId: string): Promise<void> {
+  const unique = [...new Set(ids.filter((id) => id !== DEFAULT_TRACKER_PRESET_ID))];
+  await spindle.userStorage.setJson(PRESETS_INDEX_PATH, unique, { indent: 2, userId });
+}
+
+async function loadUserPreset(presetId: string, userId: string): Promise<TrackerSchemaPreset | null> {
+  const raw = await spindle.userStorage.getJson<unknown>(presetPath(presetId), {
+    fallback: null,
+    userId,
+  });
+  const repaired = repairTrackerPreset(raw);
+  if (!repaired || repaired.origin === "built_in") return null;
+  return repaired;
+}
+
+async function loadPresetCatalog(userId: string): Promise<TrackerSchemaPreset[]> {
+  const ids = await loadPresetIndex(userId);
+  const loaded = await Promise.all(ids.map((id) => loadUserPreset(id, userId)));
+  return [
+    DEFAULT_TRACKER_PRESET,
+    ...loaded.filter((preset): preset is TrackerSchemaPreset => Boolean(preset)),
+  ];
+}
+
+function defaultActivePresetState(): ActiveTrackerPresetState {
+  return {
+    selectedPresetId: DEFAULT_TRACKER_PRESET_ID,
+    selectedAt: new Date(0).toISOString(),
+  };
+}
+
+async function loadActivePresetState(
+  chatId: string | null,
+  userId: string,
+): Promise<ActiveTrackerPresetState> {
+  if (!chatId) return defaultActivePresetState();
+  const raw = await spindle.userStorage.getJson<unknown>(activePresetPath(chatId), {
+    fallback: null,
+    userId,
+  });
+  if (!isRecord(raw) || typeof raw.selectedPresetId !== "string") {
+    return defaultActivePresetState();
+  }
+  return {
+    selectedPresetId: raw.selectedPresetId,
+    selectedAt: typeof raw.selectedAt === "string" ? raw.selectedAt : nowIso(),
+  };
+}
+
+async function saveActivePresetState(
+  chatId: string,
+  presetId: string,
+  userId: string,
+): Promise<ActiveTrackerPresetState> {
+  const state: ActiveTrackerPresetState = {
+    selectedPresetId: presetId,
+    selectedAt: nowIso(),
+  };
+  await spindle.userStorage.setJson(activePresetPath(chatId), state, { indent: 2, userId });
+  return state;
+}
+
+function presetById(presets: TrackerSchemaPreset[], presetId: string): TrackerSchemaPreset | null {
+  return presets.find((preset) => preset.id === presetId) ?? null;
+}
+
+async function resolveActivePreset(chatId: string | null, userId: string): Promise<{
+  presets: TrackerSchemaPreset[];
+  activePreset: TrackerSchemaPreset;
+  activePresetState: ActiveTrackerPresetState;
+  fallbackReason: string | null;
+}> {
+  const presets = await loadPresetCatalog(userId);
+  const activePresetState = await loadActivePresetState(chatId, userId);
+  const resolved = resolveSelectedPreset(presets, activePresetState.selectedPresetId);
+  return {
+    presets,
+    activePreset: resolved.preset,
+    activePresetState: {
+      ...activePresetState,
+      selectedPresetId: resolved.preset.id,
+    },
+    fallbackReason: resolved.fallbackReason,
+  };
+}
+
+async function saveUserPreset(
+  preset: TrackerSchemaPreset,
+  userId: string,
+): Promise<void> {
+  const validation = validateTrackerPreset(preset);
+  if (!validation.ok) throw new Error(validation.error ?? "Preset is invalid.");
+  if (!canModifyPreset(preset)) throw new Error("Built-in presets cannot be overwritten.");
+  await spindle.userStorage.setJson(presetPath(preset.id), preset, { indent: 2, userId });
+  const ids = await loadPresetIndex(userId);
+  if (!ids.includes(preset.id)) await savePresetIndex([...ids, preset.id], userId);
+}
+
+async function deleteUserPreset(presetId: string, userId: string): Promise<void> {
+  if (presetId === DEFAULT_TRACKER_PRESET_ID) throw new Error("Built-in presets cannot be deleted.");
+  const ids = await loadPresetIndex(userId);
+  if (await spindle.userStorage.exists(presetPath(presetId), userId)) {
+    await spindle.userStorage.delete(presetPath(presetId), userId);
+  }
+  await savePresetIndex(ids.filter((id) => id !== presetId), userId);
 }
 
 async function loadSnapshot(chatId: string | null, userId: string): Promise<TrackerSnapshot | null> {
@@ -405,6 +580,7 @@ async function buildState(
 ): Promise<FrontendState> {
   const settings = await getSettings(userId);
   const diagnostics = await loadDiagnostics(chatId, userId);
+  const presetState = await resolveActivePreset(chatId, userId);
   const snapshot = await loadSnapshot(chatId, userId);
   const latestMessageSnapshot = await loadMessageSnapshot(
     chatId,
@@ -425,6 +601,9 @@ async function buildState(
     snapshot,
     latestMessageSnapshot,
     injectionPreview,
+    presets: presetState.presets,
+    activePreset: presetState.activePreset,
+    activePresetState: presetState.activePresetState,
     error: stateError,
     permissions: permissionState(),
     settings,
@@ -434,6 +613,9 @@ async function buildState(
       lastError: stateError,
       autoSubscriptionActive: autoSubscriptionsActive,
       injectionEnabled: settings.injection.enabled,
+      selectedPresetId: presetState.activePreset.id,
+      selectedPresetName: presetState.activePreset.name,
+      lastPresetFallbackReason: presetState.fallbackReason ?? diagnostics.lastPresetFallbackReason,
     },
   };
 }
@@ -1061,6 +1243,9 @@ async function generateTracker(
   const settings = await getSettings(userId).catch((error: unknown) => {
     stageError("storage", error);
   });
+  const presetState = await resolveActivePreset(resolvedChatId, userId).catch((error: unknown) => {
+    stageError("storage", error);
+  });
 
   if (trigger.kind === "manual") {
     cancelPendingAutoForChat(resolvedChatId, userId, "Manual generation superseded the pending auto job.");
@@ -1115,6 +1300,12 @@ async function generateTracker(
     lastError: null,
     lastCancellation,
     lastAutoTriggeredAt: trigger.kind === "auto" ? new Date(startedAtMs).toISOString() : null,
+    selectedPresetId: presetState.activePreset.id,
+    selectedPresetName: presetState.activePreset.name,
+    lastPresetFallbackReason: presetState.fallbackReason,
+    lastPresetValidationError: null,
+    lastPromptUsedPresetId: null,
+    lastPromptUsedPresetName: null,
   };
   if (trigger.kind === "auto") {
     diagnostics = {
@@ -1148,9 +1339,11 @@ async function generateTracker(
 
     stage = "prompt";
     const transcript = buildCompactTranscript(transcriptMessages, settings.maxMessageChars);
-    const promptMessages: LlmMessageDTO[] = buildTrackerPrompt(transcript);
+    const promptMessages: LlmMessageDTO[] = buildTrackerPrompt(transcript, presetState.activePreset);
     diagnostics = {
       ...diagnostics,
+      lastPromptUsedPresetId: presetState.activePreset.id,
+      lastPromptUsedPresetName: presetState.activePreset.name,
       lastPromptPreview: settings.savePromptPreview
         ? promptPreview(promptMessages)
         : "[Prompt preview saving disabled]",
@@ -1300,6 +1493,191 @@ async function clearSnapshot(chatId: string | null, userId: string, requestId: s
   }
 }
 
+function normalizePresetDraft(value: TrackerPresetDraft): TrackerPresetDraft {
+  const draft: TrackerPresetDraft = {
+    name: typeof value.name === "string" ? value.name : "",
+    description: typeof value.description === "string" ? value.description : "",
+    version: typeof value.version === "string" ? value.version : "1.0",
+    jsonSchema: isRecord(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
+    promptInstructions: typeof value.promptInstructions === "string" ? value.promptInstructions : "",
+  };
+  if (typeof value.id === "string") draft.id = value.id;
+  if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
+  if (typeof value.notes === "string") draft.notes = value.notes;
+  if (isRecord(value.capabilities)) {
+    const capabilities: NonNullable<TrackerPresetDraft["capabilities"]> = {};
+    if (typeof value.capabilities.supportsHtmlTemplate === "boolean") {
+      capabilities.supportsHtmlTemplate = value.capabilities.supportsHtmlTemplate;
+    }
+    if (typeof value.capabilities.supportsPartialRegeneration === "boolean") {
+      capabilities.supportsPartialRegeneration = value.capabilities.supportsPartialRegeneration;
+    }
+    if (typeof value.capabilities.supportsSequentialGeneration === "boolean") {
+      capabilities.supportsSequentialGeneration = value.capabilities.supportsSequentialGeneration;
+    }
+    if (Object.keys(capabilities).length > 0) draft.capabilities = capabilities;
+  }
+  return draft;
+}
+
+function validatePresetDraft(draft: TrackerPresetDraft): string | null {
+  const schemaValidation = validateJsonSchema(draft.jsonSchema);
+  if (!schemaValidation.ok) return schemaValidation.error;
+  if (!draft.name.trim()) return "Preset name is required.";
+  if (!draft.version.trim()) return "Preset version is required.";
+  if (!draft.promptInstructions.trim()) return "Prompt instructions are required.";
+  return null;
+}
+
+async function presetOperationChatId(chatId: string | null, userId: string): Promise<string> {
+  return resolveActiveChatId(chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+}
+
+async function recordPresetDiagnostic(
+  chatId: string,
+  userId: string,
+  fields: Pick<LTrackerDiagnostics, "lastPresetValidationError" | "lastPresetFallbackReason">,
+): Promise<void> {
+  const diagnostics = {
+    ...await loadDiagnostics(chatId, userId),
+    ...fields,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+}
+
+async function selectPreset(chatId: string | null, userId: string, presetId: string, requestId: string): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const presets = await loadPresetCatalog(userId);
+  const selected = presetById(presets, presetId);
+  if (!selected) throw new Error(`Preset ${presetId} was not found.`);
+  await saveActivePresetState(resolvedChatId, selected.id, userId);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null,
+  });
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+
+async function savePresetFromDraft(input: {
+  chatId: string | null;
+  userId: string;
+  requestId: string;
+  draft: TrackerPresetDraft;
+  mode: "new" | "duplicate" | "update";
+  presetId?: string;
+}): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(input.chatId, input.userId);
+  const draft = normalizePresetDraft(input.draft);
+  const validationError = validatePresetDraft(draft);
+  if (validationError) {
+    await recordPresetDiagnostic(resolvedChatId, input.userId, {
+      lastPresetValidationError: validationError,
+      lastPresetFallbackReason: null,
+    });
+    throw new Error(validationError);
+  }
+
+  const presets = await loadPresetCatalog(input.userId);
+  const existingIds = presets.map((preset) => preset.id);
+  const now = nowIso();
+  const existing = input.presetId ? presetById(presets, input.presetId) : null;
+  if (input.mode === "update") {
+    if (!existing) throw new Error("Preset to update was not found.");
+    if (!canModifyPreset(existing)) throw new Error("Built-in presets cannot be overwritten.");
+  }
+  const id = input.mode === "update" && input.presetId
+    ? input.presetId
+    : createPresetId(draft.name, existingIds);
+  const preset = draftToPreset(draft, {
+    id,
+    origin: existing?.origin === "user_imported" && input.mode === "update" ? "user_imported" : "user_created",
+    now,
+    existing: input.mode === "update" ? existing : null,
+  });
+  await saveUserPreset(preset, input.userId);
+  await saveActivePresetState(resolvedChatId, preset.id, input.userId);
+  await recordPresetDiagnostic(resolvedChatId, input.userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null,
+  });
+  await sendState(resolvedChatId, input.userId, "idle", null, input.requestId);
+}
+
+async function deletePreset(chatId: string | null, userId: string, presetId: string, requestId: string): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const presets = await loadPresetCatalog(userId);
+  const preset = presetById(presets, presetId);
+  if (!preset) throw new Error("Preset to delete was not found.");
+  if (!canModifyPreset(preset)) throw new Error("Built-in presets cannot be deleted.");
+  await deleteUserPreset(presetId, userId);
+  const active = await loadActivePresetState(resolvedChatId, userId);
+  if (active.selectedPresetId === presetId) {
+    await saveActivePresetState(resolvedChatId, DEFAULT_TRACKER_PRESET_ID, userId);
+  }
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null,
+  });
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+
+async function resetPreset(chatId: string | null, userId: string, requestId: string): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  await saveActivePresetState(resolvedChatId, DEFAULT_TRACKER_PRESET_ID, userId);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null,
+  });
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+
+async function importPreset(chatId: string | null, userId: string, importText: string, requestId: string): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(importText);
+  } catch (error) {
+    const message = `Import JSON is invalid: ${errorMessage(error)}`;
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: message,
+      lastPresetFallbackReason: null,
+    });
+    throw new Error(message);
+  }
+
+  const presets = await loadPresetCatalog(userId);
+  const imported = importTrackerPresetEnvelope(parsed, presets.map((preset) => preset.id), nowIso());
+  if (!imported.ok || !imported.preset) {
+    const message = imported.error ?? "Imported preset is invalid.";
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: message,
+      lastPresetFallbackReason: null,
+    });
+    throw new Error(message);
+  }
+  await saveUserPreset(imported.preset, userId);
+  await saveActivePresetState(resolvedChatId, imported.preset.id, userId);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null,
+  });
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+
+async function validatePreset(chatId: string | null, userId: string, draftValue: TrackerPresetDraft, requestId: string): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const draft = normalizePresetDraft(draftValue);
+  const validationError = validatePresetDraft(draft);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: validationError,
+    lastPresetFallbackReason: null,
+  });
+  if (validationError) throw new Error(validationError);
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+
 async function handleSettingsSave(
   payload: Extract<FrontendMessage, { type: "save_settings" }>,
   userId: string,
@@ -1411,6 +1789,57 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "reset_settings") {
         await handleSettingsReset(payload, userId);
+        return;
+      }
+      if (payload.type === "select_preset") {
+        await selectPreset(chatId, userId, payload.presetId, payload.requestId);
+        return;
+      }
+      if (payload.type === "save_preset_as_new") {
+        await savePresetFromDraft({
+          chatId,
+          userId,
+          requestId: payload.requestId,
+          draft: payload.preset,
+          mode: "new",
+        });
+        return;
+      }
+      if (payload.type === "duplicate_preset") {
+        await savePresetFromDraft({
+          chatId,
+          userId,
+          requestId: payload.requestId,
+          draft: payload.preset,
+          mode: "duplicate",
+        });
+        return;
+      }
+      if (payload.type === "update_preset") {
+        await savePresetFromDraft({
+          chatId,
+          userId,
+          requestId: payload.requestId,
+          draft: payload.preset,
+          mode: "update",
+          presetId: payload.presetId,
+        });
+        return;
+      }
+      if (payload.type === "delete_preset") {
+        await deletePreset(chatId, userId, payload.presetId, payload.requestId);
+        return;
+      }
+      if (payload.type === "reset_preset") {
+        await resetPreset(chatId, userId, payload.requestId);
+        return;
+      }
+      if (payload.type === "import_preset") {
+        await importPreset(chatId, userId, payload.importText, payload.requestId);
+        return;
+      }
+      if (payload.type === "validate_preset") {
+        await validatePreset(chatId, userId, payload.preset, payload.requestId);
         return;
       }
       await handleRefresh(payload, userId);

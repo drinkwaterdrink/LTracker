@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.05 - Schema presets
+- Added tracker schema preset data model.
+- Converted the default tracker schema into a built-in preset.
+- Added per-chat selected preset state.
+- Added preset-aware prompt building.
+- Added Schema Presets drawer UI.
+- Added zTracker-style JSON Schema, HTML Template, and Prompt Instructions boxes.
+- Added preset import/export.
+- Added preset diagnostics.
+- Added tests for preset validation, import/export, fallback behavior, and prompt construction.
+
 ## 0.04 - Context handler injection
 - Added optional cached tracker snapshot injection.
 - Added injection settings and drawer controls.

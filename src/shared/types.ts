@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.04";
+export const EXTENSION_VERSION = "0.05";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -9,6 +9,7 @@ export type TrackerGenerationSourceKind = "manual" | "auto";
 export type AutoTriggerEventType = "GENERATION_ENDED" | "MESSAGE_SENT";
 export type LTrackerInjectionMode = "latest_chat_snapshot" | "latest_message_snapshot";
 export type LTrackerInjectionFormat = "compact" | "pretty_json" | "minimal";
+export type TrackerPresetOrigin = "built_in" | "user_imported" | "user_created";
 export type LTrackerErrorStage =
   | "active_chat"
   | "read_messages"
@@ -28,6 +29,50 @@ export interface TranscriptMessage {
 export interface PromptMessage {
   role: "system" | "user";
   content: string;
+}
+
+export interface TrackerPresetCapabilities {
+  supportsHtmlTemplate?: boolean;
+  supportsPartialRegeneration?: boolean;
+  supportsSequentialGeneration?: boolean;
+}
+
+export interface TrackerSchemaPreset {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  createdAt: string;
+  updatedAt: string;
+  jsonSchema: Record<string, unknown>;
+  promptInstructions: string;
+  htmlTemplate?: string;
+  notes?: string;
+  origin: TrackerPresetOrigin;
+  capabilities?: TrackerPresetCapabilities;
+}
+
+export interface TrackerPresetDraft {
+  id?: string;
+  name: string;
+  description: string;
+  version: string;
+  jsonSchema: Record<string, unknown>;
+  promptInstructions: string;
+  htmlTemplate?: string;
+  notes?: string;
+  capabilities?: TrackerPresetCapabilities;
+}
+
+export interface ActiveTrackerPresetState {
+  selectedPresetId: string;
+  selectedAt: string;
+}
+
+export interface TrackerPresetExportEnvelope {
+  kind: "ltracker_schema_preset";
+  formatVersion: 1;
+  preset: TrackerSchemaPreset;
 }
 
 export interface TrackerSnapshot {
@@ -164,6 +209,12 @@ export interface LTrackerDiagnostics {
   lastInjectionSkippedReason: string | null;
   lastInjectionSnapshotCreatedAt: string | null;
   lastInjectionSourceMessageId: string | null;
+  selectedPresetId: string | null;
+  selectedPresetName: string | null;
+  lastPresetFallbackReason: string | null;
+  lastPresetValidationError: string | null;
+  lastPromptUsedPresetId: string | null;
+  lastPromptUsedPresetName: string | null;
 }
 
 export interface PermissionState {
@@ -180,6 +231,9 @@ export interface FrontendState {
   snapshot: TrackerSnapshot | null;
   latestMessageSnapshot: MessageAttachedSnapshot | null;
   injectionPreview: string | null;
+  presets: TrackerSchemaPreset[];
+  activePreset: TrackerSchemaPreset;
+  activePresetState: ActiveTrackerPresetState;
   error: LTrackerError | null;
   permissions: PermissionState;
   settings: LTrackerSettings;
@@ -192,7 +246,15 @@ export type FrontendMessage =
   | { type: "generate_tracker"; chatId: string | null; requestId: string }
   | { type: "clear_snapshot"; chatId: string | null; requestId: string }
   | { type: "save_settings"; chatId: string | null; settings: LTrackerSettings; requestId: string }
-  | { type: "reset_settings"; chatId: string | null; requestId: string };
+  | { type: "reset_settings"; chatId: string | null; requestId: string }
+  | { type: "select_preset"; chatId: string | null; presetId: string; requestId: string }
+  | { type: "save_preset_as_new"; chatId: string | null; preset: TrackerPresetDraft; requestId: string }
+  | { type: "duplicate_preset"; chatId: string | null; preset: TrackerPresetDraft; requestId: string }
+  | { type: "update_preset"; chatId: string | null; presetId: string; preset: TrackerPresetDraft; requestId: string }
+  | { type: "delete_preset"; chatId: string | null; presetId: string; requestId: string }
+  | { type: "reset_preset"; chatId: string | null; requestId: string }
+  | { type: "import_preset"; chatId: string | null; importText: string; requestId: string }
+  | { type: "validate_preset"; chatId: string | null; preset: TrackerPresetDraft; requestId: string };
 
 export type BackendMessage =
   | { type: "state"; state: FrontendState; requestId?: string }

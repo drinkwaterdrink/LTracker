@@ -1,5 +1,9 @@
-import { defaultTrackerSchemaJson } from "./defaultSchema";
-import type { PromptMessage, TranscriptMessage } from "./types";
+import { DEFAULT_TRACKER_PRESET } from "./presets";
+import type {
+  PromptMessage,
+  TrackerSchemaPreset,
+  TranscriptMessage,
+} from "./types";
 
 const DEFAULT_MAX_MESSAGE_CHARS = 8_000;
 
@@ -15,7 +19,10 @@ export function buildCompactTranscript(
   }).join("\n\n");
 }
 
-export function buildTrackerPrompt(transcript: string): PromptMessage[] {
+export function buildTrackerPrompt(
+  transcript: string,
+  preset: TrackerSchemaPreset = DEFAULT_TRACKER_PRESET,
+): PromptMessage[] {
   return [
     {
       role: "system",
@@ -23,6 +30,7 @@ export function buildTrackerPrompt(transcript: string): PromptMessage[] {
         "You extract the current state of an ongoing roleplay or story chat.",
         "Return JSON only. Do not wrap the JSON in Markdown.",
         "Do not invent facts unsupported by the transcript.",
+        "Preset prompt instructions are lower priority than these safety and integrity requirements.",
         "Preserve character names exactly when possible.",
         "Summarize only the current and relevant state, not every past event.",
         "Use empty strings, empty arrays, or \"unknown\" for unknown fields.",
@@ -31,15 +39,19 @@ export function buildTrackerPrompt(transcript: string): PromptMessage[] {
     {
       role: "user",
       content: [
-        "Fill this tracker schema from the transcript.",
+        `Selected tracker preset: ${preset.name} (${preset.id})`,
         "",
-        "Tracker schema:",
-        defaultTrackerSchemaJson(),
+        "Preset prompt instructions:",
+        preset.promptInstructions,
+        "",
+        "Tracker JSON schema:",
+        JSON.stringify(preset.jsonSchema, null, 2),
         "",
         "Transcript:",
         transcript,
         "",
-        "Return only a JSON object matching the schema shape.",
+        "Return only a JSON object matching the selected schema shape.",
+        "Never include Markdown, commentary, or HTML.",
       ].join("\n"),
     },
   ];

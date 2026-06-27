@@ -20,4 +20,13 @@ export function diagnosticsPath(chatId: string): string {
   return `chats/${encodeStorageSegment(chatId)}/diagnostics.json`;
 }
 
+export function activePresetPath(chatId: string): string {
+  return `chats/${encodeStorageSegment(chatId)}/active-preset.json`;
+}
+
+export function presetPath(presetId: string): string {
+  return `presets/${encodeStorageSegment(presetId)}.json`;
+}
+
+export const PRESETS_INDEX_PATH = "presets/index.json";
 export const SETTINGS_PATH = "settings.json";

@@ -1,4 +1,8 @@
 import type { SpindleFrontendContext } from "lumiverse-spindle-types";
+import {
+  DEFAULT_TRACKER_PRESET,
+  exportTrackerPreset,
+} from "./shared/presets";
 import { DEFAULT_SETTINGS } from "./shared/settings";
 import type {
   BackendMessage,
@@ -6,6 +10,7 @@ import type {
   FrontendState,
   LTrackerError,
   LTrackerSettings,
+  TrackerPresetDraft,
 } from "./shared/types";
 import {
   EXTENSION_VERSION,
@@ -126,6 +131,7 @@ const STYLES = `
   gap: 5px;
 }
 .ltracker-field input[type="number"],
+.ltracker-field input[type="text"],
 .ltracker-field select {
   border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
   border-radius: 7px;
@@ -134,6 +140,20 @@ const STYLES = `
   font: inherit;
   min-height: 34px;
   padding: 6px 8px;
+}
+.ltracker-field textarea {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  color: inherit;
+  font: inherit;
+  min-height: 120px;
+  padding: 8px;
+  resize: vertical;
+  white-space: pre;
+}
+.ltracker-field-wide {
+  grid-column: 1 / -1;
 }
 .ltracker-check {
   align-items: center;
@@ -247,8 +267,20 @@ function emptyState(): FrontendState {
       lastInjectionSkippedReason: null,
       lastInjectionSnapshotCreatedAt: null,
       lastInjectionSourceMessageId: null,
+      selectedPresetId: null,
+      selectedPresetName: null,
+      lastPresetFallbackReason: null,
+      lastPresetValidationError: null,
+      lastPromptUsedPresetId: null,
+      lastPromptUsedPresetName: null,
     },
     injectionPreview: null,
+    presets: [DEFAULT_TRACKER_PRESET],
+    activePreset: DEFAULT_TRACKER_PRESET,
+    activePresetState: {
+      selectedPresetId: DEFAULT_TRACKER_PRESET.id,
+      selectedAt: new Date(0).toISOString(),
+    },
   };
 }
 
@@ -438,6 +470,143 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     });
   }
 
+  function setLocalError(message: string): void {
+    state = {
+      ...state,
+      status: "error",
+      error: emptyError(message),
+    };
+    render();
+  }
+
+  function fieldText(name: string, fallback: string): string {
+    const input = tab.root.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-preset-field="${name}"]`);
+    return input ? input.value : fallback;
+  }
+
+  function readPresetDraft(): TrackerPresetDraft | null {
+    let jsonSchema: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(fieldText("jsonSchema", "{}"));
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        setLocalError("JSON Schema must be a JSON object.");
+        return null;
+      }
+      jsonSchema = parsed as Record<string, unknown>;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setLocalError(`JSON Schema is invalid JSON: ${message}`);
+      return null;
+    }
+
+    const htmlTemplate = fieldText("htmlTemplate", "");
+    const draft: TrackerPresetDraft = {
+      id: state.activePreset.id,
+      name: fieldText("name", state.activePreset.name),
+      description: fieldText("description", state.activePreset.description),
+      version: fieldText("version", state.activePreset.version),
+      jsonSchema,
+      promptInstructions: fieldText("promptInstructions", state.activePreset.promptInstructions),
+      htmlTemplate,
+      notes: fieldText("notes", state.activePreset.notes ?? ""),
+      capabilities: {
+        supportsHtmlTemplate: htmlTemplate.trim().length > 0,
+      },
+    };
+    return draft;
+  }
+
+  function selectPreset(presetId: string): void {
+    send({
+      type: "select_preset",
+      chatId: activeChatId(),
+      presetId,
+      requestId: requestId("preset-select"),
+    });
+  }
+
+  function savePresetAsNew(): void {
+    const preset = readPresetDraft();
+    if (!preset) return;
+    send({
+      type: "save_preset_as_new",
+      chatId: activeChatId(),
+      preset,
+      requestId: requestId("preset-new"),
+    });
+  }
+
+  function duplicatePreset(): void {
+    const preset = readPresetDraft();
+    if (!preset) return;
+    send({
+      type: "duplicate_preset",
+      chatId: activeChatId(),
+      preset: {
+        ...preset,
+        name: `${preset.name || state.activePreset.name} Copy`,
+      },
+      requestId: requestId("preset-duplicate"),
+    });
+  }
+
+  function updatePreset(): void {
+    if (state.activePreset.origin === "built_in") return;
+    const preset = readPresetDraft();
+    if (!preset) return;
+    send({
+      type: "update_preset",
+      chatId: activeChatId(),
+      presetId: state.activePreset.id,
+      preset,
+      requestId: requestId("preset-update"),
+    });
+  }
+
+  function deletePreset(): void {
+    if (state.activePreset.origin === "built_in") return;
+    send({
+      type: "delete_preset",
+      chatId: activeChatId(),
+      presetId: state.activePreset.id,
+      requestId: requestId("preset-delete"),
+    });
+  }
+
+  function resetPreset(): void {
+    send({
+      type: "reset_preset",
+      chatId: activeChatId(),
+      requestId: requestId("preset-reset"),
+    });
+  }
+
+  function importPreset(): void {
+    const input = tab.root.querySelector<HTMLTextAreaElement>("[data-preset-import]");
+    const importText = input?.value.trim() ?? "";
+    if (!importText) {
+      setLocalError("Paste preset export JSON before importing.");
+      return;
+    }
+    send({
+      type: "import_preset",
+      chatId: activeChatId(),
+      importText,
+      requestId: requestId("preset-import"),
+    });
+  }
+
+  function validatePreset(): void {
+    const preset = readPresetDraft();
+    if (!preset) return;
+    send({
+      type: "validate_preset",
+      chatId: activeChatId(),
+      preset,
+      requestId: requestId("preset-validate"),
+    });
+  }
+
   async function copyText(value: string | null, label: string): Promise<void> {
     if (!value) return;
     try {
@@ -472,6 +641,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       : "No message-attached tracker snapshot saved yet.";
     const injectionPreviewText = state.injectionPreview
       ?? "No injection preview available. Generate a tracker and enable injection to preview cached context.";
+    const activePreset = state.activePreset;
+    const activePresetIsBuiltIn = activePreset.origin === "built_in";
+    const presetSchemaText = JSON.stringify(activePreset.jsonSchema, null, 2);
+    const presetHtmlWarning = activePreset.htmlTemplate?.trim()
+      ? "HTML template is stored only. Rendering arrives in 0.06."
+      : "HTML template is optional and stored only in 0.05.";
+    const presetOptions = state.presets.map((preset) => {
+      return `<option value="${escapeHtml(preset.id)}"${selected(preset.id === activePreset.id)}>${escapeHtml(preset.name)} (${escapeHtml(preset.origin)})</option>`;
+    }).join("");
     const permissionText = [
       state.permissions.generation ? "generation granted" : "generation missing",
       state.permissions.chats ? "chats granted" : "chats missing",
@@ -615,6 +793,66 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         </section>
 
         <section class="ltracker-panel">
+          <span class="ltracker-label">Schema Presets</span>
+          <p class="ltracker-note">zTracker-style layout: Schema Box 1 is active JSON Schema, Schema Box 2 stores an inert HTML Template for 0.06, and Prompt Box instructions guide tracker extraction.</p>
+          <div class="ltracker-settings">
+            <label class="ltracker-field">
+              Selected preset
+              <select data-preset-select>
+                ${presetOptions}
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Preset name
+              <input type="text" data-preset-field="name" value="${escapeHtml(activePreset.name)}"${disabled(activePresetIsBuiltIn)}>
+            </label>
+            <label class="ltracker-field">
+              Preset version
+              <input type="text" data-preset-field="version" value="${escapeHtml(activePreset.version)}"${disabled(activePresetIsBuiltIn)}>
+            </label>
+            <label class="ltracker-field">
+              Origin
+              <input type="text" value="${escapeHtml(activePreset.origin)}" disabled>
+            </label>
+            <label class="ltracker-field ltracker-field-wide">
+              Preset description
+              <textarea data-preset-field="description"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.description)}</textarea>
+            </label>
+            <label class="ltracker-field ltracker-field-wide">
+              Schema Box 1 - JSON Schema
+              <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml(presetSchemaText)}</textarea>
+            </label>
+            <label class="ltracker-field ltracker-field-wide">
+              Schema Box 2 - HTML Template (Stored only - rendering arrives in 0.06)
+              <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.htmlTemplate ?? "")}</textarea>
+            </label>
+            <label class="ltracker-field ltracker-field-wide">
+              Prompt Box - AI Instructions
+              <textarea data-preset-field="promptInstructions"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.promptInstructions)}</textarea>
+            </label>
+            <label class="ltracker-field ltracker-field-wide">
+              Notes
+              <textarea data-preset-field="notes"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.notes ?? "")}</textarea>
+            </label>
+            <label class="ltracker-field ltracker-field-wide">
+              Import Preset JSON
+              <textarea data-preset-import placeholder="Paste exported ltracker_schema_preset JSON here"></textarea>
+            </label>
+          </div>
+          <p class="ltracker-note">${escapeHtml(presetHtmlWarning)}</p>
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="save-preset-new">Save As New Preset</button>
+            <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate Preset</button>
+            <button class="ltracker-button" type="button" data-action="update-preset" ${disabled(activePresetIsBuiltIn)}>Update Current Preset</button>
+            <button class="ltracker-button" type="button" data-action="delete-preset" ${disabled(activePresetIsBuiltIn)}>Delete Preset</button>
+            <button class="ltracker-button" type="button" data-action="reset-preset">Reset To Default Preset</button>
+            <button class="ltracker-button" type="button" data-action="export-preset">Export Selected Preset</button>
+            <button class="ltracker-button" type="button" data-action="import-preset">Import Preset JSON</button>
+            <button class="ltracker-button" type="button" data-action="validate-preset">Validate Preset</button>
+          </div>
+        </section>
+
+        <section class="ltracker-panel">
           <span class="ltracker-label">Diagnostics</span>
           <div class="ltracker-grid">
             ${renderRow("Extension version", state.version)}
@@ -630,6 +868,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Last injection skipped", diagnostics.lastInjectionSkippedReason)}
             ${renderRow("Last injection snapshot", diagnostics.lastInjectionSnapshotCreatedAt)}
             ${renderRow("Last injection source message", diagnostics.lastInjectionSourceMessageId)}
+            ${renderRow("Selected preset id", diagnostics.selectedPresetId ?? activePreset.id)}
+            ${renderRow("Selected preset name", diagnostics.selectedPresetName ?? activePreset.name)}
+            ${renderRow("Last preset fallback", diagnostics.lastPresetFallbackReason)}
+            ${renderRow("Last preset validation error", diagnostics.lastPresetValidationError)}
+            ${renderRow("Last prompt preset id", diagnostics.lastPromptUsedPresetId)}
+            ${renderRow("Last prompt preset name", diagnostics.lastPromptUsedPresetName)}
             ${renderRow("Last generation source", diagnostics.lastGenerationSource)}
             ${renderRow("Last generation started", diagnostics.lastGenerationStartedAt)}
             ${renderRow("Last generation completed", diagnostics.lastGenerationCompletedAt)}
@@ -729,10 +973,30 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       );
     }
     if (action === "copy-injection-preview") void copyText(state.injectionPreview, "injection preview");
+    if (action === "save-preset-new") savePresetAsNew();
+    if (action === "duplicate-preset") duplicatePreset();
+    if (action === "update-preset") updatePreset();
+    if (action === "delete-preset") deletePreset();
+    if (action === "reset-preset") resetPreset();
+    if (action === "import-preset") importPreset();
+    if (action === "validate-preset") validatePreset();
+    if (action === "export-preset") {
+      void copyText(JSON.stringify(exportTrackerPreset(state.activePreset), null, 2), "selected preset export");
+    }
   };
 
   tab.root.addEventListener("click", onClick);
   cleanups.push(() => tab.root.removeEventListener("click", onClick));
+
+  const onChange = (event: Event): void => {
+    const target = event.target instanceof HTMLSelectElement
+      ? event.target.closest<HTMLSelectElement>("[data-preset-select]")
+      : null;
+    if (target) selectPreset(target.value);
+  };
+
+  tab.root.addEventListener("change", onChange);
+  cleanups.push(() => tab.root.removeEventListener("change", onChange));
 
   cleanups.push(tab.onActivate(requestState));
   cleanups.push(inputAction.onClick(generateTracker));

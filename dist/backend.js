@@ -329,8 +329,212 @@ function parseTrackerJson(raw) {
   throw new Error(`Tracker output was not valid JSON after basic repair. ${detail}`);
 }
 
+// src/shared/defaultSchema.ts
+var DEFAULT_TRACKER_SCHEMA = {
+  scene: {
+    time: "",
+    date: "",
+    location: "",
+    weather: "",
+    mood: "",
+    danger_level: ""
+  },
+  characters_present: [
+    {
+      name: "",
+      role: "",
+      physical_state: "",
+      emotional_state: "",
+      outfit: "",
+      current_goal: "",
+      secrets_or_tension: ""
+    }
+  ],
+  relationships: [
+    {
+      a: "",
+      b: "",
+      status: "",
+      recent_change: ""
+    }
+  ],
+  inventory_and_assets: [],
+  active_threads: [],
+  unresolved_continuity: [],
+  important_facts: [],
+  next_scene_pressure: ""
+};
+
+// src/shared/presets.ts
+var DEFAULT_TRACKER_PRESET_ID = "default_scene_tracker";
+var PRESET_EXPORT_KIND = "ltracker_schema_preset";
+var PRESET_EXPORT_FORMAT_VERSION = 1;
+var DEFAULT_PRESET_PROMPT_INSTRUCTIONS = [
+  "Fill the tracker from the transcript using the requested schema.",
+  "Track current scene state, present characters, relationships, assets, active threads, unresolved continuity, important facts, and next-scene pressure.",
+  "Prefer concise values that help future roleplay continuity."
+].join("\n");
+var DEFAULT_TRACKER_PRESET = {
+  id: DEFAULT_TRACKER_PRESET_ID,
+  name: "Default Scene Tracker",
+  description: "Built-in LTracker scene, character, relationship, continuity, and thread tracker.",
+  version: "1.0",
+  createdAt: "2026-06-27T00:00:00.000Z",
+  updatedAt: "2026-06-27T00:00:00.000Z",
+  jsonSchema: DEFAULT_TRACKER_SCHEMA,
+  promptInstructions: DEFAULT_PRESET_PROMPT_INSTRUCTIONS,
+  htmlTemplate: "",
+  notes: "Equivalent to LTracker's original default tracker shape.",
+  origin: "built_in",
+  capabilities: {
+    supportsHtmlTemplate: false,
+    supportsPartialRegeneration: false,
+    supportsSequentialGeneration: false
+  }
+};
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringValue(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+function optionalString(value) {
+  return typeof value === "string" ? value : void 0;
+}
+function validOrigin(value) {
+  return value === "built_in" || value === "user_imported" || value === "user_created";
+}
+function repairCapabilities(value) {
+  if (!isRecord2(value)) return void 0;
+  const result = {};
+  if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
+  if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
+  if (typeof value.supportsSequentialGeneration === "boolean") result.supportsSequentialGeneration = value.supportsSequentialGeneration;
+  return Object.keys(result).length > 0 ? result : void 0;
+}
+function sanitizePresetId(value) {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || "preset";
+}
+function createPresetId(name, existingIds) {
+  const existing = new Set(existingIds);
+  const base = sanitizePresetId(name);
+  if (!existing.has(base) && base !== DEFAULT_TRACKER_PRESET_ID) return base;
+  for (let index = 2; index < 1e4; index += 1) {
+    const candidate = `${base}_${index}`;
+    if (!existing.has(candidate) && candidate !== DEFAULT_TRACKER_PRESET_ID) return candidate;
+  }
+  return `${base}_${Date.now()}`;
+}
+function validateJsonSchema(value) {
+  if (!isRecord2(value)) {
+    return { ok: false, error: "JSON Schema must be a JSON object." };
+  }
+  return { ok: true, error: null };
+}
+function validateTrackerPreset(value) {
+  if (!isRecord2(value)) return { ok: false, error: "Preset must be a JSON object." };
+  if (typeof value.id !== "string" || !sanitizePresetId(value.id)) {
+    return { ok: false, error: "Preset id is required." };
+  }
+  if (typeof value.name !== "string" || !value.name.trim()) {
+    return { ok: false, error: "Preset name is required." };
+  }
+  if (typeof value.version !== "string" || !value.version.trim()) {
+    return { ok: false, error: "Preset version is required." };
+  }
+  const schemaValidation = validateJsonSchema(value.jsonSchema);
+  if (!schemaValidation.ok) return schemaValidation;
+  if (typeof value.promptInstructions !== "string" || !value.promptInstructions.trim()) {
+    return { ok: false, error: "Prompt instructions are required." };
+  }
+  if (!validOrigin(value.origin)) {
+    return { ok: false, error: "Preset origin is invalid." };
+  }
+  if ("htmlTemplate" in value && typeof value.htmlTemplate !== "string") {
+    return { ok: false, error: "HTML template must be text." };
+  }
+  return { ok: true, error: null };
+}
+function repairTrackerPreset(value) {
+  if (!isRecord2(value)) return null;
+  const origin = validOrigin(value.origin) ? value.origin : null;
+  if (!origin) return null;
+  const preset = {
+    id: sanitizePresetId(stringValue(value.id)),
+    name: stringValue(value.name).trim(),
+    description: stringValue(value.description),
+    version: stringValue(value.version, "1.0"),
+    createdAt: stringValue(value.createdAt, (/* @__PURE__ */ new Date()).toISOString()),
+    updatedAt: stringValue(value.updatedAt, (/* @__PURE__ */ new Date()).toISOString()),
+    jsonSchema: isRecord2(value.jsonSchema) ? value.jsonSchema : {},
+    promptInstructions: stringValue(value.promptInstructions),
+    origin
+  };
+  const htmlTemplate = optionalString(value.htmlTemplate);
+  if (htmlTemplate !== void 0) preset.htmlTemplate = htmlTemplate;
+  const notes = optionalString(value.notes);
+  if (notes !== void 0) preset.notes = notes;
+  const capabilities = repairCapabilities(value.capabilities);
+  if (capabilities) preset.capabilities = capabilities;
+  return validateTrackerPreset(preset).ok ? preset : null;
+}
+function draftToPreset(draft, options) {
+  const preset = {
+    id: sanitizePresetId(options.id),
+    name: draft.name.trim() || "Untitled Preset",
+    description: draft.description,
+    version: draft.version.trim() || "1.0",
+    createdAt: options.existing?.createdAt ?? options.now,
+    updatedAt: options.now,
+    jsonSchema: draft.jsonSchema,
+    promptInstructions: draft.promptInstructions,
+    origin: options.origin
+  };
+  if (draft.htmlTemplate !== void 0) preset.htmlTemplate = draft.htmlTemplate;
+  if (draft.notes !== void 0) preset.notes = draft.notes;
+  if (draft.capabilities) preset.capabilities = draft.capabilities;
+  return preset;
+}
+function importTrackerPresetEnvelope(value, existingIds, now) {
+  if (!isRecord2(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
+  if (value.kind !== PRESET_EXPORT_KIND) {
+    return { ok: false, preset: null, error: "Import kind must be ltracker_schema_preset." };
+  }
+  if (value.formatVersion !== PRESET_EXPORT_FORMAT_VERSION) {
+    return { ok: false, preset: null, error: "Unsupported preset format version." };
+  }
+  const repaired = repairTrackerPreset(value.preset);
+  if (!repaired) return { ok: false, preset: null, error: "Imported preset is invalid." };
+  const existing = new Set(existingIds);
+  const importedId = sanitizePresetId(repaired.id);
+  const id = existing.has(importedId) || importedId === DEFAULT_TRACKER_PRESET_ID ? createPresetId(repaired.name, existing) : importedId;
+  return {
+    ok: true,
+    error: null,
+    preset: {
+      ...repaired,
+      id,
+      origin: "user_imported",
+      createdAt: now,
+      updatedAt: now
+    }
+  };
+}
+function canModifyPreset(preset) {
+  return preset.origin !== "built_in";
+}
+function resolveSelectedPreset(presets, selectedPresetId) {
+  const selected = presets.find((preset) => preset.id === selectedPresetId);
+  if (selected) return { preset: selected, fallbackReason: null };
+  return {
+    preset: DEFAULT_TRACKER_PRESET,
+    fallbackReason: `Selected preset ${selectedPresetId} was not found; using Default Scene Tracker.`
+  };
+}
+
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.04";
+var EXTENSION_VERSION = "0.05";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -371,7 +575,7 @@ var DEFAULT_SETTINGS = {
     onlyInjectWhenSnapshotExists: true
   }
 };
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null;
 }
 function clampNumber(value, fallback, min, max) {
@@ -380,9 +584,9 @@ function clampNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.round(numeric)));
 }
 function repairSettings(value) {
-  const source = isRecord2(value) ? value : {};
-  const autoSource = isRecord2(source.auto) ? source.auto : {};
-  const injectionSource = isRecord2(source.injection) ? source.injection : {};
+  const source = isRecord3(value) ? value : {};
+  const autoSource = isRecord3(source.auto) ? source.auto : {};
+  const injectionSource = isRecord3(source.injection) ? source.injection : {};
   const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot" ? injectionSource.mode : DEFAULT_SETTINGS.injection.mode;
   const format = injectionSource.format === "pretty_json" || injectionSource.format === "minimal" || injectionSource.format === "compact" ? injectionSource.format : DEFAULT_SETTINGS.injection.format;
   return {
@@ -462,46 +666,14 @@ function messageSnapshotPath(chatId, messageId) {
 function diagnosticsPath(chatId) {
   return `chats/${encodeStorageSegment(chatId)}/diagnostics.json`;
 }
-var SETTINGS_PATH = "settings.json";
-
-// src/shared/defaultSchema.ts
-var DEFAULT_TRACKER_SCHEMA = {
-  scene: {
-    time: "",
-    date: "",
-    location: "",
-    weather: "",
-    mood: "",
-    danger_level: ""
-  },
-  characters_present: [
-    {
-      name: "",
-      role: "",
-      physical_state: "",
-      emotional_state: "",
-      outfit: "",
-      current_goal: "",
-      secrets_or_tension: ""
-    }
-  ],
-  relationships: [
-    {
-      a: "",
-      b: "",
-      status: "",
-      recent_change: ""
-    }
-  ],
-  inventory_and_assets: [],
-  active_threads: [],
-  unresolved_continuity: [],
-  important_facts: [],
-  next_scene_pressure: ""
-};
-function defaultTrackerSchemaJson() {
-  return JSON.stringify(DEFAULT_TRACKER_SCHEMA, null, 2);
+function activePresetPath(chatId) {
+  return `chats/${encodeStorageSegment(chatId)}/active-preset.json`;
 }
+function presetPath(presetId) {
+  return `presets/${encodeStorageSegment(presetId)}.json`;
+}
+var PRESETS_INDEX_PATH = "presets/index.json";
+var SETTINGS_PATH = "settings.json";
 
 // src/shared/trackerPrompt.ts
 var DEFAULT_MAX_MESSAGE_CHARS = 8e3;
@@ -514,7 +686,7 @@ function buildCompactTranscript(messages, maxMessageChars = DEFAULT_MAX_MESSAGE_
 ${content}`;
   }).join("\n\n");
 }
-function buildTrackerPrompt(transcript) {
+function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET) {
   return [
     {
       role: "system",
@@ -522,6 +694,7 @@ function buildTrackerPrompt(transcript) {
         "You extract the current state of an ongoing roleplay or story chat.",
         "Return JSON only. Do not wrap the JSON in Markdown.",
         "Do not invent facts unsupported by the transcript.",
+        "Preset prompt instructions are lower priority than these safety and integrity requirements.",
         "Preserve character names exactly when possible.",
         "Summarize only the current and relevant state, not every past event.",
         'Use empty strings, empty arrays, or "unknown" for unknown fields.'
@@ -530,15 +703,19 @@ function buildTrackerPrompt(transcript) {
     {
       role: "user",
       content: [
-        "Fill this tracker schema from the transcript.",
+        `Selected tracker preset: ${preset.name} (${preset.id})`,
         "",
-        "Tracker schema:",
-        defaultTrackerSchemaJson(),
+        "Preset prompt instructions:",
+        preset.promptInstructions,
+        "",
+        "Tracker JSON schema:",
+        JSON.stringify(preset.jsonSchema, null, 2),
         "",
         "Transcript:",
         transcript,
         "",
-        "Return only a JSON object matching the schema shape."
+        "Return only a JSON object matching the selected schema shape.",
+        "Never include Markdown, commentary, or HTML."
       ].join("\n")
     }
   ];
@@ -571,7 +748,7 @@ var autoSubscriptionsActive = false;
 var contextHandlerRegistered = false;
 var internalTrackerGenerationDepth = 0;
 var disposed = false;
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null;
 }
 function nowIso() {
@@ -600,18 +777,42 @@ function diagnosticError(error, fallbackStage) {
   return result;
 }
 function isFrontendMessage(payload) {
-  if (!isRecord3(payload) || typeof payload.type !== "string") return false;
+  if (!isRecord4(payload) || typeof payload.type !== "string") return false;
   if (![
     "ready",
     "refresh_state",
     "generate_tracker",
     "clear_snapshot",
     "save_settings",
-    "reset_settings"
+    "reset_settings",
+    "select_preset",
+    "save_preset_as_new",
+    "duplicate_preset",
+    "update_preset",
+    "delete_preset",
+    "reset_preset",
+    "import_preset",
+    "validate_preset"
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
-  if (["generate_tracker", "clear_snapshot", "save_settings", "reset_settings"].includes(payload.type) && typeof payload.requestId !== "string") return false;
-  if (payload.type === "save_settings" && !isRecord3(payload.settings)) return false;
+  if ([
+    "generate_tracker",
+    "clear_snapshot",
+    "save_settings",
+    "reset_settings",
+    "select_preset",
+    "save_preset_as_new",
+    "duplicate_preset",
+    "update_preset",
+    "delete_preset",
+    "reset_preset",
+    "import_preset",
+    "validate_preset"
+  ].includes(payload.type) && typeof payload.requestId !== "string") return false;
+  if (payload.type === "save_settings" && !isRecord4(payload.settings)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord4(payload.preset)) return false;
+  if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
+  if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
   return true;
 }
 function permissionState() {
@@ -667,7 +868,13 @@ function defaultDiagnostics(chatId) {
     lastInjectedChars: 0,
     lastInjectionSkippedReason: null,
     lastInjectionSnapshotCreatedAt: null,
-    lastInjectionSourceMessageId: null
+    lastInjectionSourceMessageId: null,
+    selectedPresetId: null,
+    selectedPresetName: null,
+    lastPresetFallbackReason: null,
+    lastPresetValidationError: null,
+    lastPromptUsedPresetId: null,
+    lastPromptUsedPresetName: null
   };
 }
 function stringOrNull(value) {
@@ -683,7 +890,7 @@ function stringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 function recordOrNull(value) {
-  return isRecord3(value) && !Array.isArray(value) ? value : null;
+  return isRecord4(value) && !Array.isArray(value) ? value : null;
 }
 function sourceKindOrNull(value) {
   return value === "manual" || value === "auto" ? value : null;
@@ -698,7 +905,7 @@ function injectionFormatOrNull(value) {
   return value === "compact" || value === "pretty_json" || value === "minimal" ? value : null;
 }
 function errorOrNull(value) {
-  if (!isRecord3(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
+  if (!isRecord4(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
   const error = {
     stage: value.stage,
     message: value.message,
@@ -708,7 +915,7 @@ function errorOrNull(value) {
   return error;
 }
 function cancellationOrNull(value) {
-  if (!isRecord3(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
+  if (!isRecord4(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
   return {
     jobId: value.jobId,
     requestId: value.requestId,
@@ -718,7 +925,7 @@ function cancellationOrNull(value) {
 }
 function repairDiagnostics(value, chatId) {
   const base = defaultDiagnostics(chatId);
-  if (!isRecord3(value)) return base;
+  if (!isRecord4(value)) return base;
   return {
     ...base,
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
@@ -756,7 +963,13 @@ function repairDiagnostics(value, chatId) {
     lastInjectedChars: typeof value.lastInjectedChars === "number" && Number.isFinite(value.lastInjectedChars) ? Math.max(0, Math.round(value.lastInjectedChars)) : 0,
     lastInjectionSkippedReason: stringOrNull(value.lastInjectionSkippedReason),
     lastInjectionSnapshotCreatedAt: stringOrNull(value.lastInjectionSnapshotCreatedAt),
-    lastInjectionSourceMessageId: stringOrNull(value.lastInjectionSourceMessageId)
+    lastInjectionSourceMessageId: stringOrNull(value.lastInjectionSourceMessageId),
+    selectedPresetId: stringOrNull(value.selectedPresetId),
+    selectedPresetName: stringOrNull(value.selectedPresetName),
+    lastPresetFallbackReason: stringOrNull(value.lastPresetFallbackReason),
+    lastPresetValidationError: stringOrNull(value.lastPresetValidationError),
+    lastPromptUsedPresetId: stringOrNull(value.lastPromptUsedPresetId),
+    lastPromptUsedPresetName: stringOrNull(value.lastPromptUsedPresetName)
   };
 }
 async function getSettings(userId) {
@@ -778,6 +991,99 @@ async function saveSettings(settings, userId) {
 async function resetSettings(userId) {
   await spindle.userStorage.setJson(SETTINGS_PATH, DEFAULT_SETTINGS, { indent: 2, userId });
   return DEFAULT_SETTINGS;
+}
+async function loadPresetIndex(userId) {
+  const raw = await spindle.userStorage.getJson(PRESETS_INDEX_PATH, {
+    fallback: [],
+    userId
+  });
+  const ids = Array.isArray(raw) ? raw.filter((item) => typeof item === "string" && item !== DEFAULT_TRACKER_PRESET_ID) : [];
+  if (JSON.stringify(raw) !== JSON.stringify(ids)) {
+    await spindle.userStorage.setJson(PRESETS_INDEX_PATH, ids, { indent: 2, userId });
+  }
+  return ids;
+}
+async function savePresetIndex(ids, userId) {
+  const unique = [...new Set(ids.filter((id) => id !== DEFAULT_TRACKER_PRESET_ID))];
+  await spindle.userStorage.setJson(PRESETS_INDEX_PATH, unique, { indent: 2, userId });
+}
+async function loadUserPreset(presetId, userId) {
+  const raw = await spindle.userStorage.getJson(presetPath(presetId), {
+    fallback: null,
+    userId
+  });
+  const repaired = repairTrackerPreset(raw);
+  if (!repaired || repaired.origin === "built_in") return null;
+  return repaired;
+}
+async function loadPresetCatalog(userId) {
+  const ids = await loadPresetIndex(userId);
+  const loaded = await Promise.all(ids.map((id) => loadUserPreset(id, userId)));
+  return [
+    DEFAULT_TRACKER_PRESET,
+    ...loaded.filter((preset) => Boolean(preset))
+  ];
+}
+function defaultActivePresetState() {
+  return {
+    selectedPresetId: DEFAULT_TRACKER_PRESET_ID,
+    selectedAt: (/* @__PURE__ */ new Date(0)).toISOString()
+  };
+}
+async function loadActivePresetState(chatId, userId) {
+  if (!chatId) return defaultActivePresetState();
+  const raw = await spindle.userStorage.getJson(activePresetPath(chatId), {
+    fallback: null,
+    userId
+  });
+  if (!isRecord4(raw) || typeof raw.selectedPresetId !== "string") {
+    return defaultActivePresetState();
+  }
+  return {
+    selectedPresetId: raw.selectedPresetId,
+    selectedAt: typeof raw.selectedAt === "string" ? raw.selectedAt : nowIso()
+  };
+}
+async function saveActivePresetState(chatId, presetId, userId) {
+  const state = {
+    selectedPresetId: presetId,
+    selectedAt: nowIso()
+  };
+  await spindle.userStorage.setJson(activePresetPath(chatId), state, { indent: 2, userId });
+  return state;
+}
+function presetById(presets, presetId) {
+  return presets.find((preset) => preset.id === presetId) ?? null;
+}
+async function resolveActivePreset(chatId, userId) {
+  const presets = await loadPresetCatalog(userId);
+  const activePresetState = await loadActivePresetState(chatId, userId);
+  const resolved = resolveSelectedPreset(presets, activePresetState.selectedPresetId);
+  return {
+    presets,
+    activePreset: resolved.preset,
+    activePresetState: {
+      ...activePresetState,
+      selectedPresetId: resolved.preset.id
+    },
+    fallbackReason: resolved.fallbackReason
+  };
+}
+async function saveUserPreset(preset, userId) {
+  const validation = validateTrackerPreset(preset);
+  if (!validation.ok) throw new Error(validation.error ?? "Preset is invalid.");
+  if (!canModifyPreset(preset)) throw new Error("Built-in presets cannot be overwritten.");
+  await spindle.userStorage.setJson(presetPath(preset.id), preset, { indent: 2, userId });
+  const ids = await loadPresetIndex(userId);
+  if (!ids.includes(preset.id)) await savePresetIndex([...ids, preset.id], userId);
+}
+async function deleteUserPreset(presetId, userId) {
+  if (presetId === DEFAULT_TRACKER_PRESET_ID) throw new Error("Built-in presets cannot be deleted.");
+  const ids = await loadPresetIndex(userId);
+  if (await spindle.userStorage.exists(presetPath(presetId), userId)) {
+    await spindle.userStorage.delete(presetPath(presetId), userId);
+  }
+  await savePresetIndex(ids.filter((id) => id !== presetId), userId);
 }
 async function loadSnapshot(chatId, userId) {
   if (!chatId) return null;
@@ -821,6 +1127,7 @@ async function tryPersistDiagnostics(diagnostics, userId) {
 async function buildState(chatId, userId, status, error = null) {
   const settings = await getSettings(userId);
   const diagnostics = await loadDiagnostics(chatId, userId);
+  const presetState = await resolveActivePreset(chatId, userId);
   const snapshot = await loadSnapshot(chatId, userId);
   const latestMessageSnapshot = await loadMessageSnapshot(
     chatId,
@@ -841,6 +1148,9 @@ async function buildState(chatId, userId, status, error = null) {
     snapshot,
     latestMessageSnapshot,
     injectionPreview,
+    presets: presetState.presets,
+    activePreset: presetState.activePreset,
+    activePresetState: presetState.activePresetState,
     error: stateError,
     permissions: permissionState(),
     settings,
@@ -849,7 +1159,10 @@ async function buildState(chatId, userId, status, error = null) {
       status: status ?? diagnostics.status,
       lastError: stateError,
       autoSubscriptionActive: autoSubscriptionsActive,
-      injectionEnabled: settings.injection.enabled
+      injectionEnabled: settings.injection.enabled,
+      selectedPresetId: presetState.activePreset.id,
+      selectedPresetName: presetState.activePreset.name,
+      lastPresetFallbackReason: presetState.fallbackReason ?? diagnostics.lastPresetFallbackReason
     }
   };
 }
@@ -897,7 +1210,7 @@ function normalizeMessages(messages) {
 }
 function normalizeGenerationText(result) {
   if (typeof result === "string" && result.trim()) return result;
-  if (!isRecord3(result)) {
+  if (!isRecord4(result)) {
     throw new Error("Lumiverse generation returned an unsupported response.");
   }
   for (const key of ["content", "text", "output", "response"]) {
@@ -906,7 +1219,7 @@ function normalizeGenerationText(result) {
   }
   const message = result.message;
   if (typeof message === "string" && message.trim()) return message;
-  if (isRecord3(message) && typeof message.content === "string" && message.content.trim()) {
+  if (isRecord4(message) && typeof message.content === "string" && message.content.trim()) {
     return message.content;
   }
   throw new Error("Lumiverse generation completed without textual content.");
@@ -1054,11 +1367,11 @@ function targetUsersForChat(chatId, userId) {
   return [...usersByChat.get(chatId) ?? []];
 }
 function isChatMessage(value) {
-  return isRecord3(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
+  return isRecord4(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
 }
 function messageFromEventPayload(payload) {
   if (isChatMessage(payload)) return payload;
-  if (isRecord3(payload) && isChatMessage(payload.message)) return payload.message;
+  if (isRecord4(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
 }
 async function scheduleAutoForMessage(input) {
@@ -1214,14 +1527,14 @@ async function handleMessageSent(payload, userId) {
   }
 }
 function handleChatSwitched(payload, userId) {
-  if (!userId || !isRecord3(payload)) return;
+  if (!userId || !isRecord4(payload)) return;
   const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
   rememberActiveChat(userId, chatId);
 }
 function stringAtPath2(value, path) {
   let current = value;
   for (const segment of path) {
-    if (!isRecord3(current)) return null;
+    if (!isRecord4(current)) return null;
     current = current[segment];
   }
   return typeof current === "string" && current.trim() ? current : null;
@@ -1358,6 +1671,9 @@ async function generateTracker(chatId, userId, trigger) {
   const settings = await getSettings(userId).catch((error) => {
     stageError("storage", error);
   });
+  const presetState = await resolveActivePreset(resolvedChatId, userId).catch((error) => {
+    stageError("storage", error);
+  });
   if (trigger.kind === "manual") {
     cancelPendingAutoForChat(resolvedChatId, userId, "Manual generation superseded the pending auto job.");
   }
@@ -1404,7 +1720,13 @@ async function generateTracker(chatId, userId, trigger) {
     lastPromptPreview: null,
     lastError: null,
     lastCancellation,
-    lastAutoTriggeredAt: trigger.kind === "auto" ? new Date(startedAtMs).toISOString() : null
+    lastAutoTriggeredAt: trigger.kind === "auto" ? new Date(startedAtMs).toISOString() : null,
+    selectedPresetId: presetState.activePreset.id,
+    selectedPresetName: presetState.activePreset.name,
+    lastPresetFallbackReason: presetState.fallbackReason,
+    lastPresetValidationError: null,
+    lastPromptUsedPresetId: null,
+    lastPromptUsedPresetName: null
   };
   if (trigger.kind === "auto") {
     diagnostics = {
@@ -1434,9 +1756,11 @@ async function generateTracker(chatId, userId, trigger) {
     };
     stage = "prompt";
     const transcript = buildCompactTranscript(transcriptMessages, settings.maxMessageChars);
-    const promptMessages = buildTrackerPrompt(transcript);
+    const promptMessages = buildTrackerPrompt(transcript, presetState.activePreset);
     diagnostics = {
       ...diagnostics,
+      lastPromptUsedPresetId: presetState.activePreset.id,
+      lastPromptUsedPresetName: presetState.activePreset.name,
       lastPromptPreview: settings.savePromptPreview ? promptPreview(promptMessages) : "[Prompt preview saving disabled]"
     };
     await tryPersistDiagnostics(diagnostics, userId);
@@ -1568,6 +1892,166 @@ async function clearSnapshot(chatId, userId, requestId) {
     stageError("storage", error);
   }
 }
+function normalizePresetDraft(value) {
+  const draft = {
+    name: typeof value.name === "string" ? value.name : "",
+    description: typeof value.description === "string" ? value.description : "",
+    version: typeof value.version === "string" ? value.version : "1.0",
+    jsonSchema: isRecord4(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
+    promptInstructions: typeof value.promptInstructions === "string" ? value.promptInstructions : ""
+  };
+  if (typeof value.id === "string") draft.id = value.id;
+  if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
+  if (typeof value.notes === "string") draft.notes = value.notes;
+  if (isRecord4(value.capabilities)) {
+    const capabilities = {};
+    if (typeof value.capabilities.supportsHtmlTemplate === "boolean") {
+      capabilities.supportsHtmlTemplate = value.capabilities.supportsHtmlTemplate;
+    }
+    if (typeof value.capabilities.supportsPartialRegeneration === "boolean") {
+      capabilities.supportsPartialRegeneration = value.capabilities.supportsPartialRegeneration;
+    }
+    if (typeof value.capabilities.supportsSequentialGeneration === "boolean") {
+      capabilities.supportsSequentialGeneration = value.capabilities.supportsSequentialGeneration;
+    }
+    if (Object.keys(capabilities).length > 0) draft.capabilities = capabilities;
+  }
+  return draft;
+}
+function validatePresetDraft(draft) {
+  const schemaValidation = validateJsonSchema(draft.jsonSchema);
+  if (!schemaValidation.ok) return schemaValidation.error;
+  if (!draft.name.trim()) return "Preset name is required.";
+  if (!draft.version.trim()) return "Preset version is required.";
+  if (!draft.promptInstructions.trim()) return "Prompt instructions are required.";
+  return null;
+}
+async function presetOperationChatId(chatId, userId) {
+  return resolveActiveChatId(chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+}
+async function recordPresetDiagnostic(chatId, userId, fields) {
+  const diagnostics = {
+    ...await loadDiagnostics(chatId, userId),
+    ...fields
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+}
+async function selectPreset(chatId, userId, presetId, requestId) {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const presets = await loadPresetCatalog(userId);
+  const selected = presetById(presets, presetId);
+  if (!selected) throw new Error(`Preset ${presetId} was not found.`);
+  await saveActivePresetState(resolvedChatId, selected.id, userId);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null
+  });
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+async function savePresetFromDraft(input) {
+  const resolvedChatId = await presetOperationChatId(input.chatId, input.userId);
+  const draft = normalizePresetDraft(input.draft);
+  const validationError = validatePresetDraft(draft);
+  if (validationError) {
+    await recordPresetDiagnostic(resolvedChatId, input.userId, {
+      lastPresetValidationError: validationError,
+      lastPresetFallbackReason: null
+    });
+    throw new Error(validationError);
+  }
+  const presets = await loadPresetCatalog(input.userId);
+  const existingIds = presets.map((preset2) => preset2.id);
+  const now = nowIso();
+  const existing = input.presetId ? presetById(presets, input.presetId) : null;
+  if (input.mode === "update") {
+    if (!existing) throw new Error("Preset to update was not found.");
+    if (!canModifyPreset(existing)) throw new Error("Built-in presets cannot be overwritten.");
+  }
+  const id = input.mode === "update" && input.presetId ? input.presetId : createPresetId(draft.name, existingIds);
+  const preset = draftToPreset(draft, {
+    id,
+    origin: existing?.origin === "user_imported" && input.mode === "update" ? "user_imported" : "user_created",
+    now,
+    existing: input.mode === "update" ? existing : null
+  });
+  await saveUserPreset(preset, input.userId);
+  await saveActivePresetState(resolvedChatId, preset.id, input.userId);
+  await recordPresetDiagnostic(resolvedChatId, input.userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null
+  });
+  await sendState(resolvedChatId, input.userId, "idle", null, input.requestId);
+}
+async function deletePreset(chatId, userId, presetId, requestId) {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const presets = await loadPresetCatalog(userId);
+  const preset = presetById(presets, presetId);
+  if (!preset) throw new Error("Preset to delete was not found.");
+  if (!canModifyPreset(preset)) throw new Error("Built-in presets cannot be deleted.");
+  await deleteUserPreset(presetId, userId);
+  const active = await loadActivePresetState(resolvedChatId, userId);
+  if (active.selectedPresetId === presetId) {
+    await saveActivePresetState(resolvedChatId, DEFAULT_TRACKER_PRESET_ID, userId);
+  }
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null
+  });
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+async function resetPreset(chatId, userId, requestId) {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  await saveActivePresetState(resolvedChatId, DEFAULT_TRACKER_PRESET_ID, userId);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null
+  });
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+async function importPreset(chatId, userId, importText, requestId) {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  let parsed;
+  try {
+    parsed = JSON.parse(importText);
+  } catch (error) {
+    const message = `Import JSON is invalid: ${errorMessage(error)}`;
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: message,
+      lastPresetFallbackReason: null
+    });
+    throw new Error(message);
+  }
+  const presets = await loadPresetCatalog(userId);
+  const imported = importTrackerPresetEnvelope(parsed, presets.map((preset) => preset.id), nowIso());
+  if (!imported.ok || !imported.preset) {
+    const message = imported.error ?? "Imported preset is invalid.";
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: message,
+      lastPresetFallbackReason: null
+    });
+    throw new Error(message);
+  }
+  await saveUserPreset(imported.preset, userId);
+  await saveActivePresetState(resolvedChatId, imported.preset.id, userId);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null
+  });
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+async function validatePreset(chatId, userId, draftValue, requestId) {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const draft = normalizePresetDraft(draftValue);
+  const validationError = validatePresetDraft(draft);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: validationError,
+    lastPresetFallbackReason: null
+  });
+  if (validationError) throw new Error(validationError);
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
 async function handleSettingsSave(payload, userId) {
   const settings = await saveSettings(payload.settings, userId).catch((error) => {
     stageError("storage", error);
@@ -1655,6 +2139,57 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "reset_settings") {
         await handleSettingsReset(payload, userId);
+        return;
+      }
+      if (payload.type === "select_preset") {
+        await selectPreset(chatId, userId, payload.presetId, payload.requestId);
+        return;
+      }
+      if (payload.type === "save_preset_as_new") {
+        await savePresetFromDraft({
+          chatId,
+          userId,
+          requestId: payload.requestId,
+          draft: payload.preset,
+          mode: "new"
+        });
+        return;
+      }
+      if (payload.type === "duplicate_preset") {
+        await savePresetFromDraft({
+          chatId,
+          userId,
+          requestId: payload.requestId,
+          draft: payload.preset,
+          mode: "duplicate"
+        });
+        return;
+      }
+      if (payload.type === "update_preset") {
+        await savePresetFromDraft({
+          chatId,
+          userId,
+          requestId: payload.requestId,
+          draft: payload.preset,
+          mode: "update",
+          presetId: payload.presetId
+        });
+        return;
+      }
+      if (payload.type === "delete_preset") {
+        await deletePreset(chatId, userId, payload.presetId, payload.requestId);
+        return;
+      }
+      if (payload.type === "reset_preset") {
+        await resetPreset(chatId, userId, payload.requestId);
+        return;
+      }
+      if (payload.type === "import_preset") {
+        await importPreset(chatId, userId, payload.importText, payload.requestId);
+        return;
+      }
+      if (payload.type === "validate_preset") {
+        await validatePreset(chatId, userId, payload.preset, payload.requestId);
         return;
       }
       await handleRefresh(payload, userId);

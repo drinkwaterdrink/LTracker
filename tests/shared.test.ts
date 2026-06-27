@@ -11,6 +11,15 @@ import {
 } from "../src/shared/auto";
 import { parseTrackerJson } from "../src/shared/parser";
 import {
+  canModifyPreset,
+  DEFAULT_TRACKER_PRESET,
+  DEFAULT_TRACKER_PRESET_ID,
+  exportTrackerPreset,
+  importTrackerPresetEnvelope,
+  resolveSelectedPreset,
+  validateJsonSchema,
+} from "../src/shared/presets";
+import {
   DEFAULT_SETTINGS,
   repairSettings,
 } from "../src/shared/settings";
@@ -30,7 +39,7 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.04",
+  extensionVersion: "0.05",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -59,7 +68,7 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.04",
+  extensionVersion: "0.05",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
@@ -396,4 +405,84 @@ test("context injection helper skips internal tracker generation", () => {
   assert.equal(shouldSkipContextForInternalGeneration({ input: { type: "quiet" } }, false), true);
   assert.equal(shouldSkipContextForInternalGeneration({ request: { metadata: { source: "ltracker" } } }, false), true);
   assert.equal(shouldSkipContextForInternalGeneration({ input: { type: "raw" } }, false), false);
+});
+
+test("built-in default preset loads with the default tracker schema", () => {
+  assert.equal(DEFAULT_TRACKER_PRESET.id, DEFAULT_TRACKER_PRESET_ID);
+  assert.equal(DEFAULT_TRACKER_PRESET.name, "Default Scene Tracker");
+  assert.deepEqual(DEFAULT_TRACKER_PRESET.jsonSchema, DEFAULT_TRACKER_SCHEMA);
+  assert.equal(DEFAULT_TRACKER_PRESET.origin, "built_in");
+});
+
+test("preset validation rejects invalid JSON schema", () => {
+  assert.equal(validateJsonSchema([]).ok, false);
+  assert.equal(validateJsonSchema("not schema").ok, false);
+  assert.equal(validateJsonSchema({ type: "object" }).ok, true);
+});
+
+test("preset import rejects wrong kind", () => {
+  const result = importTrackerPresetEnvelope({
+    kind: "wrong",
+    formatVersion: 1,
+    preset: DEFAULT_TRACKER_PRESET,
+  }, [], "2026-06-27T00:00:00.000Z");
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /kind/);
+});
+
+test("preset import rejects wrong format version", () => {
+  const result = importTrackerPresetEnvelope({
+    kind: "ltracker_schema_preset",
+    formatVersion: 99,
+    preset: DEFAULT_TRACKER_PRESET,
+  }, [], "2026-06-27T00:00:00.000Z");
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /format version/);
+});
+
+test("preset import resolves id conflicts and preserves HTML as text", () => {
+  const envelope = exportTrackerPreset({
+    ...DEFAULT_TRACKER_PRESET,
+    id: "custom",
+    origin: "user_created",
+    htmlTemplate: "<div>{{scene.location}}</div>",
+  });
+  const result = importTrackerPresetEnvelope(envelope, ["custom"], "2026-06-27T00:00:00.000Z");
+  assert.equal(result.ok, true);
+  assert.notEqual(result.preset?.id, "custom");
+  assert.equal(result.preset?.origin, "user_imported");
+  assert.equal(result.preset?.htmlTemplate, "<div>{{scene.location}}</div>");
+});
+
+test("built-in preset cannot be overwritten", () => {
+  assert.equal(canModifyPreset(DEFAULT_TRACKER_PRESET), false);
+});
+
+test("selected missing preset falls back to default", () => {
+  const resolved = resolveSelectedPreset([DEFAULT_TRACKER_PRESET], "missing");
+  assert.equal(resolved.preset.id, DEFAULT_TRACKER_PRESET_ID);
+  assert.match(resolved.fallbackReason ?? "", /missing/);
+});
+
+test("buildTrackerPrompt includes selected preset schema and instructions", () => {
+  const preset = {
+    ...DEFAULT_TRACKER_PRESET,
+    id: "custom",
+    name: "Custom Tracker",
+    jsonSchema: {
+      scene: {
+        location: "",
+      },
+      custom_state: "",
+    },
+    promptInstructions: "Track the ritual pressure and unresolved magical bargains.",
+    htmlTemplate: "<section>Do not render me</section>",
+  };
+  const prompt = buildTrackerPrompt("[0 USER Trent]\nHello", preset);
+  const joined = prompt.map((message) => message.content).join("\n");
+  assert.match(joined, /Custom Tracker/);
+  assert.match(joined, /custom_state/);
+  assert.match(joined, /ritual pressure/);
+  assert.match(joined, /Return JSON only/);
+  assert.doesNotMatch(joined, /<section>Do not render me<\/section>/);
 });
