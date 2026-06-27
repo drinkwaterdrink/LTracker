@@ -1,13 +1,16 @@
 import { defaultTrackerSchemaJson } from "./defaultSchema";
 import type { PromptMessage, TranscriptMessage } from "./types";
 
-const MAX_MESSAGE_CHARS = 8_000;
+const DEFAULT_MAX_MESSAGE_CHARS = 8_000;
 
-export function buildCompactTranscript(messages: TranscriptMessage[]): string {
+export function buildCompactTranscript(
+  messages: TranscriptMessage[],
+  maxMessageChars = DEFAULT_MAX_MESSAGE_CHARS,
+): string {
   return messages.map((message) => {
     const role = message.role === "user" ? "USER" : "ASSISTANT";
     const name = message.name ? ` ${message.name}` : "";
-    const content = message.content.trim().slice(0, MAX_MESSAGE_CHARS);
+    const content = message.content.trim().slice(0, maxMessageChars);
     return `[${message.index} ${role}${name}]\n${content}`;
   }).join("\n\n");
 }

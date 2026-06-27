@@ -7,3 +7,9 @@ export function encodeStorageSegment(value: string): string {
 export function snapshotPath(chatId: string): string {
   return `chats/${encodeStorageSegment(chatId)}/latest-snapshot.json`;
 }
+
+export function diagnosticsPath(chatId: string): string {
+  return `chats/${encodeStorageSegment(chatId)}/diagnostics.json`;
+}
+
+export const SETTINGS_PATH = "settings.json";

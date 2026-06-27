@@ -1,17 +1,19 @@
 {
   "name": "ltracker",
-  "version": "0.01",
+  "version": "0.02",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "validate": "npm run typecheck && npm run build && node scripts/scan-dist.mjs"
+    "validate": "npm run typecheck && npm test && npm run build && node scripts/scan-dist.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",
     "esbuild": "^0.25.5",
     "lumiverse-spindle-types": "0.5.21",
+    "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }
 }

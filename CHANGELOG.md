@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.02 - MVP hardening and diagnostics
+- Added diagnostics panel.
+- Added generator settings.
+- Added prompt and raw-output preview.
+- Added clear current chat snapshot action.
+- Hardened stale-job and cancellation handling.
+- Added structured error diagnostics.
+- Added parser and prompt tests.
+- Updated validation to run tests.
+
 ## 0.01 - Initial MVP scaffold
 - Created initial Lumiverse Spindle extension scaffold.
 - Added LTracker drawer tab.
