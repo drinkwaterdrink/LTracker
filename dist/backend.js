@@ -228,7 +228,88 @@ function emptyDecision(skippedReason) {
 
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
-var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.10 while the Lumiverse context handler return contract is being verified.";
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.11 while the Lumiverse context handler return contract is being verified.";
+
+// src/shared/types.ts
+var EXTENSION_VERSION = "0.11";
+var STORAGE_SCHEMA_VERSION = 1;
+var SETTINGS_SCHEMA_VERSION = 1;
+var SPINDLE_TYPES_VERSION = "0.5.21";
+
+// src/shared/embeddedTrackerTag.ts
+var LTRACKER_TAG_NAME = "ltracker";
+var LTRACKER_TAG_TYPE = "state";
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function escapeAttribute(value) {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function normalizeAttrValue(value) {
+  return value.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+function parseTagAttributes(raw) {
+  const attrs = {};
+  const pattern = /([a-zA-Z_:][a-zA-Z0-9_.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+  let match;
+  while ((match = pattern.exec(raw)) !== null) {
+    const key = match[1]?.toLowerCase();
+    if (!key) continue;
+    attrs[key] = normalizeAttrValue(match[2] ?? match[3] ?? match[4] ?? "");
+  }
+  return attrs;
+}
+function buildLTrackerTag(jsonText, swipeKey, version = EXTENSION_VERSION) {
+  return `<${LTRACKER_TAG_NAME} type="${LTRACKER_TAG_TYPE}" version="${escapeAttribute(version)}" swipe="${escapeAttribute(swipeKey)}">
+${jsonText.trim()}
+</${LTRACKER_TAG_NAME}>`;
+}
+function findLTrackerTags(content) {
+  const tag = escapeRegex(LTRACKER_TAG_NAME);
+  const pattern = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}>`, "gi");
+  const matches = [];
+  let match;
+  while ((match = pattern.exec(content)) !== null) {
+    const attrs = parseTagAttributes(match[1] ?? "");
+    if (attrs.type && attrs.type !== LTRACKER_TAG_TYPE) continue;
+    matches.push({
+      fullMatch: match[0],
+      content: (match[2] ?? "").trim(),
+      attrs,
+      start: match.index,
+      end: match.index + match[0].length
+    });
+  }
+  return matches;
+}
+function findLTrackerTagForSwipe(content, swipeKey) {
+  return findLTrackerTags(content).find((tag) => (tag.attrs.swipe || "default") === swipeKey) ?? null;
+}
+function upsertLTrackerTag(content, jsonText, swipeKey, placement = "append") {
+  const tag = buildLTrackerTag(jsonText, swipeKey);
+  const existing = findLTrackerTagForSwipe(content, swipeKey);
+  if (existing) {
+    return {
+      content: `${content.slice(0, existing.start)}${tag}${content.slice(existing.end)}`,
+      inserted: false,
+      replaced: true
+    };
+  }
+  const trimmed = content.trimEnd();
+  return {
+    content: placement === "prepend" ? `${tag}
+
+${content.trimStart()}` : `${trimmed}${trimmed ? "\n\n" : ""}${tag}`,
+    inserted: true,
+    replaced: false
+  };
+}
+function removeLTrackerTag(content, swipeKey) {
+  const existing = findLTrackerTagForSwipe(content, swipeKey);
+  if (!existing) return { content, removed: false };
+  const next = `${content.slice(0, existing.start)}${content.slice(existing.end)}`.replace(/\n{3,}/g, "\n\n").trimEnd();
+  return { content: next, removed: true };
+}
 
 // src/shared/htmlTemplateRenderer.ts
 var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
@@ -289,19 +370,52 @@ var DANGEROUS_TAGS = [
 var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "color",
   "background",
+  "background-color",
   "border",
+  "border-top",
+  "border-bottom",
+  "border-left",
+  "border-right",
+  "border-color",
   "border-radius",
+  "box-shadow",
   "padding",
+  "padding-top",
+  "padding-bottom",
+  "padding-left",
+  "padding-right",
   "margin",
+  "margin-top",
+  "margin-bottom",
+  "margin-left",
+  "margin-right",
+  "font-size",
   "font-weight",
   "font-style",
+  "line-height",
+  "letter-spacing",
   "text-align",
+  "text-transform",
   "display",
   "gap",
+  "row-gap",
+  "column-gap",
   "grid-template-columns",
+  "grid-template-rows",
   "flex-direction",
   "align-items",
-  "justify-content"
+  "justify-content",
+  "width",
+  "max-width",
+  "min-width",
+  "height",
+  "max-height",
+  "min-height",
+  "overflow",
+  "overflow-wrap",
+  "word-break",
+  "white-space",
+  "opacity"
 ]);
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -476,11 +590,11 @@ function sanitizeStyle(value, warnings) {
       warnings.push(`Removed unsupported style property ${property}.`);
       continue;
     }
-    if (lowerValue.includes("url(") || lowerValue.includes("expression") || lowerValue.includes("@") || /[<>{}]/.test(rawValue)) {
+    if (lowerValue.includes("url(") || lowerValue.includes("expression") || lowerValue.includes("@import") || lowerValue.includes("javascript:") || lowerValue.includes("behavior:") || lowerValue.includes("-moz-binding") || /[<>{}]/.test(rawValue)) {
       warnings.push(`Removed unsafe style value for ${property}.`);
       continue;
     }
-    if (!/^[\w\s#.,%()/-]+$/.test(rawValue)) {
+    if (!/^[\w\s#.,%()+\-/*:'"]+$/.test(rawValue)) {
       warnings.push(`Removed unsupported style value for ${property}.`);
       continue;
     }
@@ -488,7 +602,19 @@ function sanitizeStyle(value, warnings) {
   }
   return declarations.length > 0 ? declarations.join("; ") : null;
 }
-function sanitizeAttributes(raw, allowInlineStyles, warnings) {
+function summarizeWarnings(warnings, maxWarnings = 20) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const warning of warnings) {
+    counts.set(warning, (counts.get(warning) ?? 0) + 1);
+  }
+  const summarized = [...counts.entries()].map(([warning, count]) => count > 1 ? `${warning} x ${count}` : warning);
+  if (summarized.length <= maxWarnings) return summarized;
+  return [
+    ...summarized.slice(0, Math.max(0, maxWarnings)),
+    `${summarized.length - maxWarnings} more render warnings hidden.`
+  ];
+}
+function sanitizeAttributes(raw, tag, allowInlineStyles, warnings) {
   const attributes = [];
   for (const attribute of attributePairs(raw)) {
     if (attribute.name.startsWith("on")) {
@@ -506,6 +632,14 @@ function sanitizeAttributes(raw, allowInlineStyles, warnings) {
       }
       const style = sanitizeStyle(attribute.value, warnings);
       if (style) attributes.push(`style="${escapeHtml(style)}"`);
+      continue;
+    }
+    if (attribute.name === "open") {
+      if (tag === "details") {
+        attributes.push("open");
+      } else {
+        warnings.push("Removed unsupported attribute open.");
+      }
       continue;
     }
     if (!ALLOWED_ATTRIBUTES.has(attribute.name)) {
@@ -529,10 +663,13 @@ function sanitizeHtml(html, options = {}) {
       }
       if (closing) return `</${tag}>`;
       if (VOID_TAGS.has(tag)) return `<${tag}>`;
-      return `<${tag}${sanitizeAttributes(rawAttributes, options.allowInlineStyles === true, warnings)}>`;
+      return `<${tag}${sanitizeAttributes(rawAttributes, tag, options.allowInlineStyles === true, warnings)}>`;
     }
   );
-  return { html: sanitized, warnings };
+  return {
+    html: sanitized,
+    warnings: options.deduplicateWarnings === true ? summarizeWarnings(warnings, options.maxWarnings) : warnings
+  };
 }
 function renderHtmlTemplate(input, options = {}) {
   const warnings = [];
@@ -552,7 +689,12 @@ function renderHtmlTemplate(input, options = {}) {
       };
     }
     const rendered = renderTemplate(input.template, input.snapshotData, placeholder);
-    const sanitized = sanitizeHtml(rendered, { allowInlineStyles: options.allowInlineStyles === true });
+    const sanitizeOptions = {
+      allowInlineStyles: options.allowInlineStyles === true,
+      deduplicateWarnings: options.deduplicateWarnings === true
+    };
+    if (typeof options.maxWarnings === "number") sanitizeOptions.maxWarnings = options.maxWarnings;
+    const sanitized = sanitizeHtml(rendered, sanitizeOptions);
     warnings.push(...sanitized.warnings);
     const truncatedHtml = truncateSafe2(sanitized.html, maxRenderedChars);
     if (truncatedHtml.truncated) warnings.push("Sanitized HTML preview was truncated.");
@@ -990,7 +1132,9 @@ function renderMessageTracker(input) {
     }, {
       missingValuePlaceholder: "",
       maxRenderedChars: input.settings.maxRenderedChars,
-      allowInlineStyles: false
+      allowInlineStyles: input.settings.allowInlineStyles,
+      deduplicateWarnings: input.settings.deduplicateRenderWarnings,
+      maxWarnings: input.settings.showRenderWarningsInDiagnosticsOnly ? 8 : 20
     });
     warnings.push(...result.warnings);
     errors.push(...result.errors);
@@ -1432,12 +1576,6 @@ function resolveSelectedPreset(presets, selectedPresetId) {
   };
 }
 
-// src/shared/types.ts
-var EXTENSION_VERSION = "0.10";
-var STORAGE_SCHEMA_VERSION = 1;
-var SETTINGS_SCHEMA_VERSION = 1;
-var SPINDLE_TYPES_VERSION = "0.5.21";
-
 // src/shared/settings.ts
 var SETTINGS_LIMITS = {
   recentMessageLimit: { min: 1, max: 200, default: 24 },
@@ -1487,9 +1625,14 @@ var DEFAULT_SETTINGS = {
     enabled: true,
     useDomInjection: true,
     fallbackToIframeWidget: true,
+    attachmentMode: "sidecar_snapshot",
+    displayMode: "inline_full",
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
+    allowInlineStyles: true,
+    deduplicateRenderWarnings: true,
+    showRenderWarningsInDiagnosticsOnly: true,
     collapsedByDefault: true,
     compactCollapsedHeader: true,
     showTimestamp: true,
@@ -1524,6 +1667,8 @@ function repairSettings(value) {
   const messageDisplayPlacement = messageDisplaySource.placement === "bottom" || messageDisplaySource.placement === "top" ? messageDisplaySource.placement : DEFAULT_SETTINGS.messageDisplay.placement;
   const messageDisplaySourceSetting = messageDisplaySource.source === "latest_chat_snapshot" || messageDisplaySource.source === "message_attached_snapshot" ? messageDisplaySource.source : DEFAULT_SETTINGS.messageDisplay.source;
   const messageDisplayRenderMode = messageDisplaySource.renderMode === "compact_text" || messageDisplaySource.renderMode === "pretty_json" || messageDisplaySource.renderMode === "html_template" ? messageDisplaySource.renderMode : DEFAULT_SETTINGS.messageDisplay.renderMode;
+  const messageDisplayAttachmentMode = messageDisplaySource.attachmentMode === "embedded_tracker_tag" || messageDisplaySource.attachmentMode === "both" || messageDisplaySource.attachmentMode === "sidecar_snapshot" ? messageDisplaySource.attachmentMode : DEFAULT_SETTINGS.messageDisplay.attachmentMode;
+  const messageDisplayDisplayMode = messageDisplaySource.displayMode === "inline_button_popover" || messageDisplaySource.displayMode === "drawer_history_only" || messageDisplaySource.displayMode === "inline_full" ? messageDisplaySource.displayMode : DEFAULT_SETTINGS.messageDisplay.displayMode;
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -1596,9 +1741,14 @@ function repairSettings(value) {
       enabled: typeof messageDisplaySource.enabled === "boolean" ? messageDisplaySource.enabled : DEFAULT_SETTINGS.messageDisplay.enabled,
       useDomInjection: typeof messageDisplaySource.useDomInjection === "boolean" ? messageDisplaySource.useDomInjection : DEFAULT_SETTINGS.messageDisplay.useDomInjection,
       fallbackToIframeWidget: typeof messageDisplaySource.fallbackToIframeWidget === "boolean" ? messageDisplaySource.fallbackToIframeWidget : DEFAULT_SETTINGS.messageDisplay.fallbackToIframeWidget,
+      attachmentMode: messageDisplayAttachmentMode,
+      displayMode: messageDisplayDisplayMode,
       placement: messageDisplayPlacement,
       source: messageDisplaySourceSetting,
       renderMode: messageDisplayRenderMode,
+      allowInlineStyles: typeof messageDisplaySource.allowInlineStyles === "boolean" ? messageDisplaySource.allowInlineStyles : DEFAULT_SETTINGS.messageDisplay.allowInlineStyles,
+      deduplicateRenderWarnings: typeof messageDisplaySource.deduplicateRenderWarnings === "boolean" ? messageDisplaySource.deduplicateRenderWarnings : DEFAULT_SETTINGS.messageDisplay.deduplicateRenderWarnings,
+      showRenderWarningsInDiagnosticsOnly: typeof messageDisplaySource.showRenderWarningsInDiagnosticsOnly === "boolean" ? messageDisplaySource.showRenderWarningsInDiagnosticsOnly : DEFAULT_SETTINGS.messageDisplay.showRenderWarningsInDiagnosticsOnly,
       collapsedByDefault: typeof messageDisplaySource.collapsedByDefault === "boolean" ? messageDisplaySource.collapsedByDefault : DEFAULT_SETTINGS.messageDisplay.collapsedByDefault,
       compactCollapsedHeader: typeof messageDisplaySource.compactCollapsedHeader === "boolean" ? messageDisplaySource.compactCollapsedHeader : DEFAULT_SETTINGS.messageDisplay.compactCollapsedHeader,
       showTimestamp: typeof messageDisplaySource.showTimestamp === "boolean" ? messageDisplaySource.showTimestamp : DEFAULT_SETTINGS.messageDisplay.showTimestamp,
@@ -1780,7 +1930,8 @@ function isFrontendMessage(payload) {
     "regenerate_message_tracker",
     "cancel_tracker_generation",
     "delete_message_tracker",
-    "save_edited_message_tracker"
+    "save_edited_message_tracker",
+    "embedded_tracker_tag_intercepted"
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if ([
@@ -1800,7 +1951,8 @@ function isFrontendMessage(payload) {
     "regenerate_message_tracker",
     "cancel_tracker_generation",
     "delete_message_tracker",
-    "save_edited_message_tracker"
+    "save_edited_message_tracker",
+    "embedded_tracker_tag_intercepted"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
   if (payload.type === "save_settings" && !isRecord7(payload.settings)) return false;
   if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord7(payload.preset)) return false;
@@ -1812,6 +1964,7 @@ function isFrontendMessage(payload) {
   if (payload.type === "cancel_tracker_generation" && ("swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
   if (payload.type === "delete_message_tracker" && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string")) return false;
   if (payload.type === "save_edited_message_tracker" && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string" || typeof payload.jsonText !== "string")) return false;
+  if (payload.type === "embedded_tracker_tag_intercepted" && ("messageId" in payload && payload.messageId !== null && typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && typeof payload.swipeKey !== "string" || typeof payload.jsonText !== "string")) return false;
   if (payload.type === "render_template" && "source" in payload && payload.source !== void 0 && payload.source !== "latest_chat_snapshot" && payload.source !== "latest_message_snapshot") return false;
   return true;
 }
@@ -1918,7 +2071,21 @@ function defaultDiagnostics(chatId) {
     lastSwipeKey: null,
     lastSwipeKeySource: null,
     swipeTrackerIndexCount: 0,
-    activeTrackerJobs: []
+    activeTrackerJobs: [],
+    lastPlacementRequested: null,
+    lastPlacementResolved: null,
+    lastPlacementRenderAttemptAt: null,
+    lastPlacementRenderResult: null,
+    lastPlacementError: null,
+    lastMountPointStrategy: null,
+    lastEmbeddedTagWriteAt: null,
+    lastEmbeddedTagWriteMessageId: null,
+    lastEmbeddedTagWriteSwipeKey: null,
+    lastEmbeddedTagError: null,
+    lastTagInterceptAt: null,
+    lastTagInterceptMessageId: null,
+    lastTagInterceptSwipeKey: null,
+    lastTagInterceptError: null
   };
 }
 function stringOrNull2(value) {
@@ -1965,6 +2132,9 @@ function messageWidgetPlacementResolved(value) {
 }
 function messageDisplayRenderer(value) {
   return value === "dom_injection" || value === "iframe_widget" || value === "drawer_history" ? value : "drawer_history";
+}
+function mountPointStrategy(value) {
+  return value === "official_message_body" || value === "official_message_element" || value === "bubble_adapter" || value === "widget_fallback" || value === "drawer_only" ? value : null;
 }
 function activeTrackerJobsOrEmpty(value) {
   if (!Array.isArray(value)) return [];
@@ -2081,7 +2251,21 @@ function repairDiagnostics(value, chatId) {
     lastSwipeKey: stringOrNull2(value.lastSwipeKey),
     lastSwipeKeySource: stringOrNull2(value.lastSwipeKeySource),
     swipeTrackerIndexCount: typeof value.swipeTrackerIndexCount === "number" && Number.isFinite(value.swipeTrackerIndexCount) ? Math.max(0, Math.round(value.swipeTrackerIndexCount)) : 0,
-    activeTrackerJobs: activeTrackerJobsOrEmpty(value.activeTrackerJobs)
+    activeTrackerJobs: activeTrackerJobsOrEmpty(value.activeTrackerJobs),
+    lastPlacementRequested: messageDisplayPlacementOrNull(value.lastPlacementRequested),
+    lastPlacementResolved: messageDisplayPlacementOrNull(value.lastPlacementResolved),
+    lastPlacementRenderAttemptAt: stringOrNull2(value.lastPlacementRenderAttemptAt),
+    lastPlacementRenderResult: stringOrNull2(value.lastPlacementRenderResult),
+    lastPlacementError: stringOrNull2(value.lastPlacementError),
+    lastMountPointStrategy: mountPointStrategy(value.lastMountPointStrategy),
+    lastEmbeddedTagWriteAt: stringOrNull2(value.lastEmbeddedTagWriteAt),
+    lastEmbeddedTagWriteMessageId: stringOrNull2(value.lastEmbeddedTagWriteMessageId),
+    lastEmbeddedTagWriteSwipeKey: stringOrNull2(value.lastEmbeddedTagWriteSwipeKey),
+    lastEmbeddedTagError: stringOrNull2(value.lastEmbeddedTagError),
+    lastTagInterceptAt: stringOrNull2(value.lastTagInterceptAt),
+    lastTagInterceptMessageId: stringOrNull2(value.lastTagInterceptMessageId),
+    lastTagInterceptSwipeKey: stringOrNull2(value.lastTagInterceptSwipeKey),
+    lastTagInterceptError: stringOrNull2(value.lastTagInterceptError)
   };
 }
 async function getSettings(userId) {
@@ -2549,6 +2733,84 @@ async function saveMessageAttachedSnapshotWithIndex(snapshot, userId) {
   });
   await saveMessageSnapshotIndex(snapshot.chatId, nextIndex, userId);
   return nextIndex;
+}
+function shouldSaveSidecarSnapshot(settings) {
+  return settings.messageDisplay.attachmentMode === "sidecar_snapshot" || settings.messageDisplay.attachmentMode === "both";
+}
+function shouldWriteEmbeddedTrackerTag(settings) {
+  return settings.messageDisplay.attachmentMode === "embedded_tracker_tag" || settings.messageDisplay.attachmentMode === "both";
+}
+function resolveSwipeContentIndex(message, swipeKey) {
+  const swipes = Array.isArray(message.swipes) ? message.swipes : [];
+  const activeIndex = typeof message.swipe_id === "number" && Number.isInteger(message.swipe_id) ? Math.max(0, message.swipe_id) : 0;
+  const activeIdentity = deriveSwipeTrackerIdentity(message.chat_id, message);
+  if (activeIdentity.swipeKey === swipeKey) return Math.min(activeIndex, Math.max(0, swipes.length - 1));
+  const indexMatch = /^index-(\d+)$/.exec(swipeKey);
+  if (indexMatch) {
+    const index = Number(indexMatch[1]);
+    if (Number.isInteger(index) && index >= 0 && index < swipes.length) return index;
+  }
+  const hashMatch = /^hash-(.+)$/.exec(swipeKey);
+  if (hashMatch) {
+    const hash = hashMatch[1];
+    const found = swipes.findIndex((content) => hashSwipeContent(content) === hash);
+    if (found >= 0) return found;
+  }
+  return Math.min(activeIndex, Math.max(0, swipes.length - 1));
+}
+async function updateMessageSwipeContent(chatId, messageId, swipeKey, mutate) {
+  const messages = await readChatMessages(chatId);
+  const message = messages.find((item) => item.id === messageId);
+  if (!message) throw new LTrackerStageError("read_messages", "Message not found for embedded tracker update.");
+  if (message.is_user) throw new LTrackerStageError("read_messages", "Embedded tracker tags can only be written to assistant messages.");
+  const swipes = Array.isArray(message.swipes) && message.swipes.length > 0 ? [...message.swipes] : [message.content ?? ""];
+  const swipeIndex = resolveSwipeContentIndex(message, swipeKey);
+  const current = swipes[swipeIndex] ?? message.content ?? "";
+  const next = mutate(current);
+  if (!next.changed || next.content === current) return { changed: false, swipeIndex };
+  swipes[swipeIndex] = next.content;
+  const patchSwipeIndex = typeof message.swipe_id === "number" && Number.isInteger(message.swipe_id) && message.swipe_id >= 0 && message.swipe_id < swipes.length ? message.swipe_id : swipeIndex;
+  await spindle.chat.updateMessage(chatId, messageId, {
+    swipes,
+    swipe_id: patchSwipeIndex,
+    skipChunkRebuild: true
+  });
+  return { changed: true, swipeIndex };
+}
+async function writeEmbeddedTrackerTag(attachedSnapshot, userId) {
+  const jsonText = JSON.stringify(attachedSnapshot.snapshot.data, null, 2);
+  await updateMessageSwipeContent(
+    attachedSnapshot.chatId,
+    attachedSnapshot.messageId,
+    attachedSnapshot.swipeKey,
+    (content) => {
+      const next = upsertLTrackerTag(content, jsonText, attachedSnapshot.swipeKey, "append");
+      return { content: next.content, changed: next.inserted || next.replaced };
+    }
+  );
+  const diagnostics = {
+    ...await loadDiagnostics(attachedSnapshot.chatId, userId),
+    lastEmbeddedTagWriteAt: nowIso(),
+    lastEmbeddedTagWriteMessageId: attachedSnapshot.messageId,
+    lastEmbeddedTagWriteSwipeKey: attachedSnapshot.swipeKey,
+    lastEmbeddedTagError: null
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+}
+async function removeEmbeddedTrackerTag(chatId, messageId, swipeKey, userId) {
+  const result = await updateMessageSwipeContent(chatId, messageId, swipeKey, (content) => {
+    const next = removeLTrackerTag(content, swipeKey);
+    return { content: next.content, changed: next.removed };
+  });
+  if (!result.changed) return;
+  const diagnostics = {
+    ...await loadDiagnostics(chatId, userId),
+    lastEmbeddedTagWriteAt: nowIso(),
+    lastEmbeddedTagWriteMessageId: messageId,
+    lastEmbeddedTagWriteSwipeKey: swipeKey,
+    lastEmbeddedTagError: null
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
 }
 function promptPreview(messages) {
   return messages.map((message) => {
@@ -3097,18 +3359,33 @@ async function generateTracker(chatId, userId, trigger) {
         snapshot,
         attachedAt
       };
-      const index = await saveMessageAttachedSnapshotWithIndex(attachedSnapshot, userId);
+      let embeddedTagWriteAt = null;
+      const index = shouldSaveSidecarSnapshot(settings) ? await saveMessageAttachedSnapshotWithIndex(attachedSnapshot, userId) : await loadMessageSnapshotIndex(resolvedChatId, userId);
+      if (shouldWriteEmbeddedTrackerTag(settings)) {
+        try {
+          await writeEmbeddedTrackerTag(attachedSnapshot, userId);
+          embeddedTagWriteAt = nowIso();
+        } catch (error) {
+          diagnostics = {
+            ...diagnostics,
+            lastEmbeddedTagError: errorMessage(error)
+          };
+        }
+      }
       diagnostics = {
         ...diagnostics,
         latestAttachedMessageId: trigger.sourceMessageId,
         latestAttachedMessageIndex: trigger.sourceMessageIndex,
         latestAttachedSnapshotAt: attachedAt,
-        latestAttachedSnapshotStorageKey: storageKey,
+        latestAttachedSnapshotStorageKey: shouldSaveSidecarSnapshot(settings) ? storageKey : null,
         messageSnapshotIndexCount: index.length,
         swipeTrackerIndexCount: index.length,
         lastSwipeDetectedMessageId: trigger.sourceMessageId,
         lastSwipeKey: trigger.swipeKey,
         lastSwipeKeySource: trigger.swipeKeySource,
+        lastEmbeddedTagWriteAt: embeddedTagWriteAt ?? diagnostics.lastEmbeddedTagWriteAt,
+        lastEmbeddedTagWriteMessageId: shouldWriteEmbeddedTrackerTag(settings) ? trigger.sourceMessageId : diagnostics.lastEmbeddedTagWriteMessageId,
+        lastEmbeddedTagWriteSwipeKey: shouldWriteEmbeddedTrackerTag(settings) ? trigger.swipeKey : diagnostics.lastEmbeddedTagWriteSwipeKey,
         activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
       };
       if (trigger.kind === "widget") {
@@ -3543,6 +3820,17 @@ async function deleteMessageTracker(payload, userId) {
   const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
   const nextIndex = removeMessageSnapshotIndexEntry(index, payload.messageId, payload.swipeKey);
   await saveMessageSnapshotIndex(resolvedChatId, nextIndex, userId);
+  const settings = await getSettings(userId);
+  if (shouldWriteEmbeddedTrackerTag(settings)) {
+    try {
+      await removeEmbeddedTrackerTag(resolvedChatId, payload.messageId, payload.swipeKey, userId);
+    } catch (error) {
+      await tryPersistDiagnostics({
+        ...await loadDiagnostics(resolvedChatId, userId),
+        lastEmbeddedTagError: errorMessage(error)
+      }, userId);
+    }
+  }
   const diagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
     lastDeletedTrackerMessageId: payload.messageId,
@@ -3578,6 +3866,17 @@ async function saveEditedMessageTracker(payload, userId) {
     }
   };
   const index = await saveMessageAttachedSnapshotWithIndex(edited, userId);
+  const settings = await getSettings(userId);
+  if (shouldWriteEmbeddedTrackerTag(settings)) {
+    try {
+      await writeEmbeddedTrackerTag(edited, userId);
+    } catch (error) {
+      await tryPersistDiagnostics({
+        ...await loadDiagnostics(resolvedChatId, userId),
+        lastEmbeddedTagError: errorMessage(error)
+      }, userId);
+    }
+  }
   const diagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
     lastEditedTrackerMessageId: payload.messageId,
@@ -3610,6 +3909,84 @@ async function cancelTrackerGeneration(payload, userId) {
   job.cancelReason = job.sourceKind === "widget" ? "Widget regeneration was cancelled." : "Tracker generation was cancelled.";
   job.controller.abort();
   await sendState(resolvedChatId, userId, "generating", null, payload.requestId);
+}
+async function handleEmbeddedTrackerTagIntercepted(payload, userId) {
+  if (payload.isStreaming) return;
+  const resolvedChatId = payload.chatId ? payload.chatId : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
+  rememberActiveChat(userId, resolvedChatId);
+  const messageId = payload.messageId;
+  const swipeKey = payload.swipeKey || DEFAULT_SWIPE_KEY;
+  let parsed = null;
+  try {
+    parsed = parseTrackerJson(payload.jsonText);
+  } catch (error) {
+    if (resolvedChatId) {
+      await tryPersistDiagnostics({
+        ...await loadDiagnostics(resolvedChatId, userId),
+        lastTagInterceptAt: nowIso(),
+        lastTagInterceptMessageId: messageId,
+        lastTagInterceptSwipeKey: swipeKey,
+        lastTagInterceptError: errorMessage(error)
+      }, userId);
+    }
+    return;
+  }
+  if (!resolvedChatId || !messageId) return;
+  const settings = await getSettings(userId);
+  const presetState = await resolveActivePreset(resolvedChatId, userId);
+  let index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  if (settings.messageDisplay.attachmentMode === "both") {
+    const attachedAt = nowIso();
+    const attachedSnapshot = {
+      schemaVersion: STORAGE_SCHEMA_VERSION,
+      extensionVersion: EXTENSION_VERSION,
+      chatId: resolvedChatId,
+      messageId,
+      messageIndex: null,
+      swipeKey,
+      swipeIndex: null,
+      swipeId: null,
+      swipeContentHash: null,
+      swipeKeySource: "unknown",
+      presetId: presetState.activePreset.id,
+      presetName: presetState.activePreset.name,
+      presetVersion: presetState.activePreset.version,
+      trigger: {
+        kind: "widget",
+        requestId: payload.requestId,
+        sourceMessageId: messageId,
+        sourceMessageIndex: null,
+        swipeKey,
+        swipeIndex: null,
+        swipeId: null,
+        swipeContentHash: null,
+        swipeKeySource: "unknown"
+      },
+      snapshot: {
+        schemaVersion: STORAGE_SCHEMA_VERSION,
+        extensionVersion: EXTENSION_VERSION,
+        chatId: resolvedChatId,
+        createdAt: attachedAt,
+        messageCount: 1,
+        sourceMessageIds: [messageId],
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        presetVersion: presetState.activePreset.version,
+        data: parsed
+      },
+      attachedAt
+    };
+    index = await saveMessageAttachedSnapshotWithIndex(attachedSnapshot, userId);
+  }
+  await tryPersistDiagnostics({
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastTagInterceptAt: nowIso(),
+    lastTagInterceptMessageId: messageId,
+    lastTagInterceptSwipeKey: swipeKey,
+    lastTagInterceptError: null,
+    messageSnapshotIndexCount: index.length,
+    swipeTrackerIndexCount: index.length
+  }, userId);
 }
 function disposeBackend() {
   if (disposed) return;
@@ -3749,6 +4126,10 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "save_edited_message_tracker") {
         await saveEditedMessageTracker(payload, userId);
+        return;
+      }
+      if (payload.type === "embedded_tracker_tag_intercepted") {
+        await handleEmbeddedTrackerTagIntercepted(payload, userId);
         return;
       }
       await handleRefresh(payload, userId);

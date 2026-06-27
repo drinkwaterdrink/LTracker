@@ -58,19 +58,52 @@ const DANGEROUS_TAGS = [
 const SAFE_STYLE_PROPERTIES = new Set([
   "color",
   "background",
+  "background-color",
   "border",
+  "border-top",
+  "border-bottom",
+  "border-left",
+  "border-right",
+  "border-color",
   "border-radius",
+  "box-shadow",
   "padding",
+  "padding-top",
+  "padding-bottom",
+  "padding-left",
+  "padding-right",
   "margin",
+  "margin-top",
+  "margin-bottom",
+  "margin-left",
+  "margin-right",
+  "font-size",
   "font-weight",
   "font-style",
+  "line-height",
+  "letter-spacing",
   "text-align",
+  "text-transform",
   "display",
   "gap",
+  "row-gap",
+  "column-gap",
   "grid-template-columns",
+  "grid-template-rows",
   "flex-direction",
   "align-items",
   "justify-content",
+  "width",
+  "max-width",
+  "min-width",
+  "height",
+  "max-height",
+  "min-height",
+  "overflow",
+  "overflow-wrap",
+  "word-break",
+  "white-space",
+  "opacity",
 ]);
 
 export interface HtmlTemplateRenderInput {
@@ -84,6 +117,8 @@ export interface HtmlTemplateRenderOptions {
   missingValuePlaceholder?: string;
   maxRenderedChars?: number;
   allowInlineStyles?: boolean;
+  deduplicateWarnings?: boolean;
+  maxWarnings?: number;
 }
 
 export interface HtmlTemplateRenderResult {
@@ -318,13 +353,16 @@ function sanitizeStyle(value: string, warnings: string[]): string | null {
     if (
       lowerValue.includes("url(")
       || lowerValue.includes("expression")
-      || lowerValue.includes("@")
+      || lowerValue.includes("@import")
+      || lowerValue.includes("javascript:")
+      || lowerValue.includes("behavior:")
+      || lowerValue.includes("-moz-binding")
       || /[<>{}]/.test(rawValue)
     ) {
       warnings.push(`Removed unsafe style value for ${property}.`);
       continue;
     }
-    if (!/^[\w\s#.,%()/-]+$/.test(rawValue)) {
+    if (!/^[\w\s#.,%()+\-/*:'"]+$/.test(rawValue)) {
       warnings.push(`Removed unsupported style value for ${property}.`);
       continue;
     }
@@ -333,7 +371,20 @@ function sanitizeStyle(value: string, warnings: string[]): string | null {
   return declarations.length > 0 ? declarations.join("; ") : null;
 }
 
-function sanitizeAttributes(raw: string, allowInlineStyles: boolean, warnings: string[]): string {
+export function summarizeWarnings(warnings: string[], maxWarnings = 20): string[] {
+  const counts = new Map<string, number>();
+  for (const warning of warnings) {
+    counts.set(warning, (counts.get(warning) ?? 0) + 1);
+  }
+  const summarized = [...counts.entries()].map(([warning, count]) => count > 1 ? `${warning} x ${count}` : warning);
+  if (summarized.length <= maxWarnings) return summarized;
+  return [
+    ...summarized.slice(0, Math.max(0, maxWarnings)),
+    `${summarized.length - maxWarnings} more render warnings hidden.`,
+  ];
+}
+
+function sanitizeAttributes(raw: string, tag: string, allowInlineStyles: boolean, warnings: string[]): string {
   const attributes: string[] = [];
   for (const attribute of attributePairs(raw)) {
     if (attribute.name.startsWith("on")) {
@@ -353,6 +404,14 @@ function sanitizeAttributes(raw: string, allowInlineStyles: boolean, warnings: s
       if (style) attributes.push(`style="${escapeHtml(style)}"`);
       continue;
     }
+    if (attribute.name === "open") {
+      if (tag === "details") {
+        attributes.push("open");
+      } else {
+        warnings.push("Removed unsupported attribute open.");
+      }
+      continue;
+    }
     if (!ALLOWED_ATTRIBUTES.has(attribute.name)) {
       warnings.push(`Removed unsupported attribute ${attribute.name}.`);
       continue;
@@ -362,7 +421,10 @@ function sanitizeAttributes(raw: string, allowInlineStyles: boolean, warnings: s
   return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
 }
 
-export function sanitizeHtml(html: string, options: { allowInlineStyles?: boolean } = {}): HtmlSanitizeResult {
+export function sanitizeHtml(
+  html: string,
+  options: { allowInlineStyles?: boolean; deduplicateWarnings?: boolean; maxWarnings?: number } = {},
+): HtmlSanitizeResult {
   const warnings: string[] = [];
   const withoutDangerousContainers = stripDangerousContainers(html, warnings);
   const sanitized = withoutDangerousContainers.replace(
@@ -375,10 +437,15 @@ export function sanitizeHtml(html: string, options: { allowInlineStyles?: boolea
       }
       if (closing) return `</${tag}>`;
       if (VOID_TAGS.has(tag)) return `<${tag}>`;
-      return `<${tag}${sanitizeAttributes(rawAttributes, options.allowInlineStyles === true, warnings)}>`;
+      return `<${tag}${sanitizeAttributes(rawAttributes, tag, options.allowInlineStyles === true, warnings)}>`;
     },
   );
-  return { html: sanitized, warnings };
+  return {
+    html: sanitized,
+    warnings: options.deduplicateWarnings === true
+      ? summarizeWarnings(warnings, options.maxWarnings)
+      : warnings,
+  };
 }
 
 export function renderHtmlTemplate(
@@ -404,7 +471,16 @@ export function renderHtmlTemplate(
     }
 
     const rendered = renderTemplate(input.template, input.snapshotData, placeholder);
-    const sanitized = sanitizeHtml(rendered, { allowInlineStyles: options.allowInlineStyles === true });
+    const sanitizeOptions: {
+      allowInlineStyles: boolean;
+      deduplicateWarnings: boolean;
+      maxWarnings?: number;
+    } = {
+      allowInlineStyles: options.allowInlineStyles === true,
+      deduplicateWarnings: options.deduplicateWarnings === true,
+    };
+    if (typeof options.maxWarnings === "number") sanitizeOptions.maxWarnings = options.maxWarnings;
+    const sanitized = sanitizeHtml(rendered, sanitizeOptions);
     warnings.push(...sanitized.warnings);
     const truncatedHtml = truncateSafe(sanitized.html, maxRenderedChars);
     if (truncatedHtml.truncated) warnings.push("Sanitized HTML preview was truncated.");

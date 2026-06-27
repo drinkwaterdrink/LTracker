@@ -1,6 +1,6 @@
 # LTracker
 
-Version: `0.10`
+Version: `0.11`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -16,27 +16,30 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Stores message-attached tracker snapshots keyed by exact message id and selected swipe key.
 - Maintains a message snapshot index at `chats/{chatId}/message-snapshots/index.json`.
 - Renders sanitized tracker HTML previews in the drawer.
-- Prefers official Lumiverse message-targeted DOM injection for compact message trackers.
+- Prefers official Lumiverse message-targeted DOM injection for compact message trackers and mounts inside the message body/bubble when available.
 - Preserves sandboxed iframe message widgets as a fallback.
 - Provides regenerate/cancel, edit/view, and delete controls per message swipe.
-- Keeps prompt injection settings saved, but context-handler injection remains disabled in `0.10`.
+- Supports optional embedded `<ltracker type="state">` tags in assistant message swipes, hidden by a Lumiverse tag interceptor and rendered from the intercepted exact payload.
+- Autosaves settings changes from the drawer; Reset Settings remains explicit.
+- Keeps prompt injection settings saved, but context-handler injection remains disabled in `0.11`.
 
-## Message Display In 0.10
+## Message Display In 0.11
 
 LTracker now prefers official Lumiverse message-targeted DOM injection:
 
 - `ctx.dom.findMessageElement(messageId)` finds a mounted message bubble.
-- `ctx.dom.inject(target, html, "afterbegin")` injects the tracker at the top when top placement is selected.
+- `ctx.dom.inject(target, html, "afterbegin")` injects the tracker at the top of the resolved message body/bubble when top placement is selected.
 - `ctx.dom.uninject(element)` removes or replaces injected tracker DOM.
 - `ctx.dom.getMessageId(target)` resolves message identity for injected controls.
+- `ctx.messages.registerTagInterceptor()` hides embedded tracker tags before normal message rendering.
 
 DOM-injected tracker display is the primary path. It is compact, collapses to a slim header, does not reserve iframe height, and can sit at the top of the message when the message bubble is mounted.
 
 Iframe message widget fallback uses `ctx.messages.renderWidget()`. The inspected `lumiverse-spindle-types@0.5.21` API documents this fallback as below-message rendering. It remains useful if DOM injection is unavailable.
 
-Drawer history is the durable audit surface. It lists stored message/swipe snapshots, copy buttons, rendered previews, and the same regenerate/edit/delete actions without cluttering chat messages.
+Drawer history is the durable audit surface. It lists sidecar snapshots and intercepted embedded tracker tag payloads, copy buttons, rendered previews, and the same regenerate/edit/delete actions without cluttering chat messages.
 
-Saved message text mutation is not used. LTracker does not edit assistant message content, does not patch private Lumiverse selectors, and does not read private host DOM attributes.
+Saved message text mutation is used only when `messageDisplay.attachmentMode` is `embedded_tracker_tag` or `both`, where LTracker calls `spindle.chat.updateMessage()` to upsert or remove its own exact-swipe `<ltracker>` block. Sidecar mode remains storage-only. LTracker does not patch private Lumiverse selectors and does not rely on SillyTavern-style host globals.
 
 ## Swipe-Aware Trackers
 
@@ -80,7 +83,7 @@ LTracker writes user-scoped extension storage only:
 
 ## Context Handler Injection
 
-Prompt injection is disabled in `0.10`. The `context_handler` permission remains absent from `spindle.json`, and LTracker does not call `spindle.registerContextHandler()`.
+Prompt injection is disabled in `0.11`. The `context_handler` permission remains absent from `spindle.json`, and LTracker does not call `spindle.registerContextHandler()`.
 
 ## Settings Reference
 
@@ -110,11 +113,11 @@ Settings are stored in per-user extension storage at `settings.json` and repaire
 
 ### Prompt Injection
 
-Prompt injection is disabled in `0.10` unless a later version safely re-enables context-handler registration.
+Prompt injection is disabled in `0.11` unless a later version safely re-enables context-handler registration.
 
 | Setting | Default | What it does | When to increase or enable | When to decrease or disable | Tradeoff |
 | --- | --- | --- | --- | --- | --- |
-| `injection.enabled` | `false` | User preference for cached tracker injection. In `0.10`, it is saved but inactive. | Enable only for future testing after context injection is restored. | Keep disabled for normal `0.10` use. | Stored preference is ready for later, but it does nothing now. |
+| `injection.enabled` | `false` | User preference for cached tracker injection. In `0.11`, it is saved but inactive. | Enable only for future testing after context injection is restored. | Keep disabled for normal `0.11` use. | Stored preference is ready for later, but it does nothing now. |
 | `injection.mode` | `latest_chat_snapshot` | Chooses latest chat snapshot or latest message-attached snapshot as injection source. | Use message-attached snapshot when per-response state matters. | Use latest chat snapshot for broad current-state summaries. | Exact message state is precise; chat-wide state is simpler. |
 | `injection.format` | `compact` | Chooses `compact`, `minimal`, or `pretty_json` text. | Use `pretty_json` for debugging; use `compact` for readable continuity. | Use `minimal` to save context if injection returns later. | Richer formats are easier to inspect but consume more prompt space. |
 | `injection.maxInjectedChars` | `3000` | Character cap for injected text. | Increase if compact state is being truncated. | Decrease to reduce context size. | More injected state can help continuity but competes with chat context. |
@@ -142,9 +145,14 @@ The drawer renderer is separate from message display.
 | `messageDisplay.enabled` | `true` | Enables message trackers and drawer history rendering. | Keep enabled for visible per-message trackers. | Disable to remove inline trackers and rely on raw snapshots. | Visible state is useful but adds UI surface. |
 | `messageDisplay.useDomInjection` | `true` | Uses official message-targeted DOM injection as the primary renderer. | Keep enabled for top placement and compact collapse. | Disable to force iframe widget fallback/history. | DOM injection is tighter, but only mounted message bubbles can be injected immediately. |
 | `messageDisplay.fallbackToIframeWidget` | `true` | Uses iframe message widgets when DOM injection cannot render. | Enable for broader runtime fallback. | Disable if below-message fallback is undesirable. | Fallback improves availability but may render below messages. |
+| `messageDisplay.attachmentMode` | `sidecar_snapshot` | Chooses storage-only sidecar snapshots, embedded tracker tag snapshots, or both. | Use `embedded_tracker_tag` or `both` when the tracker should travel inside the assistant swipe content. | Use `sidecar_snapshot` for no chat-message mutation. | Embedded tracker tag mode is portable but requires `chat_mutation`; sidecar is quieter and safer. |
+| `messageDisplay.displayMode` | `inline_full` | Chooses full inline trackers, compact button popover trackers, or drawer history only. | Use `inline_button_popover` for less chat clutter. | Use `drawer_history_only` when inline UI is distracting. | Inline full is richest; button popover is denser; drawer-only is least intrusive. |
 | `messageDisplay.placement` | `top` | Desired top vs bottom placement. DOM injection uses `afterbegin` for top. | Use `top` for zTracker-like placement. | Use `bottom` if top feels visually noisy. | Top is closer to zTracker; bottom is less intrusive. |
 | `messageDisplay.source` | `message_attached_snapshot` | Chooses exact message/swipe snapshot or latest chat snapshot for display. | Use message-attached snapshot for scrollback accuracy. | Use latest chat snapshot only when all displays should mirror current state. | Exact history is more faithful; latest state is easier to compare. |
 | `messageDisplay.renderMode` | `html_template` | Chooses template HTML, compact text, or pretty JSON. | Use template HTML for rich zTracker-like display. | Use compact text or `pretty_json` for debugging. | Rich HTML is readable but template-dependent. |
+| `messageDisplay.allowInlineStyles` | `true` | Allows a sanitized inline style allowlist in message tracker HTML. | Keep enabled for zTracker-like HTML template fidelity. | Disable for stricter rendering. | Fidelity improves, but the sanitizer has a wider allowed HTML surface. |
+| `messageDisplay.deduplicateRenderWarnings` | `true` | Collapses repeated sanitizer/render warnings. | Keep enabled for noisy templates. | Disable only when every repeated warning matters during debugging. | Diagnostics stay readable but repeated details are summarized. |
+| `messageDisplay.showRenderWarningsInDiagnosticsOnly` | `true` | Keeps capped render warning detail in diagnostics instead of making message UI noisy. | Keep enabled for normal chat use. | Disable when actively debugging a template from the message display. | Cleaner chat UI means warnings are easier to miss unless diagnostics are open. |
 | `messageDisplay.collapsedByDefault` | `true` | Starts tracker blocks collapsed by default. | Enable for mobile or large trackers. | Disable when trackers should stay open while scrolling. | Collapsed widgets save space but require one click to inspect. |
 | `messageDisplay.compactCollapsedHeader` | `true` | Keeps collapsed DOM trackers as a slim header bar. | Keep enabled to avoid empty vertical space. | Disable only for testing alternate layout. | Compact collapse is denser but shows less context at a glance. |
 | `messageDisplay.showTimestamp` | `true` | Shows snapshot timestamp in tracker/history headers. | Keep enabled to judge freshness. | Disable for a quieter header. | Timestamp clarity adds header text. |
@@ -173,25 +181,26 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 | --- | --- | --- |
 | `generation` | Calls `spindle.generate.quiet()` for tracker extraction and listens for generation-completed events. | Generate requests show a clear missing-permission error; auto assistant triggers cannot run. |
 | `chats` | Resolves the user's active chat through `spindle.chats.getActive()` when the frontend does not supply one. | Generate requests fall back to the frontend-supplied chat id or show a clear missing-permission error. |
-| `chat_mutation` | Reads chat messages through `spindle.chat.getMessages()`. LTracker does not mutate chat message content in `0.10`. | Generate requests show a clear missing-permission error. |
+| `chat_mutation` | Reads chat messages through `spindle.chat.getMessages()` and calls `spindle.chat.updateMessage()` only for embedded tracker tag writes/removals. | Generate requests show a clear missing-permission error; embedded tracker tag mode cannot update message swipes. |
 
 Drawer tabs, input-bar actions, message-targeted DOM injection, message widgets, frontend/backend messaging, logging, toasts, and user storage are free-tier or frontend surfaces in the inspected `lumiverse-spindle-types@0.5.21` API.
 
 ## Known Limitations
 
-- Context-handler prompt injection is disabled in `0.10` to protect normal Lumiverse generation.
+- Context-handler prompt injection is disabled in `0.11` to protect normal Lumiverse generation.
 - Connection settings are still not implemented.
 - Sequential generation, partial regeneration, cleanup/repair mode, World Books, Memory Cortex, character-card context, and TOON/XML/native transform modes are future phases.
 - DOM injection only attaches immediately to mounted message bubbles; iframe fallback and drawer history cover unavailable bubbles.
+- Embedded tracker tag mode only replaces or removes LTracker's own tag for the exact swipe key.
 - Diagnostics may contain sensitive chat-derived prompt and model output when raw/prompt saving is enabled.
 
 ## Roadmap
 
-1. `0.11 Connection Settings`
-2. `0.12 Sequential + Partial Regeneration`
-3. `0.13 Cleanup + Repair Mode`
-4. `0.14 World Books, Character Exclusions, Import/Export polish, TOON/XML/native modes`
+1. `0.12 Connection Settings`
+2. `0.13 Sequential + Partial Regeneration`
+3. `0.14 Cleanup + Repair Mode`
+4. `0.15 World Books, Character Exclusions, Import/Export polish, TOON/XML/native modes`
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.10`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.11`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

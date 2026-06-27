@@ -19,6 +19,10 @@ import {
   runContextHandlerFailSafe,
 } from "./shared/contextHandlerRuntime";
 import {
+  removeLTrackerTag,
+  upsertLTrackerTag,
+} from "./shared/embeddedTrackerTag";
+import {
   formatTemplateTextFallback,
   renderHtmlTemplate,
 } from "./shared/htmlTemplateRenderer";
@@ -71,6 +75,7 @@ import {
   DEFAULT_SWIPE_KEY,
   defaultSwipeIdentity,
   deriveSwipeTrackerIdentity,
+  hashSwipeContent,
   swipeIdentityKey,
 } from "./shared/swipeIdentity";
 import {
@@ -226,6 +231,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "cancel_tracker_generation",
     "delete_message_tracker",
     "save_edited_message_tracker",
+    "embedded_tracker_tag_intercepted",
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if (
@@ -247,6 +253,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "cancel_tracker_generation",
       "delete_message_tracker",
       "save_edited_message_tracker",
+      "embedded_tracker_tag_intercepted",
     ].includes(payload.type)
     && typeof payload.requestId !== "string"
   ) return false;
@@ -274,6 +281,14 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
   if (
     payload.type === "save_edited_message_tracker"
     && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string" || typeof payload.jsonText !== "string")
+  ) return false;
+  if (
+    payload.type === "embedded_tracker_tag_intercepted"
+    && (
+      ("messageId" in payload && payload.messageId !== null && typeof payload.messageId !== "string")
+      || ("swipeKey" in payload && payload.swipeKey !== null && typeof payload.swipeKey !== "string")
+      || typeof payload.jsonText !== "string"
+    )
   ) return false;
   if (
     payload.type === "render_template"
@@ -391,6 +406,20 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastSwipeKeySource: null,
     swipeTrackerIndexCount: 0,
     activeTrackerJobs: [],
+    lastPlacementRequested: null,
+    lastPlacementResolved: null,
+    lastPlacementRenderAttemptAt: null,
+    lastPlacementRenderResult: null,
+    lastPlacementError: null,
+    lastMountPointStrategy: null,
+    lastEmbeddedTagWriteAt: null,
+    lastEmbeddedTagWriteMessageId: null,
+    lastEmbeddedTagWriteSwipeKey: null,
+    lastEmbeddedTagError: null,
+    lastTagInterceptAt: null,
+    lastTagInterceptMessageId: null,
+    lastTagInterceptSwipeKey: null,
+    lastTagInterceptError: null,
   };
 }
 
@@ -462,6 +491,16 @@ function messageDisplayRenderer(value: unknown): LTrackerDiagnostics["messageDis
   return value === "dom_injection" || value === "iframe_widget" || value === "drawer_history"
     ? value
     : "drawer_history";
+}
+
+function mountPointStrategy(value: unknown): LTrackerDiagnostics["lastMountPointStrategy"] {
+  return value === "official_message_body"
+    || value === "official_message_element"
+    || value === "bubble_adapter"
+    || value === "widget_fallback"
+    || value === "drawer_only"
+    ? value
+    : null;
 }
 
 function activeTrackerJobsOrEmpty(value: unknown): LTrackerDiagnostics["activeTrackerJobs"] {
@@ -612,6 +651,20 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
       ? Math.max(0, Math.round(value.swipeTrackerIndexCount))
       : 0,
     activeTrackerJobs: activeTrackerJobsOrEmpty(value.activeTrackerJobs),
+    lastPlacementRequested: messageDisplayPlacementOrNull(value.lastPlacementRequested),
+    lastPlacementResolved: messageDisplayPlacementOrNull(value.lastPlacementResolved),
+    lastPlacementRenderAttemptAt: stringOrNull(value.lastPlacementRenderAttemptAt),
+    lastPlacementRenderResult: stringOrNull(value.lastPlacementRenderResult),
+    lastPlacementError: stringOrNull(value.lastPlacementError),
+    lastMountPointStrategy: mountPointStrategy(value.lastMountPointStrategy),
+    lastEmbeddedTagWriteAt: stringOrNull(value.lastEmbeddedTagWriteAt),
+    lastEmbeddedTagWriteMessageId: stringOrNull(value.lastEmbeddedTagWriteMessageId),
+    lastEmbeddedTagWriteSwipeKey: stringOrNull(value.lastEmbeddedTagWriteSwipeKey),
+    lastEmbeddedTagError: stringOrNull(value.lastEmbeddedTagError),
+    lastTagInterceptAt: stringOrNull(value.lastTagInterceptAt),
+    lastTagInterceptMessageId: stringOrNull(value.lastTagInterceptMessageId),
+    lastTagInterceptSwipeKey: stringOrNull(value.lastTagInterceptSwipeKey),
+    lastTagInterceptError: stringOrNull(value.lastTagInterceptError),
   };
 }
 
@@ -1203,6 +1256,110 @@ async function saveMessageAttachedSnapshotWithIndex(
   });
   await saveMessageSnapshotIndex(snapshot.chatId, nextIndex, userId);
   return nextIndex;
+}
+
+function shouldSaveSidecarSnapshot(settings: LTrackerSettings): boolean {
+  return settings.messageDisplay.attachmentMode === "sidecar_snapshot" || settings.messageDisplay.attachmentMode === "both";
+}
+
+function shouldWriteEmbeddedTrackerTag(settings: LTrackerSettings): boolean {
+  return settings.messageDisplay.attachmentMode === "embedded_tracker_tag" || settings.messageDisplay.attachmentMode === "both";
+}
+
+function resolveSwipeContentIndex(message: ChatMessageDTO, swipeKey: string): number {
+  const swipes = Array.isArray(message.swipes) ? message.swipes : [];
+  const activeIndex = typeof message.swipe_id === "number" && Number.isInteger(message.swipe_id)
+    ? Math.max(0, message.swipe_id)
+    : 0;
+  const activeIdentity = deriveSwipeTrackerIdentity(message.chat_id, message);
+  if (activeIdentity.swipeKey === swipeKey) return Math.min(activeIndex, Math.max(0, swipes.length - 1));
+  const indexMatch = /^index-(\d+)$/.exec(swipeKey);
+  if (indexMatch) {
+    const index = Number(indexMatch[1]);
+    if (Number.isInteger(index) && index >= 0 && index < swipes.length) return index;
+  }
+  const hashMatch = /^hash-(.+)$/.exec(swipeKey);
+  if (hashMatch) {
+    const hash = hashMatch[1];
+    const found = swipes.findIndex((content) => hashSwipeContent(content) === hash);
+    if (found >= 0) return found;
+  }
+  return Math.min(activeIndex, Math.max(0, swipes.length - 1));
+}
+
+async function updateMessageSwipeContent(
+  chatId: string,
+  messageId: string,
+  swipeKey: string,
+  mutate: (content: string) => { content: string; changed: boolean },
+): Promise<{ changed: boolean; swipeIndex: number | null }> {
+  const messages = await readChatMessages(chatId);
+  const message = messages.find((item) => item.id === messageId);
+  if (!message) throw new LTrackerStageError("read_messages", "Message not found for embedded tracker update.");
+  if (message.is_user) throw new LTrackerStageError("read_messages", "Embedded tracker tags can only be written to assistant messages.");
+  const swipes = Array.isArray(message.swipes) && message.swipes.length > 0 ? [...message.swipes] : [message.content ?? ""];
+  const swipeIndex = resolveSwipeContentIndex(message, swipeKey);
+  const current = swipes[swipeIndex] ?? message.content ?? "";
+  const next = mutate(current);
+  if (!next.changed || next.content === current) return { changed: false, swipeIndex };
+  swipes[swipeIndex] = next.content;
+  const patchSwipeIndex = typeof message.swipe_id === "number"
+    && Number.isInteger(message.swipe_id)
+    && message.swipe_id >= 0
+    && message.swipe_id < swipes.length
+    ? message.swipe_id
+    : swipeIndex;
+  await spindle.chat.updateMessage(chatId, messageId, {
+    swipes,
+    swipe_id: patchSwipeIndex,
+    skipChunkRebuild: true,
+  });
+  return { changed: true, swipeIndex };
+}
+
+async function writeEmbeddedTrackerTag(
+  attachedSnapshot: MessageAttachedSnapshot,
+  userId: string,
+): Promise<void> {
+  const jsonText = JSON.stringify(attachedSnapshot.snapshot.data, null, 2);
+  await updateMessageSwipeContent(
+    attachedSnapshot.chatId,
+    attachedSnapshot.messageId,
+    attachedSnapshot.swipeKey,
+    (content) => {
+      const next = upsertLTrackerTag(content, jsonText, attachedSnapshot.swipeKey, "append");
+      return { content: next.content, changed: next.inserted || next.replaced };
+    },
+  );
+  const diagnostics = {
+    ...await loadDiagnostics(attachedSnapshot.chatId, userId),
+    lastEmbeddedTagWriteAt: nowIso(),
+    lastEmbeddedTagWriteMessageId: attachedSnapshot.messageId,
+    lastEmbeddedTagWriteSwipeKey: attachedSnapshot.swipeKey,
+    lastEmbeddedTagError: null,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+}
+
+async function removeEmbeddedTrackerTag(
+  chatId: string,
+  messageId: string,
+  swipeKey: string,
+  userId: string,
+): Promise<void> {
+  const result = await updateMessageSwipeContent(chatId, messageId, swipeKey, (content) => {
+    const next = removeLTrackerTag(content, swipeKey);
+    return { content: next.content, changed: next.removed };
+  });
+  if (!result.changed) return;
+  const diagnostics = {
+    ...await loadDiagnostics(chatId, userId),
+    lastEmbeddedTagWriteAt: nowIso(),
+    lastEmbeddedTagWriteMessageId: messageId,
+    lastEmbeddedTagWriteSwipeKey: swipeKey,
+    lastEmbeddedTagError: null,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
 }
 
 function promptPreview(messages: LlmMessageDTO[]): string {
@@ -2014,18 +2171,35 @@ async function generateTracker(
         snapshot,
         attachedAt,
       };
-      const index = await saveMessageAttachedSnapshotWithIndex(attachedSnapshot, userId);
+      let embeddedTagWriteAt: string | null = null;
+      const index = shouldSaveSidecarSnapshot(settings)
+        ? await saveMessageAttachedSnapshotWithIndex(attachedSnapshot, userId)
+        : await loadMessageSnapshotIndex(resolvedChatId, userId);
+      if (shouldWriteEmbeddedTrackerTag(settings)) {
+        try {
+          await writeEmbeddedTrackerTag(attachedSnapshot, userId);
+          embeddedTagWriteAt = nowIso();
+        } catch (error) {
+          diagnostics = {
+            ...diagnostics,
+            lastEmbeddedTagError: errorMessage(error),
+          };
+        }
+      }
       diagnostics = {
         ...diagnostics,
         latestAttachedMessageId: trigger.sourceMessageId,
         latestAttachedMessageIndex: trigger.sourceMessageIndex,
         latestAttachedSnapshotAt: attachedAt,
-        latestAttachedSnapshotStorageKey: storageKey,
+        latestAttachedSnapshotStorageKey: shouldSaveSidecarSnapshot(settings) ? storageKey : null,
         messageSnapshotIndexCount: index.length,
         swipeTrackerIndexCount: index.length,
         lastSwipeDetectedMessageId: trigger.sourceMessageId,
         lastSwipeKey: trigger.swipeKey,
         lastSwipeKeySource: trigger.swipeKeySource,
+        lastEmbeddedTagWriteAt: embeddedTagWriteAt ?? diagnostics.lastEmbeddedTagWriteAt,
+        lastEmbeddedTagWriteMessageId: shouldWriteEmbeddedTrackerTag(settings) ? trigger.sourceMessageId : diagnostics.lastEmbeddedTagWriteMessageId,
+        lastEmbeddedTagWriteSwipeKey: shouldWriteEmbeddedTrackerTag(settings) ? trigger.swipeKey : diagnostics.lastEmbeddedTagWriteSwipeKey,
         activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId),
       };
       if (trigger.kind === "widget") {
@@ -2531,6 +2705,17 @@ async function deleteMessageTracker(
   const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
   const nextIndex = removeMessageSnapshotIndexEntry(index, payload.messageId, payload.swipeKey);
   await saveMessageSnapshotIndex(resolvedChatId, nextIndex, userId);
+  const settings = await getSettings(userId);
+  if (shouldWriteEmbeddedTrackerTag(settings)) {
+    try {
+      await removeEmbeddedTrackerTag(resolvedChatId, payload.messageId, payload.swipeKey, userId);
+    } catch (error) {
+      await tryPersistDiagnostics({
+        ...await loadDiagnostics(resolvedChatId, userId),
+        lastEmbeddedTagError: errorMessage(error),
+      }, userId);
+    }
+  }
   const diagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
     lastDeletedTrackerMessageId: payload.messageId,
@@ -2570,6 +2755,17 @@ async function saveEditedMessageTracker(
     },
   };
   const index = await saveMessageAttachedSnapshotWithIndex(edited, userId);
+  const settings = await getSettings(userId);
+  if (shouldWriteEmbeddedTrackerTag(settings)) {
+    try {
+      await writeEmbeddedTrackerTag(edited, userId);
+    } catch (error) {
+      await tryPersistDiagnostics({
+        ...await loadDiagnostics(resolvedChatId, userId),
+        lastEmbeddedTagError: errorMessage(error),
+      }, userId);
+    }
+  }
   const diagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
     lastEditedTrackerMessageId: payload.messageId,
@@ -2608,6 +2804,90 @@ async function cancelTrackerGeneration(
     : "Tracker generation was cancelled.";
   job.controller.abort();
   await sendState(resolvedChatId, userId, "generating", null, payload.requestId);
+}
+
+async function handleEmbeddedTrackerTagIntercepted(
+  payload: Extract<FrontendMessage, { type: "embedded_tracker_tag_intercepted" }>,
+  userId: string,
+): Promise<void> {
+  if (payload.isStreaming) return;
+  const resolvedChatId = payload.chatId
+    ? payload.chatId
+    : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
+  rememberActiveChat(userId, resolvedChatId);
+  const messageId = payload.messageId;
+  const swipeKey = payload.swipeKey || DEFAULT_SWIPE_KEY;
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    parsed = parseTrackerJson(payload.jsonText);
+  } catch (error) {
+    if (resolvedChatId) {
+      await tryPersistDiagnostics({
+        ...await loadDiagnostics(resolvedChatId, userId),
+        lastTagInterceptAt: nowIso(),
+        lastTagInterceptMessageId: messageId,
+        lastTagInterceptSwipeKey: swipeKey,
+        lastTagInterceptError: errorMessage(error),
+      }, userId);
+    }
+    return;
+  }
+  if (!resolvedChatId || !messageId) return;
+  const settings = await getSettings(userId);
+  const presetState = await resolveActivePreset(resolvedChatId, userId);
+  let index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  if (settings.messageDisplay.attachmentMode === "both") {
+    const attachedAt = nowIso();
+    const attachedSnapshot: MessageAttachedSnapshot = {
+      schemaVersion: STORAGE_SCHEMA_VERSION,
+      extensionVersion: EXTENSION_VERSION,
+      chatId: resolvedChatId,
+      messageId,
+      messageIndex: null,
+      swipeKey,
+      swipeIndex: null,
+      swipeId: null,
+      swipeContentHash: null,
+      swipeKeySource: "unknown",
+      presetId: presetState.activePreset.id,
+      presetName: presetState.activePreset.name,
+      presetVersion: presetState.activePreset.version,
+      trigger: {
+        kind: "widget",
+        requestId: payload.requestId,
+        sourceMessageId: messageId,
+        sourceMessageIndex: null,
+        swipeKey,
+        swipeIndex: null,
+        swipeId: null,
+        swipeContentHash: null,
+        swipeKeySource: "unknown",
+      },
+      snapshot: {
+        schemaVersion: STORAGE_SCHEMA_VERSION,
+        extensionVersion: EXTENSION_VERSION,
+        chatId: resolvedChatId,
+        createdAt: attachedAt,
+        messageCount: 1,
+        sourceMessageIds: [messageId],
+        presetId: presetState.activePreset.id,
+        presetName: presetState.activePreset.name,
+        presetVersion: presetState.activePreset.version,
+        data: parsed,
+      },
+      attachedAt,
+    };
+    index = await saveMessageAttachedSnapshotWithIndex(attachedSnapshot, userId);
+  }
+  await tryPersistDiagnostics({
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastTagInterceptAt: nowIso(),
+    lastTagInterceptMessageId: messageId,
+    lastTagInterceptSwipeKey: swipeKey,
+    lastTagInterceptError: null,
+    messageSnapshotIndexCount: index.length,
+    swipeTrackerIndexCount: index.length,
+  }, userId);
 }
 
 function disposeBackend(): void {
@@ -2754,6 +3034,10 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "save_edited_message_tracker") {
         await saveEditedMessageTracker(payload, userId);
+        return;
+      }
+      if (payload.type === "embedded_tracker_tag_intercepted") {
+        await handleEmbeddedTrackerTagIntercepted(payload, userId);
         return;
       }
       await handleRefresh(payload, userId);

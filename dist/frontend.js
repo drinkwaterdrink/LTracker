@@ -74,15 +74,954 @@ var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
 var EACH_BLOCK_PATTERN = new RegExp(`{{#each\\s+(${TEMPLATE_PATH})\\s*}}([\\s\\S]*?){{/each}}`, "g");
 var JSON_HELPER_PATTERN = new RegExp(`{{\\s*json\\s+(${TEMPLATE_PATH})\\s*}}`, "g");
 var VALUE_PATTERN = new RegExp(`{{\\s*(${TEMPLATE_PATH})\\s*}}`, "g");
+var ALLOWED_TAGS = /* @__PURE__ */ new Set([
+  "div",
+  "section",
+  "article",
+  "header",
+  "footer",
+  "main",
+  "span",
+  "p",
+  "br",
+  "hr",
+  "ul",
+  "ol",
+  "li",
+  "strong",
+  "b",
+  "em",
+  "i",
+  "small",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+  "details",
+  "summary",
+  "code",
+  "pre"
+]);
+var VOID_TAGS = /* @__PURE__ */ new Set(["br", "hr"]);
+var ALLOWED_ATTRIBUTES = /* @__PURE__ */ new Set(["class", "title", "aria-label", "data-ltracker-section"]);
+var DANGEROUS_TAGS = [
+  "script",
+  "iframe",
+  "object",
+  "embed",
+  "link",
+  "meta",
+  "form",
+  "input",
+  "button",
+  "textarea",
+  "select",
+  "svg",
+  "math"
+];
+var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
+  "color",
+  "background",
+  "background-color",
+  "border",
+  "border-top",
+  "border-bottom",
+  "border-left",
+  "border-right",
+  "border-color",
+  "border-radius",
+  "box-shadow",
+  "padding",
+  "padding-top",
+  "padding-bottom",
+  "padding-left",
+  "padding-right",
+  "margin",
+  "margin-top",
+  "margin-bottom",
+  "margin-left",
+  "margin-right",
+  "font-size",
+  "font-weight",
+  "font-style",
+  "line-height",
+  "letter-spacing",
+  "text-align",
+  "text-transform",
+  "display",
+  "gap",
+  "row-gap",
+  "column-gap",
+  "grid-template-columns",
+  "grid-template-rows",
+  "flex-direction",
+  "align-items",
+  "justify-content",
+  "width",
+  "max-width",
+  "min-width",
+  "height",
+  "max-height",
+  "min-height",
+  "overflow",
+  "overflow-wrap",
+  "word-break",
+  "white-space",
+  "opacity"
+]);
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function escapeHtml(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function truncateSafe(value, maxChars) {
+  const chars = Array.from(value);
+  if (chars.length <= maxChars) return { value, truncated: false };
+  const suffix = "\n[truncated]";
+  const suffixChars = Array.from(suffix);
+  if (maxChars <= 0) return { value: "", truncated: true };
+  if (maxChars <= suffixChars.length) {
+    return { value: suffixChars.slice(0, maxChars).join(""), truncated: true };
+  }
+  const keep = Math.max(0, maxChars - suffixChars.length);
+  return { value: `${chars.slice(0, keep).join("")}${suffix}`, truncated: true };
+}
+function valueAtPath(source, path) {
+  let current = source;
+  for (const segment of path.split(".")) {
+    if (Array.isArray(current) && /^\d+$/.test(segment)) {
+      current = current[Number(segment)];
+    } else if (isRecord(current)) {
+      current = current[segment];
+    } else {
+      return void 0;
+    }
+  }
+  return current;
+}
+function valueToText(value, placeholder) {
+  if (value === void 0 || value === null) return placeholder;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return JSON.stringify(value, null, 2) ?? placeholder;
+}
+function renderTemplateFragment(template, root, current, placeholder) {
+  const withJson = template.replace(JSON_HELPER_PATTERN, (_match, path) => {
+    const value = valueAtPath(current, path) ?? valueAtPath(root, path);
+    const text = value === void 0 ? placeholder : JSON.stringify(value, null, 2) ?? placeholder;
+    return escapeHtml(text);
+  });
+  return withJson.replace(VALUE_PATTERN, (_match, path) => {
+    const value = valueAtPath(current, path) ?? valueAtPath(root, path);
+    return escapeHtml(valueToText(value, placeholder));
+  });
+}
+function renderTemplate(template, snapshotData, placeholder) {
+  const expandedLoops = template.replace(EACH_BLOCK_PATTERN, (_match, path, body) => {
+    const value = valueAtPath(snapshotData, path);
+    if (!Array.isArray(value)) return "";
+    return value.map((item) => renderTemplateFragment(body, snapshotData, item, placeholder)).join("");
+  });
+  return renderTemplateFragment(expandedLoops, snapshotData, snapshotData, placeholder);
+}
+function primitiveToString(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return null;
+}
+function recordSummary(value) {
+  const preferred = ["name", "title", "status", "role", "emotional_state", "physical_state", "current_goal"];
+  const direct = preferred.map((key) => primitiveToString(value[key])).filter((item) => Boolean(item));
+  if (direct.length > 0) return direct.join(" - ");
+  const fragments = Object.entries(value).map(([key, entry]) => {
+    const rendered = primitiveToString(entry);
+    return rendered ? `${key}: ${rendered}` : null;
+  }).filter((item) => Boolean(item));
+  return fragments.length > 0 ? fragments.slice(0, 4).join("; ") : null;
+}
+function listFromUnknown(value) {
+  const primitive = primitiveToString(value);
+  if (primitive) return [primitive];
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const rendered = primitiveToString(item);
+      if (rendered) return rendered;
+      return isRecord(item) ? recordSummary(item) : null;
+    }).filter((item) => Boolean(item));
+  }
+  if (isRecord(value)) {
+    const summary = recordSummary(value);
+    return summary ? [summary] : [];
+  }
+  return [];
+}
+function stringAt(data, path) {
+  let current = data;
+  for (const key of path) {
+    if (!isRecord(current)) return null;
+    current = current[key];
+  }
+  return primitiveToString(current);
+}
+function formatTemplateTextFallback(data) {
+  const lines = [];
+  const scene = [
+    stringAt(data, ["scene", "location"]),
+    stringAt(data, ["scene", "date"]) ?? stringAt(data, ["scene", "time"]),
+    stringAt(data, ["scene", "mood"])
+  ].filter((item) => Boolean(item));
+  if (scene.length > 0) lines.push(`Scene: ${scene.join(", ")}`);
+  const present = listFromUnknown(data.characters_present).map((item) => item.split(" - ")[0]?.trim() ?? item.trim()).filter(Boolean);
+  if (present.length > 0) lines.push(`Present characters: ${present.join("; ")}`);
+  const facts = listFromUnknown(data.important_facts).slice(0, 8);
+  if (facts.length > 0) {
+    lines.push("Important facts:");
+    lines.push(...facts.map((item) => `- ${item}`));
+  }
+  const threads = listFromUnknown(data.active_threads).slice(0, 8);
+  if (threads.length > 0) {
+    lines.push("Active threads:");
+    lines.push(...threads.map((item) => `- ${item}`));
+  }
+  const continuity = listFromUnknown(data.unresolved_continuity).slice(0, 8);
+  if (continuity.length > 0) {
+    lines.push("Unresolved continuity:");
+    lines.push(...continuity.map((item) => `- ${item}`));
+  }
+  const pressure = listFromUnknown(data.next_scene_pressure).slice(0, 4);
+  if (pressure.length > 0) {
+    lines.push("Next scene pressure:");
+    lines.push(...pressure.map((item) => `- ${item}`));
+  }
+  if (lines.length > 0) return lines.join("\n");
+  const fragments = Object.entries(data).map(([key, value]) => {
+    const list = listFromUnknown(value);
+    return list.length > 0 ? `${key}: ${list.slice(0, 3).join("; ")}` : null;
+  }).filter((item) => Boolean(item));
+  return fragments.length > 0 ? fragments.slice(0, 8).join("\n") : "No tracker fields are available.";
+}
+function stripDangerousContainers(html, warnings) {
+  let result = html;
+  for (const tag of DANGEROUS_TAGS) {
+    const paired = new RegExp(`<\\s*${tag}\\b[^>]*>[\\s\\S]*?<\\s*/\\s*${tag}\\s*>`, "gi");
+    result = result.replace(paired, () => {
+      warnings.push(`Removed unsafe <${tag}> element.`);
+      return "";
+    });
+    const single = new RegExp(`<\\s*/?\\s*${tag}\\b[^>]*>`, "gi");
+    result = result.replace(single, () => {
+      warnings.push(`Removed unsafe <${tag}> tag.`);
+      return "";
+    });
+  }
+  return result;
+}
+function attributePairs(raw) {
+  const result = [];
+  const pattern = /([^\s=/"'<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let match;
+  while ((match = pattern.exec(raw)) !== null) {
+    const name = (match[1] ?? "").toLowerCase();
+    if (!name) continue;
+    result.push({ name, value: match[2] ?? match[3] ?? match[4] ?? "" });
+  }
+  return result;
+}
+function sanitizeStyle(value, warnings) {
+  const declarations = [];
+  for (const part of value.split(";")) {
+    const separator = part.indexOf(":");
+    if (separator <= 0) continue;
+    const property = part.slice(0, separator).trim().toLowerCase();
+    const rawValue = part.slice(separator + 1).trim();
+    const lowerValue = rawValue.toLowerCase();
+    if (!SAFE_STYLE_PROPERTIES.has(property)) {
+      warnings.push(`Removed unsupported style property ${property}.`);
+      continue;
+    }
+    if (lowerValue.includes("url(") || lowerValue.includes("expression") || lowerValue.includes("@import") || lowerValue.includes("javascript:") || lowerValue.includes("behavior:") || lowerValue.includes("-moz-binding") || /[<>{}]/.test(rawValue)) {
+      warnings.push(`Removed unsafe style value for ${property}.`);
+      continue;
+    }
+    if (!/^[\w\s#.,%()+\-/*:'"]+$/.test(rawValue)) {
+      warnings.push(`Removed unsupported style value for ${property}.`);
+      continue;
+    }
+    declarations.push(`${property}: ${rawValue}`);
+  }
+  return declarations.length > 0 ? declarations.join("; ") : null;
+}
+function summarizeWarnings(warnings, maxWarnings = 20) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const warning of warnings) {
+    counts.set(warning, (counts.get(warning) ?? 0) + 1);
+  }
+  const summarized = [...counts.entries()].map(([warning, count]) => count > 1 ? `${warning} x ${count}` : warning);
+  if (summarized.length <= maxWarnings) return summarized;
+  return [
+    ...summarized.slice(0, Math.max(0, maxWarnings)),
+    `${summarized.length - maxWarnings} more render warnings hidden.`
+  ];
+}
+function sanitizeAttributes(raw, tag, allowInlineStyles, warnings) {
+  const attributes = [];
+  for (const attribute of attributePairs(raw)) {
+    if (attribute.name.startsWith("on")) {
+      warnings.push(`Removed event attribute ${attribute.name}.`);
+      continue;
+    }
+    if (attribute.name === "href" || attribute.name === "src" || attribute.name === "srcdoc") {
+      warnings.push(`Removed URL-bearing attribute ${attribute.name}.`);
+      continue;
+    }
+    if (attribute.name === "style") {
+      if (!allowInlineStyles) {
+        warnings.push("Removed inline style attribute.");
+        continue;
+      }
+      const style = sanitizeStyle(attribute.value, warnings);
+      if (style) attributes.push(`style="${escapeHtml(style)}"`);
+      continue;
+    }
+    if (attribute.name === "open") {
+      if (tag === "details") {
+        attributes.push("open");
+      } else {
+        warnings.push("Removed unsupported attribute open.");
+      }
+      continue;
+    }
+    if (!ALLOWED_ATTRIBUTES.has(attribute.name)) {
+      warnings.push(`Removed unsupported attribute ${attribute.name}.`);
+      continue;
+    }
+    attributes.push(`${attribute.name}="${escapeHtml(attribute.value)}"`);
+  }
+  return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
+}
+function sanitizeHtml(html, options = {}) {
+  const warnings = [];
+  const withoutDangerousContainers = stripDangerousContainers(html, warnings);
+  const sanitized = withoutDangerousContainers.replace(
+    /<\s*(\/?)\s*([A-Za-z][A-Za-z0-9-]*)([^>]*)>/g,
+    (_match, closing, rawTag, rawAttributes) => {
+      const tag = rawTag.toLowerCase();
+      if (!ALLOWED_TAGS.has(tag)) {
+        warnings.push(`Removed unsupported <${tag}> tag.`);
+        return "";
+      }
+      if (closing) return `</${tag}>`;
+      if (VOID_TAGS.has(tag)) return `<${tag}>`;
+      return `<${tag}${sanitizeAttributes(rawAttributes, tag, options.allowInlineStyles === true, warnings)}>`;
+    }
+  );
+  return {
+    html: sanitized,
+    warnings: options.deduplicateWarnings === true ? summarizeWarnings(warnings, options.maxWarnings) : warnings
+  };
+}
+function renderHtmlTemplate(input, options = {}) {
+  const warnings = [];
+  const errors = [];
+  const placeholder = options.missingValuePlaceholder ?? "";
+  const maxRenderedChars = Math.max(1, options.maxRenderedChars ?? 5e4);
+  const textFallback = formatTemplateTextFallback(input.snapshotData);
+  try {
+    if (!input.template.trim()) {
+      return {
+        ok: true,
+        html: "",
+        textFallback,
+        errors,
+        warnings: ["No HTML template is stored for this preset; using the text fallback."],
+        usedFallback: true
+      };
+    }
+    const rendered = renderTemplate(input.template, input.snapshotData, placeholder);
+    const sanitizeOptions = {
+      allowInlineStyles: options.allowInlineStyles === true,
+      deduplicateWarnings: options.deduplicateWarnings === true
+    };
+    if (typeof options.maxWarnings === "number") sanitizeOptions.maxWarnings = options.maxWarnings;
+    const sanitized = sanitizeHtml(rendered, sanitizeOptions);
+    warnings.push(...sanitized.warnings);
+    const truncatedHtml = truncateSafe(sanitized.html, maxRenderedChars);
+    if (truncatedHtml.truncated) warnings.push("Sanitized HTML preview was truncated.");
+    const truncatedFallback = truncateSafe(textFallback, maxRenderedChars);
+    if (truncatedFallback.truncated) warnings.push("Text fallback preview was truncated.");
+    return {
+      ok: true,
+      html: truncatedHtml.value,
+      textFallback: truncatedFallback.value,
+      errors,
+      warnings,
+      usedFallback: false
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    errors.push(`Renderer failed safely: ${message}`);
+    const truncatedFallback = truncateSafe(textFallback, maxRenderedChars);
+    if (truncatedFallback.truncated) warnings.push("Text fallback preview was truncated.");
+    return {
+      ok: false,
+      html: "",
+      textFallback: truncatedFallback.value,
+      errors,
+      warnings,
+      usedFallback: true
+    };
+  }
+}
+
+// src/shared/snapshotFormat.ts
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isMessageAttachedSnapshot(value) {
+  return "snapshot" in value && isRecord2(value.snapshot);
+}
+function normalizeSnapshot(value) {
+  if (isMessageAttachedSnapshot(value)) {
+    return {
+      snapshot: value.snapshot,
+      sourceMessageId: value.messageId
+    };
+  }
+  return {
+    snapshot: value,
+    sourceMessageId: null
+  };
+}
+function sanitizePromptText(value) {
+  return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function truncateSafe2(value, maxChars) {
+  const chars = Array.from(value);
+  if (chars.length <= maxChars) return value;
+  const suffix = "\n[truncated]";
+  if (maxChars <= 0) return "";
+  const suffixChars = Array.from(suffix);
+  if (maxChars <= suffixChars.length) return suffixChars.slice(0, maxChars).join("");
+  const keep = Math.max(0, maxChars - suffixChars.length);
+  return `${chars.slice(0, keep).join("")}${suffix}`;
+}
+function primitiveToString2(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return null;
+}
+function recordSummary2(value) {
+  const preferred = ["name", "title", "status", "recent_change", "current_goal", "emotional_state", "physical_state"];
+  const direct = preferred.map((key) => primitiveToString2(value[key])).filter((item) => Boolean(item));
+  if (direct.length > 0) return direct.join(" - ");
+  const fragments = Object.entries(value).map(([key, entry]) => {
+    const rendered = primitiveToString2(entry);
+    return rendered ? `${key}: ${rendered}` : null;
+  }).filter((item) => Boolean(item));
+  return fragments.length > 0 ? fragments.slice(0, 4).join("; ") : null;
+}
+function listFromUnknown2(value) {
+  const primitive = primitiveToString2(value);
+  if (primitive) return [primitive];
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const rendered = primitiveToString2(item);
+      if (rendered) return rendered;
+      return isRecord2(item) ? recordSummary2(item) : null;
+    }).filter((item) => Boolean(item));
+  }
+  if (isRecord2(value)) {
+    const summary = recordSummary2(value);
+    return summary ? [summary] : [];
+  }
+  return [];
+}
+function stringAt2(data, path) {
+  let current = data;
+  for (const key of path) {
+    if (!isRecord2(current)) return null;
+    current = current[key];
+  }
+  return primitiveToString2(current);
+}
+function sceneLine(data) {
+  const parts = [
+    stringAt2(data, ["scene", "location"]),
+    stringAt2(data, ["scene", "date"]) ?? stringAt2(data, ["scene", "time"]),
+    stringAt2(data, ["scene", "mood"]),
+    stringAt2(data, ["scene", "danger_level"])
+  ].filter((item) => Boolean(item));
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+function characterNames(data) {
+  return listFromUnknown2(data.characters_present).map((item) => item.split(" - ")[0]?.trim() ?? item.trim()).filter(Boolean);
+}
+function importantState(data) {
+  const facts = listFromUnknown2(data.important_facts);
+  const continuity = listFromUnknown2(data.unresolved_continuity);
+  const pressure = listFromUnknown2(data.next_scene_pressure);
+  return [...facts, ...continuity, ...pressure].slice(0, 8);
+}
+function openThreads(data) {
+  return listFromUnknown2(data.active_threads).slice(0, 8);
+}
+function fallbackSummary(data) {
+  const fragments = Object.entries(data).map(([key, value]) => {
+    if (isRecord2(value)) return `${key}: ${recordSummary2(value) ?? "set"}`;
+    const list = listFromUnknown2(value);
+    if (list.length > 0) return `${key}: ${list.slice(0, 2).join("; ")}`;
+    return null;
+  }).filter((item) => Boolean(item));
+  return fragments.slice(0, 6).join("\n");
+}
+function metadataLines(snapshot, sourceMessageId, settings) {
+  const lines = [];
+  if (settings.includeTimestamp) lines.push(`Generated: ${snapshot.createdAt}`);
+  if (settings.includeSourceMessageId && sourceMessageId) lines.push(`Source message: ${sourceMessageId}`);
+  return lines;
+}
+function formatCompact(snapshot, sourceMessageId, settings) {
+  const lines = [];
+  if (settings.includeHeader) lines.push("[LTracker Snapshot]");
+  lines.push(...metadataLines(snapshot, sourceMessageId, settings));
+  const scene = sceneLine(snapshot.data);
+  if (scene) lines.push(`Scene: ${scene}`);
+  const present = characterNames(snapshot.data);
+  if (present.length > 0) lines.push(`Present: ${present.join("; ")}`);
+  const state = importantState(snapshot.data);
+  if (state.length > 0) {
+    lines.push("Important state:");
+    lines.push(...state.map((item) => `- ${item}`));
+  }
+  const threads = openThreads(snapshot.data);
+  if (threads.length > 0) {
+    lines.push("Open threads:");
+    lines.push(...threads.map((item) => `- ${item}`));
+  }
+  if (lines.length === 0 || settings.includeHeader && lines.length === 1) {
+    lines.push(fallbackSummary(snapshot.data));
+  }
+  return lines.filter(Boolean).join("\n");
+}
+function formatPrettyJson(source, snapshot, sourceMessageId, settings) {
+  const payload = isMessageAttachedSnapshot(source) ? {
+    messageId: source.messageId,
+    messageIndex: source.messageIndex,
+    attachedAt: source.attachedAt,
+    snapshotCreatedAt: snapshot.createdAt,
+    data: snapshot.data
+  } : {
+    snapshotCreatedAt: snapshot.createdAt,
+    data: snapshot.data
+  };
+  const lines = [];
+  if (settings.includeHeader) lines.push("[LTracker Snapshot JSON]");
+  lines.push(...metadataLines(snapshot, sourceMessageId, settings));
+  lines.push(JSON.stringify(payload, null, 2));
+  return lines.join("\n");
+}
+function formatMinimal(snapshot, sourceMessageId, settings) {
+  const lines = [];
+  if (settings.includeHeader) lines.push("[LTracker Mini-State]");
+  lines.push(...metadataLines(snapshot, sourceMessageId, settings));
+  lines.push(`Location: ${stringAt2(snapshot.data, ["scene", "location"]) ?? "Unknown"}`);
+  const cast = characterNames(snapshot.data);
+  lines.push(`Cast: ${cast.length > 0 ? cast.join("; ") : "Unknown"}`);
+  const continuity = [
+    ...importantState(snapshot.data),
+    ...openThreads(snapshot.data)
+  ];
+  lines.push(`Continuity: ${continuity.length > 0 ? continuity.slice(0, 4).join("; ") : "No cached continuity details."}`);
+  return lines.join("\n");
+}
+function formatSnapshotForInjection(source, settings) {
+  const { snapshot, sourceMessageId } = normalizeSnapshot(source);
+  const raw = settings.format === "pretty_json" ? formatPrettyJson(source, snapshot, sourceMessageId, settings) : settings.format === "minimal" ? formatMinimal(snapshot, sourceMessageId, settings) : formatCompact(snapshot, sourceMessageId, settings);
+  return truncateSafe2(sanitizePromptText(raw), settings.maxInjectedChars);
+}
+
+// src/shared/swipeIdentity.ts
+var DEFAULT_SWIPE_KEY = "default";
+function defaultSwipeIdentity(chatId, messageId) {
+  return {
+    chatId,
+    messageId,
+    swipeKey: DEFAULT_SWIPE_KEY,
+    swipeIndex: null,
+    swipeId: null,
+    swipeContentHash: null,
+    swipeKeySource: "unknown"
+  };
+}
 
 // src/shared/messageDisplay.ts
 var MESSAGE_WIDGET_ID = "ltracker-message-tracker";
+function snapshotForDisplay(input) {
+  if (input.settings.source === "latest_chat_snapshot" && input.latestChatSnapshot) return input.latestChatSnapshot;
+  return input.attachedSnapshot?.snapshot ?? null;
+}
+function metadataFromSnapshot(attachedSnapshot, snapshot) {
+  return {
+    presetId: attachedSnapshot?.presetId ?? snapshot?.presetId ?? null,
+    presetName: attachedSnapshot?.presetName ?? snapshot?.presetName ?? null,
+    presetVersion: attachedSnapshot?.presetVersion ?? snapshot?.presetVersion ?? null,
+    snapshotCreatedAt: snapshot?.createdAt ?? null,
+    attachedAt: attachedSnapshot?.attachedAt ?? null
+  };
+}
+function identityFromInput(input) {
+  if (input.swipeIdentity) return input.swipeIdentity;
+  if (input.attachedSnapshot) {
+    return {
+      chatId: input.attachedSnapshot.chatId,
+      messageId: input.messageId,
+      swipeKey: input.attachedSnapshot.swipeKey ?? DEFAULT_SWIPE_KEY,
+      swipeIndex: input.attachedSnapshot.swipeIndex ?? null,
+      swipeId: input.attachedSnapshot.swipeId ?? null,
+      swipeContentHash: input.attachedSnapshot.swipeContentHash ?? null,
+      swipeKeySource: input.attachedSnapshot.swipeKeySource ?? "unknown"
+    };
+  }
+  return defaultSwipeIdentity(input.latestChatSnapshot?.chatId ?? "", input.messageId);
+}
+function generationMetadataFromSnapshot(snapshot, input) {
+  return {
+    generationStartedAt: input.activeJobStartedAt ?? snapshot?.generationStartedAt ?? null,
+    generationCompletedAt: snapshot?.generationCompletedAt ?? null,
+    generationDurationMs: typeof snapshot?.generationDurationMs === "number" && Number.isFinite(snapshot.generationDurationMs) ? Math.max(0, Math.round(snapshot.generationDurationMs)) : null,
+    generationCancelledAt: snapshot?.generationCancelledAt ?? null,
+    generationStatus: snapshot?.generationStatus ?? null,
+    isRegenerating: input.isRegenerating === true,
+    activeJobId: input.activeJobId ?? null
+  };
+}
+function injectionSettings(settings) {
+  return {
+    enabled: true,
+    mode: "latest_message_snapshot",
+    format: "compact",
+    maxInjectedChars: settings.maxRenderedChars,
+    includeHeader: false,
+    includeTimestamp: false,
+    includeSourceMessageId: false,
+    onlyInjectWhenSnapshotExists: true
+  };
+}
+function displayJson(messageId, messageIndex, attachedSnapshot, snapshot, settings) {
+  return truncateSafe2(JSON.stringify({
+    messageId,
+    messageIndex,
+    attachedAt: attachedSnapshot?.attachedAt ?? null,
+    snapshotCreatedAt: snapshot.createdAt,
+    presetId: attachedSnapshot?.presetId ?? snapshot.presetId ?? null,
+    presetName: attachedSnapshot?.presetName ?? snapshot.presetName ?? null,
+    presetVersion: attachedSnapshot?.presetVersion ?? snapshot.presetVersion ?? null,
+    generationStartedAt: snapshot.generationStartedAt ?? null,
+    generationCompletedAt: snapshot.generationCompletedAt ?? null,
+    generationDurationMs: snapshot.generationDurationMs ?? null,
+    generationCancelledAt: snapshot.generationCancelledAt ?? null,
+    generationStatus: snapshot.generationStatus ?? null,
+    editedAt: snapshot.editedAt ?? null,
+    editedByUser: snapshot.editedByUser === true,
+    data: snapshot.data
+  }, null, 2), settings.maxRenderedChars);
+}
+function safeScriptJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003C");
+}
+function formatDurationMs(durationMs) {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 0) return null;
+  if (durationMs < 1e3) return `${Math.round(durationMs)}ms`;
+  const seconds = durationMs / 1e3;
+  return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+}
+function currentRunningDuration(startedAt) {
+  if (!startedAt) return null;
+  const startedMs = Date.parse(startedAt);
+  if (!Number.isFinite(startedMs)) return null;
+  return formatDurationMs(Date.now() - startedMs);
+}
+function buildWidgetHtml(rendered, settings) {
+  const duration = settings.showGenerationDuration ? formatDurationMs(rendered.generationDurationMs) : null;
+  const runningSince = rendered.isRegenerating ? rendered.generationStartedAt : null;
+  const actionLabel = rendered.isRegenerating ? "Cancel tracker generation" : "Regenerate tracker";
+  const meta = [
+    settings.showPresetName && rendered.presetName ? rendered.presetName : null,
+    settings.showTimestamp && rendered.snapshotCreatedAt ? rendered.snapshotCreatedAt : null
+  ].filter((item) => Boolean(item)).join(" / ");
+  const body = rendered.html || `<pre class="ltr-pre">${escapeHtml(rendered.textFallback)}</pre>`;
+  const regenerateButton = settings.showWidgetRegenerateButton ? `
+      <button
+        class="ltr-icon-button${rendered.isRegenerating ? " ltr-spinning" : ""}"
+        type="button"
+        data-ltracker-action="regenerate"
+        data-message-id="${escapeHtml(rendered.messageId)}"
+        data-job-id="${escapeHtml(rendered.activeJobId ?? "")}"
+        title="${escapeHtml(actionLabel)}"
+        aria-label="${escapeHtml(actionLabel)}"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d="M17.7 6.3A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.67 4.22 1.76L13 11h8V3l-3.3 3.3Z"/>
+        </svg>
+      </button>
+      <script>
+      (() => {
+        const messageId = ${safeScriptJson(rendered.messageId)};
+        const jobId = ${safeScriptJson(rendered.activeJobId ?? "")};
+        document.addEventListener("click", (event) => {
+          const button = event.target && event.target.closest ? event.target.closest("[data-ltracker-action='regenerate']") : null;
+          if (!button) return;
+          window.parent.postMessage({
+            type: "ltracker_widget_action",
+            action: "toggle_regenerate",
+            messageId,
+            jobId
+          }, "*");
+        });
+        const elapsed = document.querySelector("[data-elapsed]");
+        const startedAt = ${safeScriptJson(runningSince ?? "")};
+        if (elapsed && startedAt) {
+          const started = Date.parse(startedAt);
+          const tick = () => {
+            const ms = Date.now() - started;
+            elapsed.textContent = ms < 1000 ? Math.max(0, Math.round(ms)) + "ms" : (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + "s";
+          };
+          tick();
+          const timer = setInterval(tick, 250);
+          window.addEventListener("pagehide", () => clearInterval(timer), { once: true });
+        }
+      })();
+      <\/script>` : "";
+  const elapsedMarkup = settings.showGenerationDuration ? rendered.isRegenerating && rendered.generationStartedAt ? `<span class="ltr-pill" data-elapsed>${escapeHtml(currentRunningDuration(rendered.generationStartedAt) ?? "0ms")}</span>` : duration ? `<span class="ltr-pill">${escapeHtml(duration)}</span>` : "" : "";
+  const statusMarkup = rendered.isRegenerating ? `<span class="ltr-pill">generating</span>` : "";
+  const metaMarkup = meta ? `<span class="ltr-meta">${escapeHtml(meta)}</span>` : "";
+  const open = settings.collapsedByDefault ? "" : " open";
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .ltr-card { border: 1px solid color-mix(in srgb, currentColor 15%, transparent); border-radius: 8px; padding: 6px 8px; background: color-mix(in srgb, currentColor 4%, transparent); }
+    details { min-width: 0; }
+    summary { cursor: pointer; list-style-position: outside; }
+    .ltr-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; width: 100%; }
+    .ltr-head { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px 7px; align-items: center; }
+    .ltr-title { font-weight: 700; }
+    .ltr-meta { opacity: .7; overflow-wrap: anywhere; }
+    .ltr-pill { border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 999px; padding: 1px 6px; opacity: .78; }
+    .ltr-icon-button { width: 26px; height: 26px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 999px; background: color-mix(in srgb, currentColor 7%, transparent); color: inherit; cursor: pointer; padding: 0; }
+    .ltr-icon-button svg { width: 15px; height: 15px; }
+    .ltr-icon-button:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+    .ltr-spinning svg { animation: ltr-spin .9s linear infinite; }
+    .ltr-body { margin-top: 7px; overflow-wrap: anywhere; }
+    .ltr-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    @keyframes ltr-spin { to { transform: rotate(360deg); } }
+    @media (max-width: 520px) {
+      .ltr-card { padding: 5px 7px; }
+      .ltr-meta { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <section class="ltr-card" data-ltracker-message-id="${escapeHtml(rendered.messageId)}">
+    <details${open}>
+      <summary>
+        <span class="ltr-summary">
+          <span class="ltr-head">
+            <span class="ltr-title">LTracker</span>
+            ${metaMarkup}
+            ${elapsedMarkup}
+            ${statusMarkup}
+          </span>
+          ${regenerateButton}
+        </span>
+      </summary>
+      <div class="ltr-body">${body}</div>
+    </details>
+  </section>
+</body>
+</html>`;
+}
+function iconSvg(kind) {
+  if (kind === "stop") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 7h10v10H7z"/></svg>`;
+  }
+  if (kind === "edit") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m5 16.2 9.9-9.9 2.8 2.8-9.9 9.9H5v-2.8Zm11.3-11.3 1.1-1.1a1.5 1.5 0 0 1 2.1 0l.7.7a1.5 1.5 0 0 1 0 2.1l-1.1 1.1-2.8-2.8Z"/></svg>`;
+  }
+  if (kind === "delete") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2 .2 7h1.6l-.2-7H10Zm3.4 0-.2 7h1.6l.2-7h-1.6Z"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17.7 6.3A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.67 4.22 1.76L13 11h8V3l-3.3 3.3Z"/></svg>`;
+}
+function domButton(action, label, icon, enabled) {
+  if (!enabled) return "";
+  return `<button class="ltd-icon-button" type="button" data-ltracker-dom-action="${escapeHtml(action)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${iconSvg(icon)}</button>`;
+}
+function buildDomHtml(rendered, settings) {
+  const duration = settings.showGenerationDuration ? formatDurationMs(rendered.generationDurationMs) : null;
+  const meta = [
+    settings.showPresetName && rendered.presetName ? rendered.presetName : null,
+    settings.showTimestamp && rendered.snapshotCreatedAt ? rendered.snapshotCreatedAt : null,
+    rendered.snapshotCreatedAt && rendered.snapshotCreatedAt !== rendered.attachedAt ? null : null
+  ].filter((item) => Boolean(item)).join(" / ");
+  const elapsedMarkup = settings.showGenerationDuration ? rendered.isRegenerating && rendered.generationStartedAt ? `<span class="ltd-pill" data-ltracker-elapsed data-started-at="${escapeHtml(rendered.generationStartedAt)}">${escapeHtml(currentRunningDuration(rendered.generationStartedAt) ?? "0ms")}</span>` : duration ? `<span class="ltd-pill">${escapeHtml(duration)}</span>` : "" : "";
+  const statusMarkup = rendered.isRegenerating ? `<span class="ltd-pill" data-ltracker-status>generating</span>` : "";
+  const editedMarkup = rendered.json.includes('"editedByUser": true') ? `<span class="ltd-pill">edited</span>` : "";
+  const body = rendered.html || `<pre class="ltd-pre">${escapeHtml(rendered.textFallback)}</pre>`;
+  const actionLabel = rendered.isRegenerating ? "Cancel tracker generation" : "Regenerate tracker";
+  const actionKind = rendered.isRegenerating ? "stop" : "refresh";
+  const open = settings.collapsedByDefault ? "" : " open";
+  const compactClass = settings.compactCollapsedHeader ? " ltd-compact" : "";
+  return `
+<section class="ltracker-dom-tracker${compactClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}">
+  <style>
+    .ltracker-dom-tracker { margin: 0 0 6px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 8px; background: color-mix(in srgb, currentColor 4%, transparent); color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .ltracker-dom-tracker details { margin: 0; min-width: 0; }
+    .ltracker-dom-tracker summary { cursor: pointer; list-style-position: outside; min-height: 30px; padding: 4px 7px; }
+    .ltd-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+    .ltd-head { display: flex; align-items: center; gap: 5px 7px; flex-wrap: wrap; min-width: 0; }
+    .ltd-title { font-weight: 700; }
+    .ltd-meta { opacity: .72; overflow-wrap: anywhere; }
+    .ltd-pill { border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 999px; padding: 1px 6px; opacity: .82; }
+    .ltd-actions { display: inline-flex; align-items: center; gap: 4px; }
+    .ltd-icon-button { width: 26px; height: 26px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 7%, transparent); color: inherit; cursor: pointer; padding: 0; }
+    .ltd-icon-button svg { width: 15px; height: 15px; }
+    .ltd-icon-button:hover, .ltd-icon-button:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); outline: 2px solid color-mix(in srgb, currentColor 30%, transparent); }
+    .ltd-spinning svg { animation: ltd-spin .9s linear infinite; }
+    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; }
+    .ltd-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .ltracker-dom-tracker details:not([open]) { min-height: 0; }
+    @keyframes ltd-spin { to { transform: rotate(360deg); } }
+    @media (max-width: 520px) { .ltd-meta { display: none; } .ltd-icon-button { width: 28px; height: 28px; } }
+  </style>
+  <details${open}>
+    <summary>
+      <span class="ltd-summary">
+        <span class="ltd-head">
+          <span class="ltd-title">LTracker</span>
+          ${meta ? `<span class="ltd-meta">${escapeHtml(meta)}</span>` : ""}
+          ${elapsedMarkup}
+          ${statusMarkup}
+          ${editedMarkup}
+        </span>
+        <span class="ltd-actions">
+          ${domButton("toggle_regenerate", actionLabel, actionKind, settings.showWidgetRegenerateButton).replace("ltd-icon-button", `ltd-icon-button${rendered.isRegenerating ? " ltd-spinning" : ""}`)}
+          ${domButton("edit", "View or edit tracker", "edit", settings.showEditButton)}
+          ${domButton("delete", "Delete tracker", "delete", settings.showDeleteButton)}
+        </span>
+      </span>
+    </summary>
+    <div class="ltd-body">${body}</div>
+  </details>
+</section>`;
+}
+function renderMessageTracker(input) {
+  const snapshot = snapshotForDisplay(input);
+  const metadata = metadataFromSnapshot(input.attachedSnapshot, snapshot);
+  const generationMetadata = generationMetadataFromSnapshot(snapshot, input);
+  const identity = identityFromInput(input);
+  if (!snapshot) {
+    const textFallback2 = "No tracker snapshot is available for this message.";
+    const base2 = {
+      messageId: input.messageId,
+      messageIndex: input.messageIndex,
+      swipeKey: identity.swipeKey,
+      swipeIndex: identity.swipeIndex,
+      swipeId: identity.swipeId,
+      swipeContentHash: identity.swipeContentHash,
+      swipeKeySource: identity.swipeKeySource,
+      ...metadata,
+      ...generationMetadata,
+      renderMode: input.settings.renderMode,
+      html: "",
+      textFallback: textFallback2,
+      json: "",
+      warnings: [],
+      errors: [textFallback2]
+    };
+    return {
+      ...base2,
+      widgetHtml: buildWidgetHtml(base2, input.settings),
+      domHtml: buildDomHtml(base2, input.settings)
+    };
+  }
+  const warnings = [];
+  const errors = [];
+  const json = displayJson(input.messageId, input.messageIndex, input.attachedSnapshot, snapshot, input.settings);
+  let html = "";
+  let textFallback = truncateSafe2(formatTemplateTextFallback(snapshot.data), input.settings.maxRenderedChars);
+  if (input.settings.renderMode === "pretty_json") {
+    textFallback = json;
+    html = `<pre class="ltr-pre">${escapeHtml(json)}</pre>`;
+  } else if (input.settings.renderMode === "compact_text") {
+    const source = input.attachedSnapshot ?? snapshot;
+    textFallback = formatSnapshotForInjection(source, injectionSettings(input.settings));
+    html = `<pre class="ltr-pre">${escapeHtml(textFallback)}</pre>`;
+  } else {
+    const template = input.preset.htmlTemplate ?? "";
+    const result = renderHtmlTemplate({
+      template,
+      snapshotData: snapshot.data,
+      presetId: input.preset.id,
+      presetName: input.preset.name
+    }, {
+      missingValuePlaceholder: "",
+      maxRenderedChars: input.settings.maxRenderedChars,
+      allowInlineStyles: input.settings.allowInlineStyles,
+      deduplicateWarnings: input.settings.deduplicateRenderWarnings,
+      maxWarnings: input.settings.showRenderWarningsInDiagnosticsOnly ? 8 : 20
+    });
+    warnings.push(...result.warnings);
+    errors.push(...result.errors);
+    textFallback = result.textFallback;
+    html = result.html || `<pre class="ltr-pre">${escapeHtml(result.textFallback)}</pre>`;
+  }
+  const base = {
+    messageId: input.messageId,
+    messageIndex: input.messageIndex,
+    swipeKey: identity.swipeKey,
+    swipeIndex: identity.swipeIndex,
+    swipeId: identity.swipeId,
+    swipeContentHash: identity.swipeContentHash,
+    swipeKeySource: identity.swipeKeySource,
+    ...metadata,
+    ...generationMetadata,
+    renderMode: input.settings.renderMode,
+    html,
+    textFallback,
+    json,
+    warnings,
+    errors
+  };
+  return {
+    ...base,
+    widgetHtml: buildWidgetHtml(base, input.settings),
+    domHtml: buildDomHtml(base, input.settings)
+  };
+}
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.10";
+var EXTENSION_VERSION = "0.11";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
+
+// src/shared/embeddedTrackerTag.ts
+var LTRACKER_TAG_NAME = "ltracker";
+var LTRACKER_TAG_TYPE = "state";
 
 // src/shared/settings.ts
 var SETTINGS_LIMITS = {
@@ -133,9 +1072,14 @@ var DEFAULT_SETTINGS = {
     enabled: true,
     useDomInjection: true,
     fallbackToIframeWidget: true,
+    attachmentMode: "sidecar_snapshot",
+    displayMode: "inline_full",
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
+    allowInlineStyles: true,
+    deduplicateRenderWarnings: true,
+    showRenderWarningsInDiagnosticsOnly: true,
     collapsedByDefault: true,
     compactCollapsedHeader: true,
     showTimestamp: true,
@@ -223,6 +1167,15 @@ var STYLES = `
   border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
   min-height: 28px;
   padding: 4px 9px;
+}
+.ltracker-save-status {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 999px;
+  display: inline-flex;
+  min-height: 34px;
+  opacity: 0.78;
+  padding: 6px 10px;
 }
 .ltracker-error {
   color: #ff6b6b;
@@ -364,6 +1317,33 @@ var STYLES = `
   white-space: pre-wrap;
   word-break: break-word;
 }
+.ltracker-dom-popover {
+  margin: 0 0 6px;
+}
+.ltracker-dom-popover summary {
+  cursor: pointer;
+  list-style: none;
+}
+.ltracker-dom-popover summary::-webkit-details-marker {
+  display: none;
+}
+.ltracker-dom-popover-button {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 7px;
+  min-height: 30px;
+  padding: 4px 8px;
+}
+.ltracker-dom-popover-panel {
+  border: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  border-radius: 8px;
+  margin-top: 6px;
+  max-height: 52vh;
+  overflow: auto;
+  padding: 8px;
+}
 @media (max-width: 520px) {
   .ltracker-shell {
     padding: 10px;
@@ -471,7 +1451,7 @@ function emptyState() {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection is disabled in 0.10 while the Lumiverse context handler return contract is being verified.",
+      contextHandlerDisabledReason: "Context handler injection is disabled in 0.11 while the Lumiverse context handler return contract is being verified.",
       lastContextHandlerError: null,
       messageDisplayEnabled: false,
       messageDisplayMode: null,
@@ -503,7 +1483,21 @@ function emptyState() {
       lastSwipeKey: null,
       lastSwipeKeySource: null,
       swipeTrackerIndexCount: 0,
-      activeTrackerJobs: []
+      activeTrackerJobs: [],
+      lastPlacementRequested: null,
+      lastPlacementResolved: null,
+      lastPlacementRenderAttemptAt: null,
+      lastPlacementRenderResult: null,
+      lastPlacementError: null,
+      lastMountPointStrategy: null,
+      lastEmbeddedTagWriteAt: null,
+      lastEmbeddedTagWriteMessageId: null,
+      lastEmbeddedTagWriteSwipeKey: null,
+      lastEmbeddedTagError: null,
+      lastTagInterceptAt: null,
+      lastTagInterceptMessageId: null,
+      lastTagInterceptSwipeKey: null,
+      lastTagInterceptError: null
     },
     injectionPreview: null,
     renderPreview: null,
@@ -516,11 +1510,11 @@ function emptyState() {
     }
   };
 }
-function isRecord(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null;
 }
 function isBackendMessage(payload) {
-  return isRecord(payload) && typeof payload.type === "string";
+  return isRecord3(payload) && typeof payload.type === "string";
 }
 function escapeHtml2(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -559,7 +1553,7 @@ function renderJson(value, fallback) {
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
-function formatDurationMs(durationMs) {
+function formatDurationMs2(durationMs) {
   if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 0) return null;
   if (durationMs < 1e3) return `${Math.round(durationMs)}ms`;
   const seconds = durationMs / 1e3;
@@ -576,6 +1570,9 @@ function setup(ctx) {
   const widgetSignatures = /* @__PURE__ */ new Map();
   const domInjections = /* @__PURE__ */ new Map();
   const domSignatures = /* @__PURE__ */ new Map();
+  const embeddedTagEntries = /* @__PURE__ */ new Map();
+  let settingsAutosaveTimer = null;
+  let settingsSaveStatus = "saved";
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
   const tab = ctx.ui.registerDrawerTab({
@@ -599,15 +1596,95 @@ function setup(ctx) {
   function activeChatId() {
     return ctx.getActiveChat().chatId;
   }
+  function currentChatId() {
+    return state.chatId ?? activeChatId();
+  }
   function send(message) {
     if (!disposed) ctx.sendToBackend(message);
   }
   function trackerEntryKey(messageId, swipeKey) {
     return `${messageId}:${swipeKey}`;
   }
+  function settingsSaveStatusLabel() {
+    if (settingsSaveStatus === "saving") return "Saving...";
+    if (settingsSaveStatus === "failed") return "Save failed";
+    return "Saved";
+  }
+  function setSettingsSaveStatus(status) {
+    settingsSaveStatus = status;
+    const label = settingsSaveStatusLabel();
+    for (const element of Array.from(tab.root.querySelectorAll("[data-settings-save-status]"))) {
+      element.textContent = label;
+    }
+  }
+  function clearSettingsAutosaveTimer() {
+    if (!settingsAutosaveTimer) return;
+    clearTimeout(settingsAutosaveTimer);
+    settingsAutosaveTimer = null;
+  }
+  function scheduleSettingsAutosave() {
+    clearSettingsAutosaveTimer();
+    setSettingsSaveStatus("saving");
+    settingsAutosaveTimer = setTimeout(() => {
+      settingsAutosaveTimer = null;
+      saveSettings("settings-auto");
+    }, 650);
+  }
+  function isSettingsControl(target) {
+    if (!(target instanceof HTMLElement)) return false;
+    return Boolean(target.closest("[data-setting], [data-renderer-setting], [data-message-display-setting]"));
+  }
+  function localDiagnostics(update) {
+    state = {
+      ...state,
+      diagnostics: {
+        ...state.diagnostics,
+        ...update
+      }
+    };
+  }
+  function rerenderHistoryEntry(entry) {
+    if (!entry.snapshot) return entry;
+    return {
+      ...entry,
+      rendered: renderMessageTracker({
+        messageId: entry.indexEntry.messageId,
+        messageIndex: entry.indexEntry.messageIndex,
+        attachedSnapshot: entry.snapshot,
+        latestChatSnapshot: state.snapshot,
+        preset: state.activePreset,
+        settings: state.settings.messageDisplay,
+        swipeIdentity: {
+          chatId: entry.snapshot.chatId,
+          messageId: entry.indexEntry.messageId,
+          swipeKey: entry.indexEntry.swipeKey,
+          swipeIndex: entry.indexEntry.swipeIndex,
+          swipeId: entry.indexEntry.swipeId,
+          swipeContentHash: entry.indexEntry.swipeContentHash,
+          swipeKeySource: entry.indexEntry.swipeKeySource
+        },
+        isRegenerating: entry.rendered.isRegenerating,
+        activeJobId: entry.rendered.activeJobId,
+        activeJobStartedAt: entry.rendered.isRegenerating ? entry.rendered.generationStartedAt : null
+      })
+    };
+  }
+  function allRenderableEntries() {
+    const active = currentChatId();
+    const entries = /* @__PURE__ */ new Map();
+    for (const entry of state.messageSnapshotHistory) {
+      if (active && entry.snapshot?.chatId && entry.snapshot.chatId !== active) continue;
+      entries.set(trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey), entry);
+    }
+    for (const [key, entry] of embeddedTagEntries) {
+      if (active && entry.snapshot?.chatId && entry.snapshot.chatId !== active) continue;
+      entries.set(key, rerenderHistoryEntry(entry));
+    }
+    return Array.from(entries.values());
+  }
   function findHistoryEntry(messageId, swipeKey = null) {
     if (!messageId) return null;
-    return state.messageSnapshotHistory.find((entry) => {
+    return allRenderableEntries().find((entry) => {
       return entry.indexEntry.messageId === messageId && (!swipeKey || entry.indexEntry.swipeKey === swipeKey);
     }) ?? null;
   }
@@ -636,7 +1713,7 @@ function setup(ctx) {
     });
   }
   function handleWidgetPayload(expectedMessageId, expectedSwipeKey, payload) {
-    if (!isRecord(payload) || payload.type !== "ltracker_widget_action" || payload.action !== "toggle_regenerate" || payload.messageId !== expectedMessageId) return;
+    if (!isRecord3(payload) || payload.type !== "ltracker_widget_action" || payload.action !== "toggle_regenerate" || payload.messageId !== expectedMessageId) return;
     if ("swipeKey" in payload && payload.swipeKey !== expectedSwipeKey) return;
     const jobId = typeof payload.jobId === "string" && payload.jobId ? payload.jobId : null;
     toggleMessageRegeneration(expectedMessageId, expectedSwipeKey, jobId);
@@ -679,7 +1756,7 @@ function setup(ctx) {
       if (!startedAt) continue;
       const startedMs = Date.parse(startedAt);
       if (!Number.isFinite(startedMs)) continue;
-      element.textContent = formatDurationMs(now - startedMs) ?? "0ms";
+      element.textContent = formatDurationMs2(now - startedMs) ?? "0ms";
     }
   }
   function handleDomTrackerAction(event) {
@@ -703,34 +1780,104 @@ function setup(ctx) {
       void deleteMessageTracker(messageId, swipeKey);
     }
   }
+  function renderInlineTrackerHtml(entry) {
+    if (state.settings.messageDisplay.displayMode !== "inline_button_popover") {
+      return entry.rendered.domHtml;
+    }
+    const rendered = entry.rendered;
+    const open = state.settings.messageDisplay.collapsedByDefault ? "" : " open";
+    const status = rendered.isRegenerating ? "generating" : rendered.generationStatus ?? "ready";
+    const body = rendered.html || `<pre class="ltr-pre">${escapeHtml2(rendered.textFallback)}</pre>`;
+    const button = (action, label, enabled) => enabled ? `<button class="ltracker-button" type="button" data-ltracker-dom-action="${escapeHtml2(action)}">${escapeHtml2(label)}</button>` : "";
+    return `
+      <section class="ltracker-dom-popover" data-ltracker-message-id="${escapeHtml2(entry.indexEntry.messageId)}" data-ltracker-swipe-key="${escapeHtml2(entry.indexEntry.swipeKey)}">
+        <details${open}>
+          <summary>
+            <span class="ltracker-dom-popover-button">
+              <strong>LTracker</strong>
+              <span>${escapeHtml2(status)}</span>
+              <span>swipe ${escapeHtml2(entry.indexEntry.swipeKey)}</span>
+            </span>
+          </summary>
+          <div class="ltracker-dom-popover-panel">
+            ${body}
+            <div class="ltracker-copy-actions" style="margin-top: 8px;">
+              ${button("toggle_regenerate", rendered.isRegenerating ? "Cancel" : "Regenerate", state.settings.messageDisplay.showWidgetRegenerateButton)}
+              ${button("edit", "Edit/View", state.settings.messageDisplay.showEditButton)}
+              ${button("delete", "Delete", state.settings.messageDisplay.showDeleteButton)}
+            </div>
+          </div>
+        </details>
+      </section>
+    `;
+  }
+  function queryMountPoint(root, selector) {
+    try {
+      return root.querySelector(selector);
+    } catch {
+      return null;
+    }
+  }
+  function resolveTrackerMountPoint(messageElement) {
+    const officialBody = queryMountPoint(
+      messageElement,
+      "[data-lumiverse-message-body], [data-message-body], [data-message-content], [data-chat-message-content]"
+    );
+    if (officialBody) {
+      return { target: officialBody, strategy: "official_message_body" };
+    }
+    const scopedBubble = queryMountPoint(messageElement, ":scope > div[class*='bubble']");
+    if (scopedBubble) {
+      return { target: scopedBubble, strategy: "bubble_adapter" };
+    }
+    const nestedBubble = queryMountPoint(messageElement, "div[class*='bubble']");
+    if (nestedBubble) {
+      return { target: nestedBubble, strategy: "bubble_adapter" };
+    }
+    return { target: messageElement, strategy: "official_message_element" };
+  }
+  function positionForPlacement(placement) {
+    return placement === "top" ? "afterbegin" : "beforeend";
+  }
   function hydrateDomInjections() {
-    if (!state.settings.messageDisplay.enabled || !state.settings.messageDisplay.useDomInjection) {
+    if (!state.settings.messageDisplay.enabled || !state.settings.messageDisplay.useDomInjection || state.settings.messageDisplay.displayMode === "drawer_history_only") {
       cleanupDomInjections();
       return false;
     }
     const keepKeys = /* @__PURE__ */ new Set();
     let injectedAny = false;
-    for (const entry of state.messageSnapshotHistory) {
+    let hydratedCount = 0;
+    for (const entry of allRenderableEntries()) {
       if (!entry.snapshot) continue;
       const key = trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey);
       keepKeys.add(key);
-      const target = ctx.dom.findMessageElement(entry.indexEntry.messageId);
-      if (!target) continue;
-      const position = state.settings.messageDisplay.placement === "top" ? "afterbegin" : "beforeend";
+      const messageElement = ctx.dom.findMessageElement(entry.indexEntry.messageId);
+      const requestedPlacement = state.settings.messageDisplay.placement;
+      localDiagnostics({
+        lastPlacementRequested: requestedPlacement,
+        lastPlacementRenderAttemptAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      if (!messageElement) continue;
+      const mount = resolveTrackerMountPoint(messageElement);
+      const target = mount.target;
+      const position = positionForPlacement(requestedPlacement);
+      const html = renderInlineTrackerHtml(entry);
       const signature = [
         entry.rendered.renderMode,
         entry.rendered.snapshotCreatedAt,
         entry.rendered.presetId,
         entry.rendered.swipeKey,
-        entry.rendered.domHtml
+        state.settings.messageDisplay.displayMode,
+        html
       ].join("\n");
       if (domSignatures.get(key) === signature) {
         injectedAny = true;
+        hydratedCount += 1;
         continue;
       }
       try {
         domInjections.get(key)?.cleanup();
-        const element = ctx.dom.inject(target, entry.rendered.domHtml, position);
+        const element = ctx.dom.inject(target, html, position);
         element.addEventListener("click", handleDomTrackerAction);
         domInjections.set(key, {
           element,
@@ -740,19 +1887,32 @@ function setup(ctx) {
           }
         });
         domSignatures.set(key, signature);
+        localDiagnostics({
+          lastPlacementResolved: requestedPlacement,
+          lastPlacementRenderResult: "rendered",
+          lastPlacementError: null,
+          lastMountPointStrategy: mount.strategy,
+          lastDomInjectionAt: (/* @__PURE__ */ new Date()).toISOString(),
+          lastDomInjectionError: null,
+          lastMessageDisplayError: null
+        });
         injectedAny = true;
+        hydratedCount += 1;
       } catch (error) {
-        state = {
-          ...state,
-          diagnostics: {
-            ...state.diagnostics,
-            lastDomInjectionError: errorMessage(error),
-            lastMessageDisplayError: errorMessage(error)
-          }
-        };
+        localDiagnostics({
+          lastPlacementRenderResult: "failed",
+          lastPlacementError: errorMessage(error),
+          lastMountPointStrategy: mount.strategy,
+          lastDomInjectionError: errorMessage(error),
+          lastMessageDisplayError: errorMessage(error)
+        });
       }
     }
     cleanupDomInjections(keepKeys);
+    localDiagnostics({
+      messageDisplayHydratedCount: hydratedCount,
+      lastMessageDisplayHydratedAt: hydratedCount > 0 ? (/* @__PURE__ */ new Date()).toISOString() : state.diagnostics.lastMessageDisplayHydratedAt
+    });
     return injectedAny;
   }
   function hydrateMessageWidgets() {
@@ -762,12 +1922,12 @@ function setup(ctx) {
       cleanupMessageWidgets();
       return;
     }
-    if (!state.settings.messageDisplay.enabled || !renderWidget || !state.settings.messageDisplay.fallbackToIframeWidget) {
+    if (!state.settings.messageDisplay.enabled || state.settings.messageDisplay.displayMode === "drawer_history_only" || !renderWidget || !state.settings.messageDisplay.fallbackToIframeWidget) {
       cleanupMessageWidgets();
       return;
     }
     const keepKeys = /* @__PURE__ */ new Set();
-    for (const entry of state.messageSnapshotHistory) {
+    for (const entry of allRenderableEntries()) {
       if (!entry.snapshot) continue;
       const key = `${entry.indexEntry.messageId}:${entry.indexEntry.swipeKey}:${MESSAGE_WIDGET_ID}`;
       keepKeys.add(key);
@@ -800,6 +1960,132 @@ function setup(ctx) {
       }
     }
     cleanupMessageWidgets(keepKeys);
+  }
+  function buildEmbeddedTagEntry(payload) {
+    if (!payload.messageId) return null;
+    const chatId = payload.chatId ?? currentChatId();
+    if (!chatId) return null;
+    const swipeKey = payload.attrs.swipe || DEFAULT_SWIPE_KEY;
+    const version = payload.attrs.version || EXTENSION_VERSION;
+    const parsed = JSON.parse(payload.content);
+    if (!isRecord3(parsed) || Array.isArray(parsed)) {
+      throw new Error("Embedded LTracker tag content must be a JSON object.");
+    }
+    const attachedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const snapshot = {
+      schemaVersion: STORAGE_SCHEMA_VERSION,
+      extensionVersion: version,
+      chatId,
+      messageId: payload.messageId,
+      messageIndex: null,
+      swipeKey,
+      swipeIndex: null,
+      swipeId: null,
+      swipeContentHash: null,
+      swipeKeySource: "unknown",
+      presetId: state.activePreset.id,
+      presetName: state.activePreset.name,
+      presetVersion: state.activePreset.version,
+      trigger: {
+        kind: "widget",
+        requestId: `tag-intercept:${payload.messageId}:${swipeKey}`,
+        sourceMessageId: payload.messageId,
+        sourceMessageIndex: null,
+        swipeKey,
+        swipeIndex: null,
+        swipeId: null,
+        swipeContentHash: null,
+        swipeKeySource: "unknown"
+      },
+      snapshot: {
+        schemaVersion: STORAGE_SCHEMA_VERSION,
+        extensionVersion: version,
+        chatId,
+        createdAt: attachedAt,
+        messageCount: 1,
+        sourceMessageIds: [payload.messageId],
+        presetId: state.activePreset.id,
+        presetName: state.activePreset.name,
+        presetVersion: state.activePreset.version,
+        generationStartedAt: null,
+        generationCompletedAt: null,
+        generationDurationMs: null,
+        generationCancelledAt: null,
+        generationStatus: "completed",
+        data: parsed
+      },
+      attachedAt
+    };
+    const indexEntry = {
+      messageId: payload.messageId,
+      messageIndex: null,
+      swipeKey,
+      swipeIndex: null,
+      swipeId: null,
+      swipeContentHash: null,
+      swipeKeySource: "unknown",
+      createdAt: attachedAt,
+      presetId: state.activePreset.id,
+      presetName: state.activePreset.name,
+      storageKey: `embedded:${chatId}:${payload.messageId}:${swipeKey}`
+    };
+    return {
+      indexEntry,
+      snapshot,
+      rendered: renderMessageTracker({
+        messageId: payload.messageId,
+        messageIndex: null,
+        attachedSnapshot: snapshot,
+        latestChatSnapshot: state.snapshot,
+        preset: state.activePreset,
+        settings: state.settings.messageDisplay,
+        swipeIdentity: {
+          chatId,
+          messageId: payload.messageId,
+          swipeKey,
+          swipeIndex: null,
+          swipeId: null,
+          swipeContentHash: null,
+          swipeKeySource: "unknown"
+        },
+        isRegenerating: false,
+        activeJobId: null,
+        activeJobStartedAt: null
+      })
+    };
+  }
+  function handleEmbeddedTrackerTag(payload) {
+    const swipeKey = payload.attrs.swipe || DEFAULT_SWIPE_KEY;
+    const outbound = {
+      type: "embedded_tracker_tag_intercepted",
+      chatId: payload.chatId ?? currentChatId(),
+      messageId: payload.messageId ?? null,
+      swipeKey,
+      jsonText: payload.content,
+      requestId: requestId("tag-intercept")
+    };
+    if (typeof payload.isStreaming === "boolean") outbound.isStreaming = payload.isStreaming;
+    send(outbound);
+    if (payload.isStreaming) return;
+    try {
+      const entry = buildEmbeddedTagEntry(payload);
+      if (!entry) return;
+      embeddedTagEntries.set(trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey), entry);
+      localDiagnostics({
+        lastTagInterceptAt: (/* @__PURE__ */ new Date()).toISOString(),
+        lastTagInterceptMessageId: entry.indexEntry.messageId,
+        lastTagInterceptSwipeKey: entry.indexEntry.swipeKey,
+        lastTagInterceptError: null
+      });
+      hydrateMessageWidgets();
+    } catch (error) {
+      localDiagnostics({
+        lastTagInterceptAt: (/* @__PURE__ */ new Date()).toISOString(),
+        lastTagInterceptMessageId: payload.messageId ?? null,
+        lastTagInterceptSwipeKey: swipeKey,
+        lastTagInterceptError: errorMessage(error)
+      });
+    }
   }
   function requestState() {
     send({ type: "refresh_state", chatId: activeChatId() });
@@ -912,9 +2198,14 @@ function setup(ctx) {
         enabled: messageDisplayBooleanValue("enabled"),
         useDomInjection: messageDisplayBooleanValue("useDomInjection"),
         fallbackToIframeWidget: messageDisplayBooleanValue("fallbackToIframeWidget"),
+        attachmentMode: messageDisplaySelectValue("attachmentMode", state.settings.messageDisplay.attachmentMode),
+        displayMode: messageDisplaySelectValue("displayMode", state.settings.messageDisplay.displayMode),
         placement: messageDisplaySelectValue("placement", state.settings.messageDisplay.placement),
         source: messageDisplaySelectValue("source", state.settings.messageDisplay.source),
         renderMode: messageDisplaySelectValue("renderMode", state.settings.messageDisplay.renderMode),
+        allowInlineStyles: messageDisplayBooleanValue("allowInlineStyles"),
+        deduplicateRenderWarnings: messageDisplayBooleanValue("deduplicateRenderWarnings"),
+        showRenderWarningsInDiagnosticsOnly: messageDisplayBooleanValue("showRenderWarningsInDiagnosticsOnly"),
         collapsedByDefault: messageDisplayBooleanValue("collapsedByDefault"),
         compactCollapsedHeader: messageDisplayBooleanValue("compactCollapsedHeader"),
         showTimestamp: messageDisplayBooleanValue("showTimestamp"),
@@ -930,15 +2221,18 @@ function setup(ctx) {
       }
     };
   }
-  function saveSettings() {
+  function saveSettings(prefix = "settings") {
+    setSettingsSaveStatus("saving");
     send({
       type: "save_settings",
       chatId: activeChatId(),
       settings: readSettings(),
-      requestId: requestId("settings")
+      requestId: requestId(prefix)
     });
   }
   function resetSettings() {
+    clearSettingsAutosaveTimer();
+    setSettingsSaveStatus("saving");
     send({
       type: "reset_settings",
       chatId: activeChatId(),
@@ -1184,7 +2478,7 @@ function setup(ctx) {
         const jsonText = jsonInput?.value ?? "";
         try {
           const parsed = JSON.parse(jsonText);
-          const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "data" in parsed && isRecord(parsed.data) ? parsed.data : parsed;
+          const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "data" in parsed && isRecord3(parsed.data) ? parsed.data : parsed;
           if (!data || typeof data !== "object" || Array.isArray(data)) {
             setError("Tracker JSON must be a JSON object.");
             return;
@@ -1207,12 +2501,13 @@ function setup(ctx) {
     modal.onDismiss(() => modal.root.removeEventListener("click", onClick2));
   }
   function renderMessageHistory() {
-    if (state.messageSnapshotHistory.length === 0) {
+    const entries = allRenderableEntries();
+    if (entries.length === 0) {
       return `<div class="ltracker-render-placeholder">${escapeHtml2("No message-attached tracker snapshots are indexed for this chat yet.")}</div>`;
     }
     return `
       <div class="ltracker-history-list">
-        ${state.messageSnapshotHistory.map((entry) => {
+        ${entries.map((entry) => {
       const rendered = entry.rendered;
       const open = state.settings.messageDisplay.collapsedByDefault ? "" : " open";
       const title = [
@@ -1226,7 +2521,7 @@ function setup(ctx) {
         entry.indexEntry.swipeKeySource ? `source ${entry.indexEntry.swipeKeySource}` : null,
         rendered.snapshotCreatedAt ? `snapshot ${rendered.snapshotCreatedAt}` : "snapshot unavailable",
         rendered.attachedAt ? `attached ${rendered.attachedAt}` : null,
-        rendered.generationDurationMs !== null ? `duration ${formatDurationMs(rendered.generationDurationMs)}` : null,
+        rendered.generationDurationMs !== null ? `duration ${formatDurationMs2(rendered.generationDurationMs)}` : null,
         rendered.isRegenerating ? "generating" : null,
         `mode ${rendered.renderMode}`
       ].filter((item) => Boolean(item)).join(" / ");
@@ -1378,7 +2673,7 @@ function setup(ctx) {
             </label>
           </div>
           <div class="ltracker-actions" style="margin-top: 10px;">
-            <button class="ltracker-button" type="button" data-action="save-settings">Save Settings</button>
+            <span class="ltracker-save-status" data-settings-save-status>${escapeHtml2(settingsSaveStatusLabel())}</span>
             <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
           </div>
         </section>
@@ -1519,6 +2814,22 @@ function setup(ctx) {
               Iframe fallback
             </label>
             <label class="ltracker-field">
+              Attachment mode
+              <select data-message-display-setting="attachmentMode">
+                <option value="sidecar_snapshot"${selected(state.settings.messageDisplay.attachmentMode === "sidecar_snapshot")}>Sidecar snapshot</option>
+                <option value="embedded_tracker_tag"${selected(state.settings.messageDisplay.attachmentMode === "embedded_tracker_tag")}>Embedded tracker tag</option>
+                <option value="both"${selected(state.settings.messageDisplay.attachmentMode === "both")}>Both</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Display mode
+              <select data-message-display-setting="displayMode">
+                <option value="inline_full"${selected(state.settings.messageDisplay.displayMode === "inline_full")}>Inline full</option>
+                <option value="inline_button_popover"${selected(state.settings.messageDisplay.displayMode === "inline_button_popover")}>Button popover</option>
+                <option value="drawer_history_only"${selected(state.settings.messageDisplay.displayMode === "drawer_history_only")}>Drawer history only</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
               Placement
               <select data-message-display-setting="placement">
                 <option value="top"${selected(state.settings.messageDisplay.placement === "top")}>Top</option>
@@ -1539,6 +2850,18 @@ function setup(ctx) {
                 <option value="compact_text"${selected(state.settings.messageDisplay.renderMode === "compact_text")}>Compact text</option>
                 <option value="pretty_json"${selected(state.settings.messageDisplay.renderMode === "pretty_json")}>Pretty JSON</option>
               </select>
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="allowInlineStyles"${checked(state.settings.messageDisplay.allowInlineStyles)}>
+              Allow sanitized inline styles
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="deduplicateRenderWarnings"${checked(state.settings.messageDisplay.deduplicateRenderWarnings)}>
+              Deduplicate render warnings
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showRenderWarningsInDiagnosticsOnly"${checked(state.settings.messageDisplay.showRenderWarningsInDiagnosticsOnly)}>
+              Keep warning details in diagnostics
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="collapsedByDefault"${checked(state.settings.messageDisplay.collapsedByDefault)}>
@@ -1674,9 +2997,23 @@ function setup(ctx) {
             ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
             ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
             ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
+            ${renderRow("Last placement requested", diagnostics.lastPlacementRequested)}
+            ${renderRow("Last placement resolved", diagnostics.lastPlacementResolved)}
+            ${renderRow("Last placement attempt", diagnostics.lastPlacementRenderAttemptAt)}
+            ${renderRow("Last placement result", diagnostics.lastPlacementRenderResult)}
+            ${renderRow("Last placement error", diagnostics.lastPlacementError)}
+            ${renderRow("Last mount strategy", diagnostics.lastMountPointStrategy)}
             ${renderRow("Last DOM injection", diagnostics.lastDomInjectionAt)}
             ${renderRow("Last DOM injection error", diagnostics.lastDomInjectionError)}
             ${renderRow("Last uninject", diagnostics.lastUninjectAt)}
+            ${renderRow("Last embedded tag write", diagnostics.lastEmbeddedTagWriteAt)}
+            ${renderRow("Last embedded tag message", diagnostics.lastEmbeddedTagWriteMessageId)}
+            ${renderRow("Last embedded tag swipe", diagnostics.lastEmbeddedTagWriteSwipeKey)}
+            ${renderRow("Last embedded tag error", diagnostics.lastEmbeddedTagError)}
+            ${renderRow("Last tag intercept", diagnostics.lastTagInterceptAt)}
+            ${renderRow("Last tag intercept message", diagnostics.lastTagInterceptMessageId)}
+            ${renderRow("Last tag intercept swipe", diagnostics.lastTagInterceptSwipeKey)}
+            ${renderRow("Last tag intercept error", diagnostics.lastTagInterceptError)}
             ${renderRow("Message-local UI supported", diagnostics.messageLocalUiSupported ? "yes" : "no")}
             ${renderRow("Message-local fallback reason", diagnostics.messageLocalUiFallbackReason)}
             ${renderRow("Message snapshot index count", diagnostics.messageSnapshotIndexCount)}
@@ -1809,7 +3146,6 @@ function setup(ctx) {
     if (action === "generate") generateTracker();
     if (action === "refresh") requestState();
     if (action === "clear-snapshot") clearSnapshot();
-    if (action === "save-settings") saveSettings();
     if (action === "reset-settings") resetSettings();
     if (action === "copy-snapshot") {
       void copyText(state.snapshot ? JSON.stringify(state.snapshot.data, null, 2) : null, "tracker JSON");
@@ -1858,18 +3194,32 @@ function setup(ctx) {
   };
   tab.root.addEventListener("click", onClick);
   cleanups.push(() => tab.root.removeEventListener("click", onClick));
+  const onInput = (event) => {
+    if (isSettingsControl(event.target)) scheduleSettingsAutosave();
+  };
+  tab.root.addEventListener("input", onInput);
+  cleanups.push(() => tab.root.removeEventListener("input", onInput));
   const onChange = (event) => {
+    if (isSettingsControl(event.target)) scheduleSettingsAutosave();
     const target = event.target instanceof HTMLSelectElement ? event.target.closest("[data-preset-select]") : null;
     if (target) selectPreset(target.value);
   };
   tab.root.addEventListener("change", onChange);
   cleanups.push(() => tab.root.removeEventListener("change", onChange));
+  cleanups.push(ctx.messages.registerTagInterceptor({
+    tagName: LTRACKER_TAG_NAME,
+    attrs: { type: LTRACKER_TAG_TYPE },
+    removeFromMessage: true
+  }, handleEmbeddedTrackerTag));
   cleanups.push(tab.onActivate(requestState));
   cleanups.push(inputAction.onClick(generateTracker));
   cleanups.push(ctx.onBackendMessage((payload) => {
     if (!isBackendMessage(payload)) return;
+    const settingsResponse = typeof payload.requestId === "string" && (payload.requestId.startsWith("settings:") || payload.requestId.startsWith("settings-auto:") || payload.requestId.startsWith("settings-reset:"));
     if (payload.type === "state") {
+      if (payload.state.chatId !== state.chatId) embeddedTagEntries.clear();
       state = payload.state;
+      if (settingsResponse) settingsSaveStatus = "saved";
       render();
     }
     if (payload.type === "error") {
@@ -1878,9 +3228,11 @@ function setup(ctx) {
         status: "error",
         error: emptyError(payload.message)
       };
+      if (settingsResponse) settingsSaveStatus = "failed";
       render();
     }
   }));
+  cleanups.push(() => clearSettingsAutosaveTimer());
   cleanups.push(() => cleanupMessageWidgets());
   cleanups.push(() => cleanupDomInjections());
   cleanups.push(() => inputAction.destroy());

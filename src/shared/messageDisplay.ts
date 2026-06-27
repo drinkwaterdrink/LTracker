@@ -424,7 +424,9 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
     }, {
       missingValuePlaceholder: "",
       maxRenderedChars: input.settings.maxRenderedChars,
-      allowInlineStyles: false,
+      allowInlineStyles: input.settings.allowInlineStyles,
+      deduplicateWarnings: input.settings.deduplicateRenderWarnings,
+      maxWarnings: input.settings.showRenderWarningsInDiagnosticsOnly ? 8 : 20,
     });
     warnings.push(...result.warnings);
     errors.push(...result.errors);

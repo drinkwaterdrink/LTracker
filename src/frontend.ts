@@ -1,18 +1,28 @@
-import type { SpindleFrontendContext } from "lumiverse-spindle-types";
+import type {
+  SpindleFrontendContext,
+  SpindleMessageTagIntercept,
+} from "lumiverse-spindle-types";
 import {
   DEFAULT_TRACKER_PRESET,
   exportTrackerPreset,
 } from "./shared/presets";
-import { MESSAGE_WIDGET_ID } from "./shared/messageDisplay";
+import {
+  MESSAGE_WIDGET_ID,
+  renderMessageTracker,
+} from "./shared/messageDisplay";
+import { LTRACKER_TAG_NAME, LTRACKER_TAG_TYPE } from "./shared/embeddedTrackerTag";
 import { DEFAULT_SETTINGS } from "./shared/settings";
 import type {
   BackendMessage,
   FrontendMessage,
   FrontendState,
   LTrackerError,
+  LTrackerMessageDisplayPlacement,
+  LTrackerMountPointStrategy,
   LTrackerRenderSource,
   LTrackerSettings,
   MessageTrackerHistoryEntry,
+  MessageAttachedSnapshot,
   TrackerPresetDraft,
 } from "./shared/types";
 import {
@@ -21,6 +31,7 @@ import {
   SPINDLE_TYPES_VERSION,
   STORAGE_SCHEMA_VERSION,
 } from "./shared/types";
+import { DEFAULT_SWIPE_KEY } from "./shared/swipeIdentity";
 
 const ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1.45.9L12 17.62 5.45 20.9A1 1 0 0 1 4 20V4a1 1 0 0 1 1-1Zm1 2v13.38l5.55-2.78a1 1 0 0 1 .9 0L18 18.38V5H6Zm3 3h6v2H9V8Zm0 4h5v2H9v-2Z"/></svg>`;
 
@@ -94,6 +105,15 @@ const STYLES = `
   border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
   min-height: 28px;
   padding: 4px 9px;
+}
+.ltracker-save-status {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 999px;
+  display: inline-flex;
+  min-height: 34px;
+  opacity: 0.78;
+  padding: 6px 10px;
 }
 .ltracker-error {
   color: #ff6b6b;
@@ -235,6 +255,33 @@ const STYLES = `
   white-space: pre-wrap;
   word-break: break-word;
 }
+.ltracker-dom-popover {
+  margin: 0 0 6px;
+}
+.ltracker-dom-popover summary {
+  cursor: pointer;
+  list-style: none;
+}
+.ltracker-dom-popover summary::-webkit-details-marker {
+  display: none;
+}
+.ltracker-dom-popover-button {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 7px;
+  min-height: 30px;
+  padding: 4px 8px;
+}
+.ltracker-dom-popover-panel {
+  border: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  border-radius: 8px;
+  margin-top: 6px;
+  max-height: 52vh;
+  overflow: auto;
+  padding: 8px;
+}
 @media (max-width: 520px) {
   .ltracker-shell {
     padding: 10px;
@@ -344,7 +391,7 @@ function emptyState(): FrontendState {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection is disabled in 0.10 while the Lumiverse context handler return contract is being verified.",
+      contextHandlerDisabledReason: "Context handler injection is disabled in 0.11 while the Lumiverse context handler return contract is being verified.",
       lastContextHandlerError: null,
       messageDisplayEnabled: false,
       messageDisplayMode: null,
@@ -377,6 +424,20 @@ function emptyState(): FrontendState {
       lastSwipeKeySource: null,
       swipeTrackerIndexCount: 0,
       activeTrackerJobs: [],
+      lastPlacementRequested: null,
+      lastPlacementResolved: null,
+      lastPlacementRenderAttemptAt: null,
+      lastPlacementRenderResult: null,
+      lastPlacementError: null,
+      lastMountPointStrategy: null,
+      lastEmbeddedTagWriteAt: null,
+      lastEmbeddedTagWriteMessageId: null,
+      lastEmbeddedTagWriteSwipeKey: null,
+      lastEmbeddedTagError: null,
+      lastTagInterceptAt: null,
+      lastTagInterceptMessageId: null,
+      lastTagInterceptSwipeKey: null,
+      lastTagInterceptError: null,
     },
     injectionPreview: null,
     renderPreview: null,
@@ -466,6 +527,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const widgetSignatures = new Map<string, string>();
   const domInjections = new Map<string, { element: Element; cleanup: () => void }>();
   const domSignatures = new Map<string, string>();
+  const embeddedTagEntries = new Map<string, MessageTrackerHistoryEntry>();
+  let settingsAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let settingsSaveStatus: "idle" | "saving" | "saved" | "failed" = "saved";
 
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
@@ -494,6 +558,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     return ctx.getActiveChat().chatId;
   }
 
+  function currentChatId(): string | null {
+    return state.chatId ?? activeChatId();
+  }
+
   function send(message: FrontendMessage): void {
     if (!disposed) ctx.sendToBackend(message);
   }
@@ -502,9 +570,94 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     return `${messageId}:${swipeKey}`;
   }
 
+  function settingsSaveStatusLabel(): string {
+    if (settingsSaveStatus === "saving") return "Saving...";
+    if (settingsSaveStatus === "failed") return "Save failed";
+    return "Saved";
+  }
+
+  function setSettingsSaveStatus(status: typeof settingsSaveStatus): void {
+    settingsSaveStatus = status;
+    const label = settingsSaveStatusLabel();
+    for (const element of Array.from(tab.root.querySelectorAll<HTMLElement>("[data-settings-save-status]"))) {
+      element.textContent = label;
+    }
+  }
+
+  function clearSettingsAutosaveTimer(): void {
+    if (!settingsAutosaveTimer) return;
+    clearTimeout(settingsAutosaveTimer);
+    settingsAutosaveTimer = null;
+  }
+
+  function scheduleSettingsAutosave(): void {
+    clearSettingsAutosaveTimer();
+    setSettingsSaveStatus("saving");
+    settingsAutosaveTimer = setTimeout(() => {
+      settingsAutosaveTimer = null;
+      saveSettings("settings-auto");
+    }, 650);
+  }
+
+  function isSettingsControl(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    return Boolean(target.closest("[data-setting], [data-renderer-setting], [data-message-display-setting]"));
+  }
+
+  function localDiagnostics(update: Partial<FrontendState["diagnostics"]>): void {
+    state = {
+      ...state,
+      diagnostics: {
+        ...state.diagnostics,
+        ...update,
+      },
+    };
+  }
+
+  function rerenderHistoryEntry(entry: MessageTrackerHistoryEntry): MessageTrackerHistoryEntry {
+    if (!entry.snapshot) return entry;
+    return {
+      ...entry,
+      rendered: renderMessageTracker({
+        messageId: entry.indexEntry.messageId,
+        messageIndex: entry.indexEntry.messageIndex,
+        attachedSnapshot: entry.snapshot,
+        latestChatSnapshot: state.snapshot,
+        preset: state.activePreset,
+        settings: state.settings.messageDisplay,
+        swipeIdentity: {
+          chatId: entry.snapshot.chatId,
+          messageId: entry.indexEntry.messageId,
+          swipeKey: entry.indexEntry.swipeKey,
+          swipeIndex: entry.indexEntry.swipeIndex,
+          swipeId: entry.indexEntry.swipeId,
+          swipeContentHash: entry.indexEntry.swipeContentHash,
+          swipeKeySource: entry.indexEntry.swipeKeySource,
+        },
+        isRegenerating: entry.rendered.isRegenerating,
+        activeJobId: entry.rendered.activeJobId,
+        activeJobStartedAt: entry.rendered.isRegenerating ? entry.rendered.generationStartedAt : null,
+      }),
+    };
+  }
+
+  function allRenderableEntries(): MessageTrackerHistoryEntry[] {
+    const active = currentChatId();
+    const entries = new Map<string, MessageTrackerHistoryEntry>();
+    for (const entry of state.messageSnapshotHistory) {
+      if (active && entry.snapshot?.chatId && entry.snapshot.chatId !== active) continue;
+      entries.set(trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey), entry);
+    }
+    for (const [key, entry] of embeddedTagEntries) {
+      if (active && entry.snapshot?.chatId && entry.snapshot.chatId !== active) continue;
+      entries.set(key, rerenderHistoryEntry(entry));
+    }
+    return Array.from(entries.values());
+  }
+
   function findHistoryEntry(messageId: string | undefined, swipeKey: string | undefined | null = null) {
     if (!messageId) return null;
-    return state.messageSnapshotHistory.find((entry) => {
+    return allRenderableEntries().find((entry) => {
       return entry.indexEntry.messageId === messageId && (!swipeKey || entry.indexEntry.swipeKey === swipeKey);
     }) ?? null;
   }
@@ -616,34 +769,117 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
   }
 
+  function renderInlineTrackerHtml(entry: MessageTrackerHistoryEntry): string {
+    if (state.settings.messageDisplay.displayMode !== "inline_button_popover") {
+      return entry.rendered.domHtml;
+    }
+    const rendered = entry.rendered;
+    const open = state.settings.messageDisplay.collapsedByDefault ? "" : " open";
+    const status = rendered.isRegenerating ? "generating" : rendered.generationStatus ?? "ready";
+    const body = rendered.html || `<pre class="ltr-pre">${escapeHtml(rendered.textFallback)}</pre>`;
+    const button = (action: string, label: string, enabled: boolean): string => enabled
+      ? `<button class="ltracker-button" type="button" data-ltracker-dom-action="${escapeHtml(action)}">${escapeHtml(label)}</button>`
+      : "";
+    return `
+      <section class="ltracker-dom-popover" data-ltracker-message-id="${escapeHtml(entry.indexEntry.messageId)}" data-ltracker-swipe-key="${escapeHtml(entry.indexEntry.swipeKey)}">
+        <details${open}>
+          <summary>
+            <span class="ltracker-dom-popover-button">
+              <strong>LTracker</strong>
+              <span>${escapeHtml(status)}</span>
+              <span>swipe ${escapeHtml(entry.indexEntry.swipeKey)}</span>
+            </span>
+          </summary>
+          <div class="ltracker-dom-popover-panel">
+            ${body}
+            <div class="ltracker-copy-actions" style="margin-top: 8px;">
+              ${button("toggle_regenerate", rendered.isRegenerating ? "Cancel" : "Regenerate", state.settings.messageDisplay.showWidgetRegenerateButton)}
+              ${button("edit", "Edit/View", state.settings.messageDisplay.showEditButton)}
+              ${button("delete", "Delete", state.settings.messageDisplay.showDeleteButton)}
+            </div>
+          </div>
+        </details>
+      </section>
+    `;
+  }
+
+  function queryMountPoint(root: Element, selector: string): Element | null {
+    try {
+      return root.querySelector(selector);
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveTrackerMountPoint(messageElement: Element): {
+    target: Element;
+    strategy: LTrackerMountPointStrategy;
+  } {
+    const officialBody = queryMountPoint(
+      messageElement,
+      "[data-lumiverse-message-body], [data-message-body], [data-message-content], [data-chat-message-content]",
+    );
+    if (officialBody) {
+      return { target: officialBody, strategy: "official_message_body" };
+    }
+    const scopedBubble = queryMountPoint(messageElement, ":scope > div[class*='bubble']");
+    if (scopedBubble) {
+      return { target: scopedBubble, strategy: "bubble_adapter" };
+    }
+    const nestedBubble = queryMountPoint(messageElement, "div[class*='bubble']");
+    if (nestedBubble) {
+      return { target: nestedBubble, strategy: "bubble_adapter" };
+    }
+    return { target: messageElement, strategy: "official_message_element" };
+  }
+
+  function positionForPlacement(placement: LTrackerMessageDisplayPlacement): InsertPosition {
+    return placement === "top" ? "afterbegin" : "beforeend";
+  }
+
   function hydrateDomInjections(): boolean {
-    if (!state.settings.messageDisplay.enabled || !state.settings.messageDisplay.useDomInjection) {
+    if (
+      !state.settings.messageDisplay.enabled
+      || !state.settings.messageDisplay.useDomInjection
+      || state.settings.messageDisplay.displayMode === "drawer_history_only"
+    ) {
       cleanupDomInjections();
       return false;
     }
     const keepKeys = new Set<string>();
     let injectedAny = false;
-    for (const entry of state.messageSnapshotHistory) {
+    let hydratedCount = 0;
+    for (const entry of allRenderableEntries()) {
       if (!entry.snapshot) continue;
       const key = trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey);
       keepKeys.add(key);
-      const target = ctx.dom.findMessageElement(entry.indexEntry.messageId);
-      if (!target) continue;
-      const position: InsertPosition = state.settings.messageDisplay.placement === "top" ? "afterbegin" : "beforeend";
+      const messageElement = ctx.dom.findMessageElement(entry.indexEntry.messageId);
+      const requestedPlacement = state.settings.messageDisplay.placement;
+      localDiagnostics({
+        lastPlacementRequested: requestedPlacement,
+        lastPlacementRenderAttemptAt: new Date().toISOString(),
+      });
+      if (!messageElement) continue;
+      const mount = resolveTrackerMountPoint(messageElement);
+      const target = mount.target;
+      const position = positionForPlacement(requestedPlacement);
+      const html = renderInlineTrackerHtml(entry);
       const signature = [
         entry.rendered.renderMode,
         entry.rendered.snapshotCreatedAt,
         entry.rendered.presetId,
         entry.rendered.swipeKey,
-        entry.rendered.domHtml,
+        state.settings.messageDisplay.displayMode,
+        html,
       ].join("\n");
       if (domSignatures.get(key) === signature) {
         injectedAny = true;
+        hydratedCount += 1;
         continue;
       }
       try {
         domInjections.get(key)?.cleanup();
-        const element = ctx.dom.inject(target, entry.rendered.domHtml, position);
+        const element = ctx.dom.inject(target, html, position);
         element.addEventListener("click", handleDomTrackerAction);
         domInjections.set(key, {
           element,
@@ -653,19 +889,32 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           },
         });
         domSignatures.set(key, signature);
+        localDiagnostics({
+          lastPlacementResolved: requestedPlacement,
+          lastPlacementRenderResult: "rendered",
+          lastPlacementError: null,
+          lastMountPointStrategy: mount.strategy,
+          lastDomInjectionAt: new Date().toISOString(),
+          lastDomInjectionError: null,
+          lastMessageDisplayError: null,
+        });
         injectedAny = true;
+        hydratedCount += 1;
       } catch (error) {
-        state = {
-          ...state,
-          diagnostics: {
-            ...state.diagnostics,
-            lastDomInjectionError: errorMessage(error),
-            lastMessageDisplayError: errorMessage(error),
-          },
-        };
+        localDiagnostics({
+          lastPlacementRenderResult: "failed",
+          lastPlacementError: errorMessage(error),
+          lastMountPointStrategy: mount.strategy,
+          lastDomInjectionError: errorMessage(error),
+          lastMessageDisplayError: errorMessage(error),
+        });
       }
     }
     cleanupDomInjections(keepKeys);
+    localDiagnostics({
+      messageDisplayHydratedCount: hydratedCount,
+      lastMessageDisplayHydratedAt: hydratedCount > 0 ? new Date().toISOString() : state.diagnostics.lastMessageDisplayHydratedAt,
+    });
     return injectedAny;
   }
 
@@ -676,13 +925,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       cleanupMessageWidgets();
       return;
     }
-    if (!state.settings.messageDisplay.enabled || !renderWidget || !state.settings.messageDisplay.fallbackToIframeWidget) {
+    if (
+      !state.settings.messageDisplay.enabled
+      || state.settings.messageDisplay.displayMode === "drawer_history_only"
+      || !renderWidget
+      || !state.settings.messageDisplay.fallbackToIframeWidget
+    ) {
       cleanupMessageWidgets();
       return;
     }
 
     const keepKeys = new Set<string>();
-    for (const entry of state.messageSnapshotHistory) {
+    for (const entry of allRenderableEntries()) {
       if (!entry.snapshot) continue;
       const key = `${entry.indexEntry.messageId}:${entry.indexEntry.swipeKey}:${MESSAGE_WIDGET_ID}`;
       keepKeys.add(key);
@@ -715,6 +969,134 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }
     }
     cleanupMessageWidgets(keepKeys);
+  }
+
+  function buildEmbeddedTagEntry(payload: SpindleMessageTagIntercept): MessageTrackerHistoryEntry | null {
+    if (!payload.messageId) return null;
+    const chatId = payload.chatId ?? currentChatId();
+    if (!chatId) return null;
+    const swipeKey = payload.attrs.swipe || DEFAULT_SWIPE_KEY;
+    const version = payload.attrs.version || EXTENSION_VERSION;
+    const parsed = JSON.parse(payload.content);
+    if (!isRecord(parsed) || Array.isArray(parsed)) {
+      throw new Error("Embedded LTracker tag content must be a JSON object.");
+    }
+    const attachedAt = new Date().toISOString();
+    const snapshot: MessageAttachedSnapshot = {
+      schemaVersion: STORAGE_SCHEMA_VERSION,
+      extensionVersion: version,
+      chatId,
+      messageId: payload.messageId,
+      messageIndex: null,
+      swipeKey,
+      swipeIndex: null,
+      swipeId: null,
+      swipeContentHash: null,
+      swipeKeySource: "unknown",
+      presetId: state.activePreset.id,
+      presetName: state.activePreset.name,
+      presetVersion: state.activePreset.version,
+      trigger: {
+        kind: "widget",
+        requestId: `tag-intercept:${payload.messageId}:${swipeKey}`,
+        sourceMessageId: payload.messageId,
+        sourceMessageIndex: null,
+        swipeKey,
+        swipeIndex: null,
+        swipeId: null,
+        swipeContentHash: null,
+        swipeKeySource: "unknown",
+      },
+      snapshot: {
+        schemaVersion: STORAGE_SCHEMA_VERSION,
+        extensionVersion: version,
+        chatId,
+        createdAt: attachedAt,
+        messageCount: 1,
+        sourceMessageIds: [payload.messageId],
+        presetId: state.activePreset.id,
+        presetName: state.activePreset.name,
+        presetVersion: state.activePreset.version,
+        generationStartedAt: null,
+        generationCompletedAt: null,
+        generationDurationMs: null,
+        generationCancelledAt: null,
+        generationStatus: "completed",
+        data: parsed,
+      },
+      attachedAt,
+    };
+    const indexEntry = {
+      messageId: payload.messageId,
+      messageIndex: null,
+      swipeKey,
+      swipeIndex: null,
+      swipeId: null,
+      swipeContentHash: null,
+      swipeKeySource: "unknown" as const,
+      createdAt: attachedAt,
+      presetId: state.activePreset.id,
+      presetName: state.activePreset.name,
+      storageKey: `embedded:${chatId}:${payload.messageId}:${swipeKey}`,
+    };
+    return {
+      indexEntry,
+      snapshot,
+      rendered: renderMessageTracker({
+        messageId: payload.messageId,
+        messageIndex: null,
+        attachedSnapshot: snapshot,
+        latestChatSnapshot: state.snapshot,
+        preset: state.activePreset,
+        settings: state.settings.messageDisplay,
+        swipeIdentity: {
+          chatId,
+          messageId: payload.messageId,
+          swipeKey,
+          swipeIndex: null,
+          swipeId: null,
+          swipeContentHash: null,
+          swipeKeySource: "unknown",
+        },
+        isRegenerating: false,
+        activeJobId: null,
+        activeJobStartedAt: null,
+      }),
+    };
+  }
+
+  function handleEmbeddedTrackerTag(payload: SpindleMessageTagIntercept): void {
+    const swipeKey = payload.attrs.swipe || DEFAULT_SWIPE_KEY;
+    const outbound: FrontendMessage = {
+      type: "embedded_tracker_tag_intercepted",
+      chatId: payload.chatId ?? currentChatId(),
+      messageId: payload.messageId ?? null,
+      swipeKey,
+      jsonText: payload.content,
+      requestId: requestId("tag-intercept"),
+    };
+    if (typeof payload.isStreaming === "boolean") outbound.isStreaming = payload.isStreaming;
+    send(outbound);
+    if (payload.isStreaming) return;
+    try {
+      const entry = buildEmbeddedTagEntry(payload);
+      if (!entry) return;
+      embeddedTagEntries.set(trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey), entry);
+      localDiagnostics({
+        lastTagInterceptAt: new Date().toISOString(),
+        lastTagInterceptMessageId: entry.indexEntry.messageId,
+        lastTagInterceptSwipeKey: entry.indexEntry.swipeKey,
+        lastTagInterceptError: null,
+      });
+      hydrateMessageWidgets();
+    } catch (error) {
+      localDiagnostics({
+        lastTagInterceptAt: new Date().toISOString(),
+        lastTagInterceptMessageId: payload.messageId ?? null,
+        lastTagInterceptSwipeKey: swipeKey,
+        lastTagInterceptError: errorMessage(error),
+      });
+    }
   }
 
   function requestState(): void {
@@ -784,6 +1166,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         | "enabled"
         | "useDomInjection"
         | "fallbackToIframeWidget"
+        | "allowInlineStyles"
+        | "deduplicateRenderWarnings"
+        | "showRenderWarningsInDiagnosticsOnly"
         | "collapsedByDefault"
         | "compactCollapsedHeader"
         | "showTimestamp"
@@ -808,7 +1193,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       return input ? input.value as T : fallback;
     };
     const messageDisplaySelectValue = <T extends string>(
-      name: keyof Pick<LTrackerSettings["messageDisplay"], "placement" | "source" | "renderMode">,
+      name: keyof Pick<LTrackerSettings["messageDisplay"], "attachmentMode" | "displayMode" | "placement" | "source" | "renderMode">,
       fallback: T,
     ): T => {
       const input = tab.root.querySelector<HTMLSelectElement>(`[data-message-display-setting="${name}"]`);
@@ -851,9 +1236,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         enabled: messageDisplayBooleanValue("enabled"),
         useDomInjection: messageDisplayBooleanValue("useDomInjection"),
         fallbackToIframeWidget: messageDisplayBooleanValue("fallbackToIframeWidget"),
+        attachmentMode: messageDisplaySelectValue("attachmentMode", state.settings.messageDisplay.attachmentMode),
+        displayMode: messageDisplaySelectValue("displayMode", state.settings.messageDisplay.displayMode),
         placement: messageDisplaySelectValue("placement", state.settings.messageDisplay.placement),
         source: messageDisplaySelectValue("source", state.settings.messageDisplay.source),
         renderMode: messageDisplaySelectValue("renderMode", state.settings.messageDisplay.renderMode),
+        allowInlineStyles: messageDisplayBooleanValue("allowInlineStyles"),
+        deduplicateRenderWarnings: messageDisplayBooleanValue("deduplicateRenderWarnings"),
+        showRenderWarningsInDiagnosticsOnly: messageDisplayBooleanValue("showRenderWarningsInDiagnosticsOnly"),
         collapsedByDefault: messageDisplayBooleanValue("collapsedByDefault"),
         compactCollapsedHeader: messageDisplayBooleanValue("compactCollapsedHeader"),
         showTimestamp: messageDisplayBooleanValue("showTimestamp"),
@@ -870,16 +1260,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     };
   }
 
-  function saveSettings(): void {
+  function saveSettings(prefix = "settings"): void {
+    setSettingsSaveStatus("saving");
     send({
       type: "save_settings",
       chatId: activeChatId(),
       settings: readSettings(),
-      requestId: requestId("settings"),
+      requestId: requestId(prefix),
     });
   }
 
   function resetSettings(): void {
+    clearSettingsAutosaveTimer();
+    setSettingsSaveStatus("saving");
     send({
       type: "reset_settings",
       chatId: activeChatId(),
@@ -1170,12 +1563,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   function renderMessageHistory(): string {
-    if (state.messageSnapshotHistory.length === 0) {
+    const entries = allRenderableEntries();
+    if (entries.length === 0) {
       return `<div class="ltracker-render-placeholder">${escapeHtml("No message-attached tracker snapshots are indexed for this chat yet.")}</div>`;
     }
     return `
       <div class="ltracker-history-list">
-        ${state.messageSnapshotHistory.map((entry) => {
+        ${entries.map((entry) => {
           const rendered = entry.rendered;
           const open = state.settings.messageDisplay.collapsedByDefault ? "" : " open";
           const title = [
@@ -1373,7 +1767,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             </label>
           </div>
           <div class="ltracker-actions" style="margin-top: 10px;">
-            <button class="ltracker-button" type="button" data-action="save-settings">Save Settings</button>
+            <span class="ltracker-save-status" data-settings-save-status>${escapeHtml(settingsSaveStatusLabel())}</span>
             <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
           </div>
         </section>
@@ -1514,6 +1908,22 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               Iframe fallback
             </label>
             <label class="ltracker-field">
+              Attachment mode
+              <select data-message-display-setting="attachmentMode">
+                <option value="sidecar_snapshot"${selected(state.settings.messageDisplay.attachmentMode === "sidecar_snapshot")}>Sidecar snapshot</option>
+                <option value="embedded_tracker_tag"${selected(state.settings.messageDisplay.attachmentMode === "embedded_tracker_tag")}>Embedded tracker tag</option>
+                <option value="both"${selected(state.settings.messageDisplay.attachmentMode === "both")}>Both</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Display mode
+              <select data-message-display-setting="displayMode">
+                <option value="inline_full"${selected(state.settings.messageDisplay.displayMode === "inline_full")}>Inline full</option>
+                <option value="inline_button_popover"${selected(state.settings.messageDisplay.displayMode === "inline_button_popover")}>Button popover</option>
+                <option value="drawer_history_only"${selected(state.settings.messageDisplay.displayMode === "drawer_history_only")}>Drawer history only</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
               Placement
               <select data-message-display-setting="placement">
                 <option value="top"${selected(state.settings.messageDisplay.placement === "top")}>Top</option>
@@ -1534,6 +1944,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
                 <option value="compact_text"${selected(state.settings.messageDisplay.renderMode === "compact_text")}>Compact text</option>
                 <option value="pretty_json"${selected(state.settings.messageDisplay.renderMode === "pretty_json")}>Pretty JSON</option>
               </select>
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="allowInlineStyles"${checked(state.settings.messageDisplay.allowInlineStyles)}>
+              Allow sanitized inline styles
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="deduplicateRenderWarnings"${checked(state.settings.messageDisplay.deduplicateRenderWarnings)}>
+              Deduplicate render warnings
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showRenderWarningsInDiagnosticsOnly"${checked(state.settings.messageDisplay.showRenderWarningsInDiagnosticsOnly)}>
+              Keep warning details in diagnostics
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="collapsedByDefault"${checked(state.settings.messageDisplay.collapsedByDefault)}>
@@ -1669,9 +2091,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
             ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
             ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
+            ${renderRow("Last placement requested", diagnostics.lastPlacementRequested)}
+            ${renderRow("Last placement resolved", diagnostics.lastPlacementResolved)}
+            ${renderRow("Last placement attempt", diagnostics.lastPlacementRenderAttemptAt)}
+            ${renderRow("Last placement result", diagnostics.lastPlacementRenderResult)}
+            ${renderRow("Last placement error", diagnostics.lastPlacementError)}
+            ${renderRow("Last mount strategy", diagnostics.lastMountPointStrategy)}
             ${renderRow("Last DOM injection", diagnostics.lastDomInjectionAt)}
             ${renderRow("Last DOM injection error", diagnostics.lastDomInjectionError)}
             ${renderRow("Last uninject", diagnostics.lastUninjectAt)}
+            ${renderRow("Last embedded tag write", diagnostics.lastEmbeddedTagWriteAt)}
+            ${renderRow("Last embedded tag message", diagnostics.lastEmbeddedTagWriteMessageId)}
+            ${renderRow("Last embedded tag swipe", diagnostics.lastEmbeddedTagWriteSwipeKey)}
+            ${renderRow("Last embedded tag error", diagnostics.lastEmbeddedTagError)}
+            ${renderRow("Last tag intercept", diagnostics.lastTagInterceptAt)}
+            ${renderRow("Last tag intercept message", diagnostics.lastTagInterceptMessageId)}
+            ${renderRow("Last tag intercept swipe", diagnostics.lastTagInterceptSwipeKey)}
+            ${renderRow("Last tag intercept error", diagnostics.lastTagInterceptError)}
             ${renderRow("Message-local UI supported", diagnostics.messageLocalUiSupported ? "yes" : "no")}
             ${renderRow("Message-local fallback reason", diagnostics.messageLocalUiFallbackReason)}
             ${renderRow("Message snapshot index count", diagnostics.messageSnapshotIndexCount)}
@@ -1807,7 +2243,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (action === "generate") generateTracker();
     if (action === "refresh") requestState();
     if (action === "clear-snapshot") clearSnapshot();
-    if (action === "save-settings") saveSettings();
     if (action === "reset-settings") resetSettings();
     if (action === "copy-snapshot") {
       void copyText(state.snapshot ? JSON.stringify(state.snapshot.data, null, 2) : null, "tracker JSON");
@@ -1860,7 +2295,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   tab.root.addEventListener("click", onClick);
   cleanups.push(() => tab.root.removeEventListener("click", onClick));
 
+  const onInput = (event: Event): void => {
+    if (isSettingsControl(event.target)) scheduleSettingsAutosave();
+  };
+
+  tab.root.addEventListener("input", onInput);
+  cleanups.push(() => tab.root.removeEventListener("input", onInput));
+
   const onChange = (event: Event): void => {
+    if (isSettingsControl(event.target)) scheduleSettingsAutosave();
     const target = event.target instanceof HTMLSelectElement
       ? event.target.closest<HTMLSelectElement>("[data-preset-select]")
       : null;
@@ -1870,12 +2313,22 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   tab.root.addEventListener("change", onChange);
   cleanups.push(() => tab.root.removeEventListener("change", onChange));
 
+  cleanups.push(ctx.messages.registerTagInterceptor({
+    tagName: LTRACKER_TAG_NAME,
+    attrs: { type: LTRACKER_TAG_TYPE },
+    removeFromMessage: true,
+  }, handleEmbeddedTrackerTag));
+
   cleanups.push(tab.onActivate(requestState));
   cleanups.push(inputAction.onClick(generateTracker));
   cleanups.push(ctx.onBackendMessage((payload) => {
     if (!isBackendMessage(payload)) return;
+    const settingsResponse = typeof payload.requestId === "string"
+      && (payload.requestId.startsWith("settings:") || payload.requestId.startsWith("settings-auto:") || payload.requestId.startsWith("settings-reset:"));
     if (payload.type === "state") {
+      if (payload.state.chatId !== state.chatId) embeddedTagEntries.clear();
       state = payload.state;
+      if (settingsResponse) settingsSaveStatus = "saved";
       render();
     }
     if (payload.type === "error") {
@@ -1884,9 +2337,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         status: "error",
         error: emptyError(payload.message),
       };
+      if (settingsResponse) settingsSaveStatus = "failed";
       render();
     }
   }));
+  cleanups.push(() => clearSettingsAutosaveTimer());
   cleanups.push(() => cleanupMessageWidgets());
   cleanups.push(() => cleanupDomInjections());
   cleanups.push(() => inputAction.destroy());

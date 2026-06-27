@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11 - Render fidelity and embedded tracker tags
+- Expanded sanitized inline style support for richer zTracker-like HTML templates in message displays.
+- Added render-warning deduplication and warning caps so noisy templates stay inspectable in diagnostics.
+- Allowed `<details open>` only on `<details>` and kept other unsafe attributes stripped.
+- Added embedded tracker tag mode with `<ltracker type="state" version="0.11" swipe="...">` blocks.
+- Added exact-swipe embedded tag upsert/removal using `spindle.chat.updateMessage()` only when embedded mode is enabled.
+- Added a Lumiverse message tag interceptor that hides raw LTracker tags and renders from the intercepted exact message payload.
+- Added sidecar, embedded, and both attachment modes.
+- Added full inline, button popover, and drawer-history-only display modes.
+- Improved top/bottom DOM injection by resolving a message body/bubble mount point before falling back to the full message element.
+- Replaced the manual Save Settings button with debounced autosave and an explicit Reset Settings action.
+- Added diagnostics for placement resolution, mount strategy, embedded tag writes, and tag interception.
+- Added tests for embedded tag exact-swipe replacement/removal, sanitizer fidelity, settings repair, autosave UI, and README coverage.
+
 ## 0.10 - Top swipe tracker controls
 - Added swipe-aware message tracker storage keyed by chat id, message id, and selected swipe key.
 - Added official Lumiverse DOM injection as the primary compact message tracker renderer.

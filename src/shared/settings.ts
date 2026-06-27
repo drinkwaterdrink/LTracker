@@ -52,9 +52,14 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     enabled: true,
     useDomInjection: true,
     fallbackToIframeWidget: true,
+    attachmentMode: "sidecar_snapshot",
+    displayMode: "inline_full",
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
+    allowInlineStyles: true,
+    deduplicateRenderWarnings: true,
+    showRenderWarningsInDiagnosticsOnly: true,
     collapsedByDefault: true,
     compactCollapsedHeader: true,
     showTimestamp: true,
@@ -113,6 +118,16 @@ export function repairSettings(value: unknown): LTrackerSettings {
     || messageDisplaySource.renderMode === "html_template"
     ? messageDisplaySource.renderMode
     : DEFAULT_SETTINGS.messageDisplay.renderMode;
+  const messageDisplayAttachmentMode = messageDisplaySource.attachmentMode === "embedded_tracker_tag"
+    || messageDisplaySource.attachmentMode === "both"
+    || messageDisplaySource.attachmentMode === "sidecar_snapshot"
+    ? messageDisplaySource.attachmentMode
+    : DEFAULT_SETTINGS.messageDisplay.attachmentMode;
+  const messageDisplayDisplayMode = messageDisplaySource.displayMode === "inline_button_popover"
+    || messageDisplaySource.displayMode === "drawer_history_only"
+    || messageDisplaySource.displayMode === "inline_full"
+    ? messageDisplaySource.displayMode
+    : DEFAULT_SETTINGS.messageDisplay.displayMode;
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -221,9 +236,20 @@ export function repairSettings(value: unknown): LTrackerSettings {
       fallbackToIframeWidget: typeof messageDisplaySource.fallbackToIframeWidget === "boolean"
         ? messageDisplaySource.fallbackToIframeWidget
         : DEFAULT_SETTINGS.messageDisplay.fallbackToIframeWidget,
+      attachmentMode: messageDisplayAttachmentMode,
+      displayMode: messageDisplayDisplayMode,
       placement: messageDisplayPlacement,
       source: messageDisplaySourceSetting,
       renderMode: messageDisplayRenderMode,
+      allowInlineStyles: typeof messageDisplaySource.allowInlineStyles === "boolean"
+        ? messageDisplaySource.allowInlineStyles
+        : DEFAULT_SETTINGS.messageDisplay.allowInlineStyles,
+      deduplicateRenderWarnings: typeof messageDisplaySource.deduplicateRenderWarnings === "boolean"
+        ? messageDisplaySource.deduplicateRenderWarnings
+        : DEFAULT_SETTINGS.messageDisplay.deduplicateRenderWarnings,
+      showRenderWarningsInDiagnosticsOnly: typeof messageDisplaySource.showRenderWarningsInDiagnosticsOnly === "boolean"
+        ? messageDisplaySource.showRenderWarningsInDiagnosticsOnly
+        : DEFAULT_SETTINGS.messageDisplay.showRenderWarningsInDiagnosticsOnly,
       collapsedByDefault: typeof messageDisplaySource.collapsedByDefault === "boolean"
         ? messageDisplaySource.collapsedByDefault
         : DEFAULT_SETTINGS.messageDisplay.collapsedByDefault,

@@ -15,7 +15,14 @@ import {
   formatTemplateTextFallback,
   renderHtmlTemplate,
   sanitizeHtml,
+  summarizeWarnings,
 } from "../src/shared/htmlTemplateRenderer";
+import {
+  buildLTrackerTag,
+  findLTrackerTagForSwipe,
+  removeLTrackerTag,
+  upsertLTrackerTag,
+} from "../src/shared/embeddedTrackerTag";
 import {
   buildMessageTrackerHistory,
   claimMessageWidget,
@@ -72,7 +79,7 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.10",
+  extensionVersion: "0.11",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -109,7 +116,7 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.10",
+  extensionVersion: "0.11",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
@@ -304,6 +311,25 @@ test("messageSnapshotIndexPath stores the per-chat index under message-snapshots
     messageSnapshotIndexPath("chat id/1"),
     "chats/chat%20id%2F1/message-snapshots/index.json",
   );
+});
+
+test("embedded tracker tags build, replace, and remove by exact swipe", () => {
+  const first = buildLTrackerTag("{\"scene\":{\"time\":\"one\"}}", "index-0");
+  assert.match(first, /<ltracker type="state" version="0.11" swipe="index-0">/);
+  const content = upsertLTrackerTag("Assistant reply.", "{\"a\":1}", "index-0");
+  const withSecond = upsertLTrackerTag(content.content, "{\"b\":2}", "index-1");
+  const replaced = upsertLTrackerTag(withSecond.content, "{\"a\":3}", "index-0");
+
+  assert.equal(content.inserted, true);
+  assert.equal(replaced.replaced, true);
+  assert.match(findLTrackerTagForSwipe(replaced.content, "index-0")?.content ?? "", /"a":3/);
+  assert.match(findLTrackerTagForSwipe(replaced.content, "index-1")?.content ?? "", /"b":2/);
+  assert.doesNotMatch(replaced.content, /"a":1/);
+
+  const removed = removeLTrackerTag(replaced.content, "index-0");
+  assert.equal(removed.removed, true);
+  assert.equal(findLTrackerTagForSwipe(removed.content, "index-0"), null);
+  assert.match(findLTrackerTagForSwipe(removed.content, "index-1")?.content ?? "", /"b":2/);
 });
 
 test("deriveSwipeTrackerIdentity uses official id, index, then content hash", () => {
@@ -841,6 +867,39 @@ test("sanitizeHtml keeps only safe inline styles when enabled", () => {
   assert.ok(sanitized.warnings.some((warning) => warning.includes("position")));
 });
 
+test("sanitizeHtml preserves expanded safe inline styles", () => {
+  const sanitized = sanitizeHtml(
+    "<section style=\"background-color: #101820; border: 1px solid currentColor; box-shadow: 0 1px 4px rgba(0,0,0,.2); display: grid; grid-template-rows: auto 1fr; row-gap: 6px; overflow-wrap: anywhere; max-width: 42rem\">Safe</section>",
+    { allowInlineStyles: true },
+  );
+  assert.match(sanitized.html, /background-color: #101820/);
+  assert.match(sanitized.html, /box-shadow: 0 1px 4px rgba\(0,0,0,.2\)/);
+  assert.match(sanitized.html, /grid-template-rows: auto 1fr/);
+  assert.match(sanitized.html, /overflow-wrap: anywhere/);
+  assert.equal(sanitized.warnings.length, 0);
+});
+
+test("sanitizeHtml only allows open on details", () => {
+  const sanitized = sanitizeHtml("<details open><summary>A</summary>B</details><div open>Bad</div>");
+  assert.match(sanitized.html, /<details open>/);
+  assert.doesNotMatch(sanitized.html, /<div open>/);
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("open")));
+});
+
+test("summarizeWarnings deduplicates and caps render warnings", () => {
+  const warnings = [
+    "Removed unsupported style property position.",
+    "Removed unsupported style property position.",
+    "Removed unsafe attribute onclick.",
+    "Removed unknown tag blink.",
+  ];
+  assert.deepEqual(summarizeWarnings(warnings, 2), [
+    "Removed unsupported style property position. x 2",
+    "Removed unsafe attribute onclick.",
+    "1 more render warnings hidden.",
+  ]);
+});
+
 test("renderHtmlTemplate returns fallback when no template exists", () => {
   const result = renderHtmlTemplate({
     template: "",
@@ -872,6 +931,27 @@ test("renderMessageTracker selects HTML template rendering when available", () =
   assert.match(rendered.html, /Grand Meridian Court/);
   assert.match(rendered.widgetHtml, /LTracker/);
   assert.match(rendered.json, /"messageId": "m2"/);
+});
+
+test("renderMessageTracker keeps sanitized inline styles when message display allows them", () => {
+  const rendered = renderMessageTracker({
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: sampleSnapshot,
+    preset: {
+      ...DEFAULT_TRACKER_PRESET,
+      htmlTemplate: "<section style=\"background-color: #101820; padding: 6px; position: fixed\">{{scene.location}}</section>",
+    },
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      allowInlineStyles: true,
+      renderMode: "html_template",
+    },
+  });
+  assert.match(rendered.html, /style="background-color: #101820; padding: 6px"/);
+  assert.doesNotMatch(rendered.html, /position/);
+  assert.ok(rendered.warnings.some((warning) => warning.includes("position")));
 });
 
 test("renderMessageTracker widget is compact and omits copy buttons by default", () => {
@@ -1176,9 +1256,14 @@ test("repairSettings repairs message display settings with defaults and clamping
       enabled: false,
       useDomInjection: false,
       fallbackToIframeWidget: false,
+      attachmentMode: "both",
+      displayMode: "inline_button_popover",
       placement: "bottom",
       source: "latest_chat_snapshot",
       renderMode: "pretty_json",
+      allowInlineStyles: false,
+      deduplicateRenderWarnings: false,
+      showRenderWarningsInDiagnosticsOnly: false,
       collapsedByDefault: true,
       compactCollapsedHeader: false,
       showTimestamp: false,
@@ -1196,9 +1281,14 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(settings.messageDisplay.enabled, false);
   assert.equal(settings.messageDisplay.useDomInjection, false);
   assert.equal(settings.messageDisplay.fallbackToIframeWidget, false);
+  assert.equal(settings.messageDisplay.attachmentMode, "both");
+  assert.equal(settings.messageDisplay.displayMode, "inline_button_popover");
   assert.equal(settings.messageDisplay.placement, "bottom");
   assert.equal(settings.messageDisplay.source, "latest_chat_snapshot");
   assert.equal(settings.messageDisplay.renderMode, "pretty_json");
+  assert.equal(settings.messageDisplay.allowInlineStyles, false);
+  assert.equal(settings.messageDisplay.deduplicateRenderWarnings, false);
+  assert.equal(settings.messageDisplay.showRenderWarningsInDiagnosticsOnly, false);
   assert.equal(settings.messageDisplay.collapsedByDefault, true);
   assert.equal(settings.messageDisplay.compactCollapsedHeader, false);
   assert.equal(settings.messageDisplay.showTimestamp, false);
@@ -1214,12 +1304,16 @@ test("repairSettings repairs message display settings with defaults and clamping
 
   const repaired = repairSettings({
     messageDisplay: {
+      attachmentMode: "chat_metadata",
+      displayMode: "floating_panel",
       placement: "middle",
       source: "bad",
       renderMode: "markdown",
       maxRenderedChars: 10,
     },
   });
+  assert.equal(repaired.messageDisplay.attachmentMode, DEFAULT_SETTINGS.messageDisplay.attachmentMode);
+  assert.equal(repaired.messageDisplay.displayMode, DEFAULT_SETTINGS.messageDisplay.displayMode);
   assert.equal(repaired.messageDisplay.placement, DEFAULT_SETTINGS.messageDisplay.placement);
   assert.equal(repaired.messageDisplay.source, DEFAULT_SETTINGS.messageDisplay.source);
   assert.equal(repaired.messageDisplay.renderMode, DEFAULT_SETTINGS.messageDisplay.renderMode);
@@ -1272,7 +1366,7 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
 
 test("context handler hotfix is disabled by default", () => {
   assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
-  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.10/);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.11/);
 });
 
 test("context handler guard never mutates a frozen context object when disabled", async () => {
@@ -1405,9 +1499,14 @@ test("README settings reference covers the major setting groups", () => {
     "messageDisplay.enabled",
     "messageDisplay.useDomInjection",
     "messageDisplay.fallbackToIframeWidget",
+    "messageDisplay.attachmentMode",
+    "messageDisplay.displayMode",
     "messageDisplay.placement",
     "messageDisplay.source",
     "messageDisplay.renderMode",
+    "messageDisplay.allowInlineStyles",
+    "messageDisplay.deduplicateRenderWarnings",
+    "messageDisplay.showRenderWarningsInDiagnosticsOnly",
     "messageDisplay.collapsedByDefault",
     "messageDisplay.compactCollapsedHeader",
     "messageDisplay.showTimestamp",
@@ -1429,6 +1528,8 @@ test("README settings reference covers the major setting groups", () => {
     "drawer renderer",
     "message display",
     "message-attached snapshot",
+    "embedded tracker tag",
+    "button popover",
     "latest chat snapshot",
     "collapsed by default",
     "sanitized inline styles",
@@ -1454,4 +1555,7 @@ test("drawer UI keeps detailed setting explanations out of the app surface", () 
   }
   assert.match(frontend, /Current Lumiverse widget API renders below messages/);
   assert.match(frontend, /Context handler disabled reason/);
+  assert.match(frontend, /registerTagInterceptor/);
+  assert.match(frontend, /data-settings-save-status/);
+  assert.doesNotMatch(frontend, />Save Settings</);
 });
