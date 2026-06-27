@@ -6,6 +6,11 @@ import {
   shouldSkipContextForInternalGeneration,
 } from "../src/shared/contextInjection";
 import {
+  CONTEXT_HANDLER_DISABLED_REASON,
+  CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
+  runContextHandlerFailSafe,
+} from "../src/shared/contextHandlerRuntime";
+import {
   formatTemplateTextFallback,
   renderHtmlTemplate,
   sanitizeHtml,
@@ -44,7 +49,7 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.06",
+  extensionVersion: "0.07",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -73,7 +78,7 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.06",
+  extensionVersion: "0.07",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
@@ -650,4 +655,107 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
   assert.equal(result.ok, false);
   assert.equal(result.usedFallback, true);
   assert.ok(result.errors.some((error) => error.includes("Renderer failed safely")));
+});
+
+test("context handler hotfix is disabled by default", () => {
+  assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.07/);
+});
+
+test("context handler guard never mutates a frozen context object when disabled", async () => {
+  const context = Object.freeze({
+    type: "normal",
+    request: Object.freeze({ metadata: Object.freeze({ source: "user" }) }),
+  });
+  let called = false;
+  const result = await runContextHandlerFailSafe({
+    context,
+    enabled: false,
+    run: async () => {
+      called = true;
+      return "should not run";
+    },
+  });
+  assert.equal(result, null);
+  assert.equal(called, false);
+  assert.deepEqual(context, {
+    type: "normal",
+    request: { metadata: { source: "user" } },
+  });
+});
+
+test("context handler guard returns safe empty output when disabled", async () => {
+  const result = await runContextHandlerFailSafe({
+    context: Object.freeze({ generationType: "normal" }),
+    enabled: false,
+    run: async () => "tracker context",
+  });
+  assert.equal(result, null);
+});
+
+test("context handler guard catches storage/read errors and does not throw", async () => {
+  const errors: string[] = [];
+  const result = await runContextHandlerFailSafe({
+    context: Object.freeze({ generationType: "normal" }),
+    enabled: true,
+    run: async () => {
+      throw new Error("storage unavailable");
+    },
+    onError: (message) => errors.push(message),
+  });
+  assert.equal(result, null);
+  assert.deepEqual(errors, ["storage unavailable"]);
+});
+
+test("context handler disabled path performs no diagnostics recording", async () => {
+  let diagnosticWrites = 0;
+  let storageReads = 0;
+  const result = await runContextHandlerFailSafe({
+    context: Object.freeze({ generationType: "normal" }),
+    enabled: false,
+    run: async () => {
+      storageReads += 1;
+      diagnosticWrites += 1;
+      return "tracker context";
+    },
+  });
+  assert.equal(result, null);
+  assert.equal(storageReads, 0);
+  assert.equal(diagnosticWrites, 0);
+});
+
+test("renderer preview does not run during disabled context injection", async () => {
+  let renderCalls = 0;
+  const result = await runContextHandlerFailSafe({
+    context: Object.freeze({ generationType: "normal" }),
+    enabled: false,
+    run: async () => {
+      renderCalls += 1;
+      return renderHtmlTemplate({
+        template: "<p>{{scene.location}}</p>",
+        snapshotData: sampleSnapshot.data,
+        presetId: "custom",
+        presetName: "Custom",
+      }).html;
+    },
+  });
+  assert.equal(result, null);
+  assert.equal(renderCalls, 0);
+});
+
+test("normal generation can call the disabled context handler guard without throwing", async () => {
+  const frozenGenerationContext = Object.freeze({
+    generationType: "normal",
+    messages: Object.freeze([
+      Object.freeze({ role: "user", content: "hello" }),
+    ]),
+  });
+  await assert.doesNotReject(async () => {
+    const result = await runContextHandlerFailSafe({
+      context: frozenGenerationContext,
+      enabled: false,
+      run: async () => "tracker context",
+    });
+    assert.equal(result, null);
+  });
 });

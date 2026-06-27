@@ -1,16 +1,15 @@
 {
-  "version": "0.06",
+  "version": "0.07",
   "name": "LTracker",
   "identifier": "ltracker",
   "author": "tjo626262",
   "github": "https://github.com/drinkwaterdrink/LTracker",
   "homepage": "https://github.com/drinkwaterdrink/LTracker",
-  "description": "A Lumiverse tracker snapshot generator with cached context injection inspired by zTracker.",
+  "description": "A Lumiverse tracker snapshot generator with schema presets and safe drawer previews inspired by zTracker.",
   "permissions": [
     "generation",
     "chats",
-    "chat_mutation",
-    "context_handler"
+    "chat_mutation"
   ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js"

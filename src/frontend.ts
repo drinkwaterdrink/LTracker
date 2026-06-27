@@ -295,6 +295,9 @@ function emptyState(): FrontendState {
       lastRenderErrors: [],
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
+      contextHandlerRegistered: false,
+      contextHandlerDisabledReason: "Context handler injection is disabled in 0.07 while the Lumiverse context handler return contract is being verified.",
+      lastContextHandlerError: null,
     },
     injectionPreview: null,
     renderPreview: null,
@@ -699,8 +702,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const latestMessageSnapshotText = state.latestMessageSnapshot
       ? JSON.stringify(state.latestMessageSnapshot, null, 2)
       : "No message-attached tracker snapshot saved yet.";
-    const injectionPreviewText = state.injectionPreview
-      ?? "No injection preview available. Generate a tracker and enable injection to preview cached context.";
+    const injectionDisabledReason = diagnostics.contextHandlerDisabledReason;
+    const injectionPreviewText = injectionDisabledReason
+      ? injectionDisabledReason
+      : state.injectionPreview
+        ?? "No injection preview available. Generate a tracker and enable injection to preview cached context.";
     const renderPreview = state.renderPreview;
     const renderStatus = renderPreview?.status ?? "not rendered";
     const renderSnapshotAt = renderPreview?.snapshotCreatedAt ?? "None";
@@ -720,10 +726,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const activePresetIsBuiltIn = activePreset.origin === "built_in";
     const presetSchemaText = JSON.stringify(activePreset.jsonSchema, null, 2);
     const presetHtmlWarning = activePreset.htmlTemplate?.trim()
-      ? "Templates are sanitized and only rendered in the drawer preview in version 0.06. They are not inserted into chat messages."
+      ? "Templates are sanitized and only rendered in the drawer preview. They are not inserted into chat messages."
       : activePresetIsBuiltIn
         ? "This built-in preset has no HTML template. Duplicate it before adding one."
-        : "HTML template is optional. In 0.06 it is sanitized and rendered only in the drawer preview.";
+        : "HTML template is optional. It is sanitized and rendered only in the drawer preview.";
     const presetOptions = state.presets.map((preset) => {
       return `<option value="${escapeHtml(preset.id)}"${selected(preset.id === activePreset.id)}>${escapeHtml(preset.name)} (${escapeHtml(preset.origin)})</option>`;
     }).join("");
@@ -731,7 +737,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       state.permissions.generation ? "generation granted" : "generation missing",
       state.permissions.chats ? "chats granted" : "chats missing",
       state.permissions.chatMutation ? "chat_mutation granted" : "chat_mutation missing",
-      state.permissions.contextHandler ? "context_handler granted" : "context_handler missing",
+      diagnostics.contextHandlerDisabledReason
+        ? "context_handler disabled by hotfix"
+        : state.permissions.contextHandler ? "context_handler granted" : "context_handler missing",
     ].join(" / ");
 
     tab.root.innerHTML = `
@@ -857,7 +865,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               Only inject when snapshot exists
             </label>
           </div>
-          <p class="ltracker-note">Injection uses cached snapshots only. It does not generate a tracker by itself, and no snapshot means nothing is injected.</p>
+          <p class="ltracker-note">${escapeHtml(injectionDisabledReason ?? "Injection uses cached snapshots only. It does not generate a tracker by itself, and no snapshot means nothing is injected.")}</p>
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="copy-injection-preview" ${disabled(!state.injectionPreview)}>
               Copy Injection Preview
@@ -1007,6 +1015,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Auto mode", autoStatus)}
             ${renderRow("Permission status", permissionText)}
             ${renderRow("Injection enabled", diagnostics.injectionEnabled ? "yes" : "no")}
+            ${renderRow("Context handler registered", diagnostics.contextHandlerRegistered ? "yes" : "no")}
+            ${renderRow("Context handler disabled reason", diagnostics.contextHandlerDisabledReason)}
+            ${renderRow("Last context handler error", diagnostics.lastContextHandlerError)}
             ${renderRow("Last injection at", diagnostics.lastInjectionAt)}
             ${renderRow("Last injection mode", diagnostics.lastInjectionMode)}
             ${renderRow("Last injection format", diagnostics.lastInjectionFormat)}

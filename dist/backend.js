@@ -194,24 +194,6 @@ function formatSnapshotForInjection(source, settings) {
 }
 
 // src/shared/contextInjection.ts
-function shouldSkipContextForInternalGeneration(context, internalTrackerGeneration) {
-  if (internalTrackerGeneration) return true;
-  return pathMatches(context, [
-    ["type"],
-    ["generationType"],
-    ["request", "type"],
-    ["input", "type"],
-    ["generation", "type"],
-    ["generation", "generationType"]
-  ], "quiet") || pathMatches(context, [
-    ["source"],
-    ["metadata", "source"],
-    ["request", "source"],
-    ["request", "metadata", "source"],
-    ["input", "source"],
-    ["input", "metadata", "source"]
-  ], "ltracker");
-}
 function buildInjectionDecision(input) {
   if (input.internalTrackerGeneration) {
     return emptyDecision("Internal LTracker tracker generation.");
@@ -234,9 +216,6 @@ function buildInjectionDecision(input) {
     injectedChars: Array.from(text).length
   };
 }
-function toContextHandlerResult(text) {
-  return text && text.trim() ? text : null;
-}
 function emptyDecision(skippedReason) {
   return {
     text: null,
@@ -246,17 +225,10 @@ function emptyDecision(skippedReason) {
     injectedChars: 0
   };
 }
-function pathMatches(value, paths, expected) {
-  return paths.some((path) => stringAtPath(value, path)?.toLowerCase() === expected);
-}
-function stringAtPath(value, path) {
-  let current = value;
-  for (const segment of path) {
-    if (typeof current !== "object" || current === null || Array.isArray(current)) return null;
-    current = current[segment];
-  }
-  return typeof current === "string" ? current : null;
-}
+
+// src/shared/contextHandlerRuntime.ts
+var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.07 while the Lumiverse context handler return contract is being verified.";
 
 // src/shared/htmlTemplateRenderer.ts
 var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
@@ -886,7 +858,7 @@ function resolveSelectedPreset(presets, selectedPresetId) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.06";
+var EXTENSION_VERSION = "0.07";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1197,7 +1169,7 @@ function permissionState() {
     generation: spindle.permissions.has("generation"),
     chats: spindle.permissions.has("chats"),
     chatMutation: spindle.permissions.has("chat_mutation"),
-    contextHandler: spindle.permissions.has("context_handler")
+    contextHandler: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED && spindle.permissions.has("context_handler")
   };
 }
 function send(payload, userId) {
@@ -1261,7 +1233,10 @@ function defaultDiagnostics(chatId) {
     lastRenderWarnings: [],
     lastRenderErrors: [],
     lastSanitizedHtmlChars: 0,
-    lastFallbackTextChars: 0
+    lastFallbackTextChars: 0,
+    contextHandlerRegistered,
+    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? null : CONTEXT_HANDLER_DISABLED_REASON,
+    lastContextHandlerError: null
   };
 }
 function stringOrNull(value) {
@@ -1372,7 +1347,10 @@ function repairDiagnostics(value, chatId) {
     lastRenderWarnings: stringArray(value.lastRenderWarnings),
     lastRenderErrors: stringArray(value.lastRenderErrors),
     lastSanitizedHtmlChars: typeof value.lastSanitizedHtmlChars === "number" && Number.isFinite(value.lastSanitizedHtmlChars) ? Math.max(0, Math.round(value.lastSanitizedHtmlChars)) : 0,
-    lastFallbackTextChars: typeof value.lastFallbackTextChars === "number" && Number.isFinite(value.lastFallbackTextChars) ? Math.max(0, Math.round(value.lastFallbackTextChars)) : 0
+    lastFallbackTextChars: typeof value.lastFallbackTextChars === "number" && Number.isFinite(value.lastFallbackTextChars) ? Math.max(0, Math.round(value.lastFallbackTextChars)) : 0,
+    contextHandlerRegistered,
+    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? stringOrNull(value.contextHandlerDisabledReason) : CONTEXT_HANDLER_DISABLED_REASON,
+    lastContextHandlerError: stringOrNull(value.lastContextHandlerError)
   };
 }
 async function getSettings(userId) {
@@ -1537,12 +1515,12 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     diagnostics.latestAttachedMessageId,
     userId
   );
-  const injectionPreview = buildInjectionDecision({
+  const injectionPreview = CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? buildInjectionDecision({
     settings,
     chatSnapshot: snapshot,
     messageSnapshot: latestMessageSnapshot,
     internalTrackerGeneration: false
-  }).text;
+  }).text : null;
   const stateError = error ?? diagnostics.lastError;
   return {
     version: EXTENSION_VERSION,
@@ -1563,10 +1541,12 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       status: status ?? diagnostics.status,
       lastError: stateError,
       autoSubscriptionActive: autoSubscriptionsActive,
-      injectionEnabled: settings.injection.enabled,
+      injectionEnabled: settings.injection.enabled && CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
       selectedPresetId: presetState.activePreset.id,
       selectedPresetName: presetState.activePreset.name,
-      lastPresetFallbackReason: presetState.fallbackReason ?? diagnostics.lastPresetFallbackReason
+      lastPresetFallbackReason: presetState.fallbackReason ?? diagnostics.lastPresetFallbackReason,
+      contextHandlerRegistered,
+      contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? diagnostics.contextHandlerDisabledReason : CONTEXT_HANDLER_DISABLED_REASON
     }
   };
 }
@@ -1934,136 +1914,6 @@ function handleChatSwitched(payload, userId) {
   if (!userId || !isRecord5(payload)) return;
   const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
   rememberActiveChat(userId, chatId);
-}
-function stringAtPath2(value, path) {
-  let current = value;
-  for (const segment of path) {
-    if (!isRecord5(current)) return null;
-    current = current[segment];
-  }
-  return typeof current === "string" && current.trim() ? current : null;
-}
-function firstStringAtPath(value, paths) {
-  for (const path of paths) {
-    const result = stringAtPath2(value, path);
-    if (result) return result;
-  }
-  return null;
-}
-function contextChatId(context) {
-  return firstStringAtPath(context, [
-    ["chatId"],
-    ["chat_id"],
-    ["chat", "id"],
-    ["request", "chatId"],
-    ["request", "chat_id"],
-    ["request", "chat", "id"],
-    ["input", "chatId"],
-    ["input", "chat_id"],
-    ["generation", "chatId"],
-    ["generation", "chat_id"],
-    ["metadata", "chatId"]
-  ]);
-}
-function contextUserId(context) {
-  return firstStringAtPath(context, [
-    ["userId"],
-    ["user_id"],
-    ["operatorUserId"],
-    ["request", "userId"],
-    ["request", "user_id"],
-    ["input", "userId"],
-    ["generation", "userId"],
-    ["metadata", "userId"]
-  ]);
-}
-function knownUserForContext(userId, chatId) {
-  if (userId) return userId;
-  if (chatId) {
-    const users = targetUsersForChat(chatId);
-    if (users.length === 1) return users[0] ?? null;
-  }
-  if (activeChatByUser.size === 1) {
-    return activeChatByUser.keys().next().value ?? null;
-  }
-  return null;
-}
-async function resolveContextChatId(context, userId) {
-  const fromContext = contextChatId(context);
-  if (fromContext) return fromContext;
-  return resolveActiveChatId(null, userId).catch(() => null);
-}
-async function withContextTimeout(operation, timeoutMs) {
-  let timer = null;
-  try {
-    return await Promise.race([
-      operation.then((value) => ({ timedOut: false, value })),
-      new Promise((resolve) => {
-        timer = setTimeout(() => resolve({ timedOut: true, value: null }), timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-async function recordInjectionDiagnostics(chatId, userId, settings, decision, baseDiagnostics) {
-  const currentDiagnostics = baseDiagnostics ?? await loadDiagnostics(chatId, userId);
-  const diagnostics = {
-    ...currentDiagnostics,
-    injectionEnabled: settings.injection.enabled,
-    lastInjectionAt: decision.text ? nowIso() : currentDiagnostics.lastInjectionAt,
-    lastInjectionMode: settings.injection.mode,
-    lastInjectionFormat: settings.injection.format,
-    lastInjectedChars: decision.injectedChars,
-    lastInjectionSkippedReason: decision.skippedReason,
-    lastInjectionSnapshotCreatedAt: decision.snapshotCreatedAt,
-    lastInjectionSourceMessageId: decision.sourceMessageId
-  };
-  await tryPersistDiagnostics(diagnostics, userId);
-}
-async function handleContextInjection(context) {
-  const contextUser = contextUserId(context);
-  const contextChat = contextChatId(context);
-  const userId = knownUserForContext(contextUser, contextChat);
-  if (!userId) return null;
-  const chatId = await resolveContextChatId(context, userId);
-  if (!chatId) return null;
-  rememberActiveChat(userId, chatId);
-  let storageResult;
-  try {
-    storageResult = await withContextTimeout((async () => {
-      const settings2 = await getSettings(userId);
-      const skipInternal = shouldSkipContextForInternalGeneration(context, internalTrackerGenerationDepth > 0);
-      const diagnostics = await loadDiagnostics(chatId, userId);
-      const snapshot = settings2.injection.mode === "latest_chat_snapshot" ? await loadSnapshot(chatId, userId) : null;
-      const messageSnapshot = settings2.injection.mode === "latest_message_snapshot" ? await loadMessageSnapshot(chatId, diagnostics.latestAttachedMessageId, userId) : null;
-      const decision = buildInjectionDecision({
-        settings: settings2,
-        chatSnapshot: snapshot,
-        messageSnapshot,
-        internalTrackerGeneration: skipInternal
-      });
-      await recordInjectionDiagnostics(chatId, userId, settings2, decision, diagnostics);
-      return toContextHandlerResult(decision.text);
-    })(), 750);
-  } catch (error) {
-    spindle.log.warn(`LTracker context injection skipped after storage error: ${errorMessage(error)}`);
-    return null;
-  }
-  if (!storageResult.timedOut) return storageResult.value;
-  const settings = await getSettings(userId).catch(() => null);
-  if (settings) {
-    await recordInjectionDiagnostics(chatId, userId, settings, {
-      text: null,
-      skippedReason: "Context handler storage lookup timed out.",
-      snapshotCreatedAt: null,
-      sourceMessageId: null,
-      injectedChars: 0
-    }).catch((error) => {
-      spindle.log.warn(`LTracker could not record context timeout: ${errorMessage(error)}`);
-    });
-  }
-  return null;
 }
 async function generateTracker(chatId, userId, trigger) {
   let stage = "active_chat";
@@ -2615,12 +2465,11 @@ function registerEventListeners() {
 }
 function registerContextInjection() {
   if (contextHandlerRegistered) return;
-  if (!permissionState().contextHandler) {
-    spindle.log.warn("LTracker context injection is unavailable because context_handler permission is missing.");
+  if (!CONTEXT_HANDLER_EXPERIMENTAL_ENABLED) {
+    spindle.log.warn(CONTEXT_HANDLER_DISABLED_REASON);
     return;
   }
-  spindle.registerContextHandler(handleContextInjection, 40);
-  contextHandlerRegistered = true;
+  spindle.log.warn("LTracker context injection stayed disabled because no verified Lumiverse context handler DTO is available.");
 }
 registerEventListeners();
 registerContextInjection();

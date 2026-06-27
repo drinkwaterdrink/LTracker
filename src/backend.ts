@@ -14,6 +14,11 @@ import {
   toContextHandlerResult,
 } from "./shared/contextInjection";
 import {
+  CONTEXT_HANDLER_DISABLED_REASON,
+  CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
+  runContextHandlerFailSafe,
+} from "./shared/contextHandlerRuntime";
+import {
   formatTemplateTextFallback,
   renderHtmlTemplate,
 } from "./shared/htmlTemplateRenderer";
@@ -220,7 +225,7 @@ function permissionState(): PermissionState {
     generation: spindle.permissions.has("generation"),
     chats: spindle.permissions.has("chats"),
     chatMutation: spindle.permissions.has("chat_mutation"),
-    contextHandler: spindle.permissions.has("context_handler"),
+    contextHandler: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED && spindle.permissions.has("context_handler"),
   };
 }
 
@@ -287,6 +292,9 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastRenderErrors: [],
     lastSanitizedHtmlChars: 0,
     lastFallbackTextChars: 0,
+    contextHandlerRegistered,
+    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? null : CONTEXT_HANDLER_DISABLED_REASON,
+    lastContextHandlerError: null,
   };
 }
 
@@ -431,6 +439,11 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastFallbackTextChars: typeof value.lastFallbackTextChars === "number" && Number.isFinite(value.lastFallbackTextChars)
       ? Math.max(0, Math.round(value.lastFallbackTextChars))
       : 0,
+    contextHandlerRegistered,
+    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED
+      ? stringOrNull(value.contextHandlerDisabledReason)
+      : CONTEXT_HANDLER_DISABLED_REASON,
+    lastContextHandlerError: stringOrNull(value.lastContextHandlerError),
   };
 }
 
@@ -642,12 +655,14 @@ async function buildState(
     diagnostics.latestAttachedMessageId,
     userId,
   );
-  const injectionPreview = buildInjectionDecision({
-    settings,
-    chatSnapshot: snapshot,
-    messageSnapshot: latestMessageSnapshot,
-    internalTrackerGeneration: false,
-  }).text;
+  const injectionPreview = CONTEXT_HANDLER_EXPERIMENTAL_ENABLED
+    ? buildInjectionDecision({
+        settings,
+        chatSnapshot: snapshot,
+        messageSnapshot: latestMessageSnapshot,
+        internalTrackerGeneration: false,
+      }).text
+    : null;
   const stateError = error ?? diagnostics.lastError;
   return {
     version: EXTENSION_VERSION,
@@ -668,10 +683,14 @@ async function buildState(
       status: status ?? diagnostics.status,
       lastError: stateError,
       autoSubscriptionActive: autoSubscriptionsActive,
-      injectionEnabled: settings.injection.enabled,
+      injectionEnabled: settings.injection.enabled && CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
       selectedPresetId: presetState.activePreset.id,
       selectedPresetName: presetState.activePreset.name,
       lastPresetFallbackReason: presetState.fallbackReason ?? diagnostics.lastPresetFallbackReason,
+      contextHandlerRegistered,
+      contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED
+        ? diagnostics.contextHandlerDisabledReason
+        : CONTEXT_HANDLER_DISABLED_REASON,
     },
   };
 }
@@ -1233,6 +1252,17 @@ async function recordInjectionDiagnostics(
 }
 
 async function handleContextInjection(context: unknown): Promise<unknown> {
+  return runContextHandlerFailSafe({
+    context,
+    enabled: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
+    run: handleContextInjectionEnabled,
+    onError: (message) => {
+      spindle.log.warn(`LTracker context injection failed safely: ${message}`);
+    },
+  });
+}
+
+async function handleContextInjectionEnabled(context: unknown): Promise<unknown> {
   const contextUser = contextUserId(context);
   const contextChat = contextChatId(context);
   const userId = knownUserForContext(contextUser, contextChat);
@@ -1931,12 +1961,11 @@ function registerEventListeners(): void {
 
 function registerContextInjection(): void {
   if (contextHandlerRegistered) return;
-  if (!permissionState().contextHandler) {
-    spindle.log.warn("LTracker context injection is unavailable because context_handler permission is missing.");
+  if (!CONTEXT_HANDLER_EXPERIMENTAL_ENABLED) {
+    spindle.log.warn(CONTEXT_HANDLER_DISABLED_REASON);
     return;
   }
-  spindle.registerContextHandler(handleContextInjection, 40);
-  contextHandlerRegistered = true;
+  spindle.log.warn("LTracker context injection stayed disabled because no verified Lumiverse context handler DTO is available.");
 }
 
 registerEventListeners();

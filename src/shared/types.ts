@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.06";
+export const EXTENSION_VERSION = "0.07";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -236,6 +236,9 @@ export interface LTrackerDiagnostics {
   lastRenderErrors: string[];
   lastSanitizedHtmlChars: number;
   lastFallbackTextChars: number;
+  contextHandlerRegistered: boolean;
+  contextHandlerDisabledReason: string | null;
+  lastContextHandlerError: string | null;
 }
 
 export interface PermissionState {

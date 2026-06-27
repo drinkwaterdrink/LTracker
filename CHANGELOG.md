@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.07 - Readonly generation hotfix
+- Fixed a blocker where enabling LTracker could cause normal Lumiverse generations to fail with `Attempted to assign to readonly property`.
+- Made context-handler injection fail-safe.
+- Removed side effects from the context handler path.
+- Added frozen-object regression tests for context handling.
+- Added diagnostics for context handler registration, disabled state, and errors.
+- Preserved schema presets and drawer-only HTML renderer behavior.
+
 ## 0.06 - Safe HTML template renderer
 - Added safe HTML template rendering for drawer previews.
 - Added basic zTracker-style template placeholders and each-blocks.
