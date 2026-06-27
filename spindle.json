@@ -1,0 +1,16 @@
+{
+  "version": "0.01",
+  "name": "LTracker",
+  "identifier": "ltracker",
+  "author": "tjo626262",
+  "github": "https://github.com/drinkwaterdrink/LTracker",
+  "homepage": "https://github.com/drinkwaterdrink/LTracker",
+  "description": "A manual Lumiverse tracker snapshot generator inspired by zTracker.",
+  "permissions": [
+    "generation",
+    "chats",
+    "chat_mutation"
+  ],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js"
+}

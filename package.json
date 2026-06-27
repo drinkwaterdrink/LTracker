@@ -1,0 +1,17 @@
+{
+  "name": "ltracker",
+  "version": "0.01",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "validate": "npm run typecheck && npm run build && node scripts/scan-dist.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "esbuild": "^0.25.5",
+    "lumiverse-spindle-types": "0.5.21",
+    "typescript": "^5.8.3"
+  }
+}
