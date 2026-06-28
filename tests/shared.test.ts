@@ -2803,8 +2803,27 @@ test("frontend exposes a storage-free Preset Render Lab", () => {
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
-    "Version: `0.20`",
-    "Current release: `0.20 Preset Authoring Studio + Template Helper Pack + Mobile Render QA`",
+    "Version: `0.21`",
+    "Current release: `0.21 Drawer Command Center / Settings UX Overhaul`",
+    "Drawer Command Center",
+    "Home",
+    "Presets",
+    "Render Lab",
+    "Display",
+    "Generation",
+    "Connection",
+    "Memory / Context",
+    "Diagnostics",
+    "Advanced",
+    "Quick Setup Profiles",
+    "Mobile Wide Tracker",
+    "Popover HUD",
+    "Fullscreen Reader",
+    "Minimal Inline",
+    "Authoring Mode",
+    "Safe Mode",
+    "Ultra Budget",
+    "Visible, Advanced, And Legacy Settings",
     "Preset-Locked Snapshot Rendering",
     "Template Helper Pack",
     "Preset Render Lab",
@@ -2904,11 +2923,19 @@ test("README settings reference covers the major setting groups", () => {
     "messageDisplay.minimizedMaxHeightPx",
     "messageDisplay.maxRenderedChars",
     "expandedWidth.expandedWidthMode",
-    "0.21 Sequential + Partial Regeneration",
-    "0.22 Cleanup / Repair / Pending Fields",
-    "0.23 World Books, Character Exclusions, and Context Filters",
-    "0.24 Dev Mode JS Sandbox Experiments",
-    "0.25 Preset Marketplace / Pack Collections / Advanced Export Polish",
+    "Troubleshooting",
+    "tracker too narrow",
+    "popover not opening",
+    "preset import rejected",
+    "raw JSON appears in tracker",
+    "template CSS stripped",
+    "tracker generated for wrong swipe",
+    "old tracker changed appearance",
+    "0.22 Sequential + Partial Regeneration",
+    "0.23 Cleanup / Repair / Pending Fields",
+    "0.24 World Books, Character Exclusions, and Context Filters",
+    "0.25 Dev Mode JS Sandbox Experiments",
+    "0.26 Preset Marketplace / Pack Collections / Advanced Export Polish",
   ]) {
     assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
@@ -2933,21 +2960,38 @@ test("drawer UI keeps detailed setting explanations out of the app surface", () 
   assert.match(frontend, /registerTagInterceptor/);
   assert.match(frontend, /data-settings-save-status/);
   assert.match(frontend, /saveSettings\("settings-auto"\)/);
+  assert.match(frontend, /LTracker Command Center/);
   for (const id of [
-    "dashboard",
-    "generation",
-    "auto",
-    "connection",
-    "display",
-    "renderer",
-    "memory-injection",
+    "home",
     "presets",
-    "history",
+    "render-lab",
+    "display",
+    "generation",
+    "connection",
+    "memory-context",
     "diagnostics",
     "advanced",
   ]) {
     assert.match(frontend, new RegExp(`id="ltracker-section-${id}"`));
   }
+  for (const oldId of ["dashboard", "auto", "renderer", "history", "memory-injection"]) {
+    assert.doesNotMatch(frontend, new RegExp(`id="ltracker-section-${oldId}"`));
+  }
+  for (const profile of [
+    "Mobile Wide Tracker",
+    "Popover HUD",
+    "Fullscreen Reader",
+    "Minimal Inline",
+    "Authoring Mode",
+    "Safe Mode",
+    "Ultra Budget",
+  ]) {
+    assert.match(frontend, new RegExp(profile));
+  }
+  assert.match(frontend, /data-action="apply-quick-setup"/);
+  assert.match(frontend, /data-action="apply-display-surface"/);
+  assert.match(frontend, /data-diagnostics-search/);
+  assert.match(frontend, /data-diagnostics-group/);
   for (const filter of [
     "text",
     "showDuplicates",
@@ -2958,10 +3002,18 @@ test("drawer UI keeps detailed setting explanations out of the app surface", () 
   ]) {
     assert.match(frontend, new RegExp(`data-history-filter="${filter}"`));
   }
-  const displaySection = /id="ltracker-section-display"[\s\S]*?id="ltracker-section-history"/.exec(frontend)?.[0] ?? "";
+  const displaySection = /id="ltracker-section-display"[\s\S]*?id="ltracker-section-generation"/.exec(frontend)?.[0] ?? "";
   assert.doesNotMatch(displaySection, /fallbackToIframeWidget/);
+  assert.doesNotMatch(displaySection, /displayMode/);
+  assert.match(displaySection, /displaySurfaceCards/);
+  assert.match(frontend, /Inline Wide/);
+  assert.match(frontend, /Anchored Popover/);
+  assert.match(frontend, /Fullscreen Reader/);
+  assert.match(frontend, /Drawer Only/);
   const advancedSection = /id="ltracker-section-advanced"[\s\S]*?<\/section>/.exec(frontend)?.[0] ?? "";
   assert.match(advancedSection, /fallbackToIframeWidget/);
+  assert.match(advancedSection, /How trackers attach to messages/);
+  assert.match(frontend, /Internal connection mode/);
   assert.doesNotMatch(frontend, />Save Settings</);
 });
 
@@ -3165,16 +3217,17 @@ test("v0.17 Preset Pack Import/Export + Validation + Snapshot tests", () => {
   assert.equal((snapshot.list as unknown[]).length, 2); // array size constraint
 });
 
-test("v0.20 Release Completion Verification", () => {
+test("v0.21 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.20");
-  assert.equal(spindleJson.version, "0.20");
-  assert.equal(EXTENSION_VERSION, "0.20");
+  assert.equal(packageJson.version, "0.21");
+  assert.equal(spindleJson.version, "0.21");
+  assert.equal(EXTENSION_VERSION, "0.21");
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.21 - Drawer Command Center \/ Settings UX Overhaul/);
   assert.match(changelog, /## 0\.20 - Preset Authoring Studio \+ Template Helper Pack \+ Mobile Render QA/);
   assert.match(changelog, /## 0\.19\.2 - Preset-Locked Snapshot Rendering/);
   assert.match(changelog, /## 0\.19\.1 - Display Surface Repair \/ Chat-Width Inline Fix/);
@@ -3182,8 +3235,10 @@ test("v0.20 Release Completion Verification", () => {
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.20`/);
-  assert.match(readme, /Current release: `0\.20 Preset Authoring Studio \+ Template Helper Pack \+ Mobile Render QA`/);
+  assert.match(readme, /Version: `0\.21`/);
+  assert.match(readme, /Current release: `0\.21 Drawer Command Center \/ Settings UX Overhaul`/);
+  assert.match(readme, /Drawer Command Center/);
+  assert.match(readme, /Quick Setup Profiles/);
   assert.match(readme, /Preset-Locked Snapshot Rendering/);
   assert.match(readme, /Template Helper Pack/);
   assert.match(readme, /Preset Render Lab/);

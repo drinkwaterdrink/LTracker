@@ -228,7 +228,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.20";
+var EXTENSION_VERSION = "0.21";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";

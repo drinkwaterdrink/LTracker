@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21 - Drawer Command Center / Settings UX Overhaul
+- Redesigned the drawer as a mobile-first LTracker Command Center with Home, Presets, Render Lab, Display, Generation, Connection, Memory / Context, Diagnostics, and Advanced sections.
+- Added Home status cards for active preset, tracker profile, display surface, auto mode, last generation, errors, and recommended next action.
+- Reworked Presets, Render Lab, Display, Generation, Connection, Memory / Context, Diagnostics, and Advanced into task-based sections with progressive disclosure.
+- Added visual display mode cards for Inline Wide, Anchored Popover, Fullscreen Reader, Drawer Only, and Inline Contained.
+- Added quick setup profiles for Mobile Wide Tracker, Popover HUD, Fullscreen Reader, Minimal Inline, Authoring Mode, Safe Mode, and Ultra Budget.
+- Moved legacy/debug/internal settings such as `messageDisplay.displayMode`, iframe fallback, raw attachment mode, debug swipe key, debug history copy buttons, and low-level `connection.mode` out of the normal UI.
+- Added searchable collapsed diagnostics groups and copy actions for all diagnostics, last error, last prompt preview, and last raw model output.
+- Preserved preset import/export, Render Lab, display surfaces, preset render locks, tracker memory, prompt injection, selected tracker profiles, and inline tracker controls.
+
 ## 0.20 - Preset Authoring Studio + Template Helper Pack + Mobile Render QA
 - Added helper pack for cleaner array/object rendering.
 - Added helpers for chip lists, joins, plucking fields, safe classes, clamped meter widths, and fallback values.

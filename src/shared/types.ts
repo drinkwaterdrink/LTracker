@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.20";
+export const EXTENSION_VERSION = "0.21";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";

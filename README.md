@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.20`
+Version: `0.21`
 
-Current release: `0.20 Preset Authoring Studio + Template Helper Pack + Mobile Render QA`
+Current release: `0.21 Drawer Command Center / Settings UX Overhaul`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -22,6 +22,64 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Preset QA warnings for raw array/object interpolation, mobile overflow risk, and vertical text risk.
 - Safe Mode for shared or unknown presets, with full style-block removal so raw CSS is not shown as text.
 - Preset pack import/export, import review, validation reports, sample snapshot rendering, and Ultra Tracker Mode budgets.
+
+## Drawer Command Center
+
+Version `0.21` reorganizes the drawer into a mobile-first command center instead of a long settings dump.
+
+Top-level drawer navigation:
+
+1. Home
+2. Presets
+3. Render Lab
+4. Display
+5. Generation
+6. Connection
+7. Memory / Context
+8. Diagnostics
+9. Advanced
+
+Home shows the active preset, selected tracker profile, display surface, auto-mode state, last generation status, last error, and the recommended next action. Quick actions cover Generate Tracker, Regenerate Selected / Latest, Import Preset, Open Render Lab, Test Connection, and Diagnostics.
+
+Presets keeps everyday preset selection, import/export, validation, duplicate/delete/reset, and compatibility warnings visible. The large JSON Schema, HTML Template, Prompt Instructions, Description, and Notes authoring fields are collapsed behind Authoring mode.
+
+Render Lab remains storage-free and chat-safe. It previews the active or staged preset with phone narrow, phone large, tablet, desktop, or custom widths; minimal, normal, stress, mobile torture, cast-heavy, or world-heavy samples; and inline contained, inline wide, popover, or fullscreen shells. It can copy sample JSON, sanitized HTML, and the lint report.
+
+Display uses visual cards instead of raw mode selectors:
+
+- Inline Wide: recommended normal mode for practical chat-width trackers.
+- Anchored Popover: best for large HUDs without chat clutter.
+- Fullscreen Reader: best for mobile reading.
+- Drawer Only: no inline chat display.
+- Inline Contained: compatibility mode.
+
+Advanced Display keeps inline sizing, popover, fullscreen, and close behavior settings. Legacy `messageDisplay.displayMode` stays internal for migration and is not a normal control.
+
+Generation exposes everyday auto controls, trigger roles, skip count, message limits, budgets, timeout, raw-output saving, prompt-preview saving, attach behavior, and swipe status. Advanced Generation contains debounce, finalization, settle delay, stable swipe checks, and pending-job cancellation.
+
+Connection shows only the tracker profile dropdown, refresh profiles, test connection, fallback status, selected profile identity, and last test result. Low-level `connection.mode` and model parameters live under Advanced Connection.
+
+Memory / Context separates two related features: Tracker Memory helps tracker generation stay consistent, while Prompt Injection gives the roleplay model recent tracker state. Both have their own controls and previews.
+
+Diagnostics is collapsed and searchable. Groups cover Status, Last error, Generation jobs, Auto timing, Memory, Prompt injection, Display / DOM, Renderer / sanitizer, Presets / import, Connections, and Storage / history. Copy buttons include all diagnostics, last error, last prompt preview, and last raw model output.
+
+Advanced contains Ultra Tracker Mode, budget limits, storage maintenance, duplicate/orphan cleanup, reset settings, clear current chat snapshot, legacy compatibility, hidden debug controls, and the future Dev Mode placeholder.
+
+### Quick Setup Profiles
+
+Quick setup profiles show a confirmation preview before applying changes:
+
+- Mobile Wide Tracker: inline wide, full-mobile width, zero mobile margin, tall scroll body.
+- Popover HUD: anchored popover with backdrop and close behavior.
+- Fullscreen Reader: fullscreen reader with mobile-safe reading height.
+- Minimal Inline: compact contained inline display.
+- Authoring Mode: Trusted renderer, large render/raw budgets, visible render warnings.
+- Safe Mode: strict Safe renderer, inline styles off, prompt injection off.
+- Ultra Budget: high prompt/render/import/output budgets for huge presets.
+
+### Visible, Advanced, And Legacy Settings
+
+Visible settings are task-oriented and appear in Home, Presets, Render Lab, Display, Generation, Connection, and Memory / Context. Advanced settings remain reachable but collapsed. Legacy/migration-only fields such as `messageDisplay.displayMode`, iframe fallback, raw attachment mode, debug swipe key, debug history copy buttons, and low-level connection mode are hidden from the normal UI.
 
 ## Preset-Locked Snapshot Rendering
 
@@ -149,7 +207,7 @@ class, aria-hidden, role
 
 ### Dev Mode
 
-Dev Mode is a future explicit opt-in sandbox experiment. Imported presets cannot enable Dev Mode automatically. JavaScript remains disabled in v0.20; if script-like content is detected, LTracker strips it and warns:
+Dev Mode is a future explicit opt-in sandbox experiment. Imported presets cannot enable Dev Mode automatically. JavaScript remains disabled in v0.21; if script-like content is detected, LTracker strips it and warns:
 
 ```text
 JavaScript requires Dev Mode and was not executed.
@@ -215,7 +273,7 @@ Missing values render as the configured missing value placeholder and do not cra
 
 ## Template Helper Pack
 
-The 0.20 helper pack is meant for complex HUD-style presets that need to render arrays and nested objects cleanly without raw JSON blobs. Directly writing `{{rel}}`, `{{pockets}}`, or `{{cast}}` can display objects as JSON text. Prefer loops or chip helpers.
+The 0.20+ helper pack is meant for complex HUD-style presets that need to render arrays and nested objects cleanly without raw JSON blobs. Directly writing `{{rel}}`, `{{pockets}}`, or `{{cast}}` can display objects as JSON text. Prefer loops or chip helpers.
 
 String array:
 
@@ -429,6 +487,16 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 | `chat_mutation` | Embedded tracker tag writes/removals only. | Sidecar mode still works; embedded tag updates cannot run. |
 | `interceptor` | Optional normal prompt injection. | Tracker Memory still works; prompt injection is unavailable. |
 
+## Troubleshooting
+
+- Tracker too narrow: use Display -> Inline Wide and Expanded width mode `full_mobile` on phones or `wide` on desktop. If the host message bubble still constrains it, use Anchored Popover or Fullscreen Reader.
+- Popover not opening: confirm Display is Anchored Popover, message display is enabled, and the compact LTracker pill is present for that message/swipe. Check Diagnostics -> Display / DOM for overlay and mount details.
+- Preset import rejected: open Presets -> Import Review, confirm the file is a `.ltracker.json`, check import size limits, and validate the preset before installing.
+- Raw JSON appears in tracker: run Validate Preset or Render Lab. Direct `{{rel}}`, `{{pockets}}`, or `{{cast}}` interpolation should usually become `{{#each ...}}`, `{{chipList ...}}`, or `{{fieldChipList ...}}`.
+- Template CSS stripped: use Trusted Mode for user-authored presets that need scoped CSS. Safe Mode removes style blocks by design.
+- Tracker generated for wrong swipe: check Diagnostics -> Storage / history and Display / DOM. LTracker keys tracker state by chat, message, and swipe identity; missing exact state shows a generate control instead of silently falling back.
+- Old tracker changed appearance: v0.19.2+ snapshots should use preset render locks. If a legacy snapshot has no lock and its original preset is unavailable, LTracker warns and falls back safely.
+
 ## Known Limitations
 
 - JavaScript remains disabled outside future explicit Dev Mode.
@@ -441,12 +509,12 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 ## Roadmap
 
-1. `0.21 Sequential + Partial Regeneration`
-2. `0.22 Cleanup / Repair / Pending Fields`
-3. `0.23 World Books, Character Exclusions, and Context Filters`
-4. `0.24 Dev Mode JS Sandbox Experiments`
-5. `0.25 Preset Marketplace / Pack Collections / Advanced Export Polish`
+1. `0.22 Sequential + Partial Regeneration`
+2. `0.23 Cleanup / Repair / Pending Fields`
+3. `0.24 World Books, Character Exclusions, and Context Filters`
+4. `0.25 Dev Mode JS Sandbox Experiments`
+5. `0.26 Preset Marketplace / Pack Collections / Advanced Export Polish`
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.20`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.21`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

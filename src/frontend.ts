@@ -92,11 +92,47 @@ const STYLES = `
   gap: 12px;
   padding: 14px;
 }
+.ltracker-command-center {
+  background:
+    radial-gradient(circle at top left, rgba(92, 120, 255, 0.14), transparent 34%),
+    radial-gradient(circle at top right, rgba(38, 198, 218, 0.10), transparent 30%);
+}
 .ltracker-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+.ltracker-command-header {
+  backdrop-filter: blur(16px);
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 12px;
+  padding: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.ltracker-brand {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+.ltracker-brand-icon {
+  align-items: center;
+  background: linear-gradient(135deg, rgba(98, 126, 255, 0.34), rgba(28, 198, 218, 0.20));
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 10px;
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  min-width: 34px;
+  width: 34px;
+}
+.ltracker-brand-icon svg {
+  height: 18px;
+  width: 18px;
 }
 .ltracker-title {
   margin: 0;
@@ -119,6 +155,18 @@ const STYLES = `
   flex-wrap: wrap;
   gap: 6px;
 }
+.ltracker-command-nav {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: 12px;
+  flex-wrap: nowrap;
+  margin: -2px 0 2px;
+  overflow-x: auto;
+  padding: 6px;
+  position: sticky;
+  top: 64px;
+  z-index: 18;
+}
 .ltracker-nav-chip,
 .ltracker-chip {
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
@@ -133,6 +181,106 @@ const STYLES = `
 }
 .ltracker-nav-chip {
   background: color-mix(in srgb, currentColor 5%, transparent);
+}
+.ltracker-nav-chip {
+  align-items: center;
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 7px 11px;
+}
+.ltracker-nav-chip:hover {
+  background: color-mix(in srgb, currentColor 11%, transparent);
+}
+.ltracker-card-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.ltracker-command-card,
+.ltracker-display-card,
+.ltracker-setup-card {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, currentColor 7%, transparent), color-mix(in srgb, currentColor 3%, transparent));
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 8px;
+  min-width: 0;
+  padding: 10px;
+}
+.ltracker-command-card-header,
+.ltracker-display-card-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.ltracker-card-title {
+  font-weight: 750;
+  min-width: 0;
+}
+.ltracker-card-body {
+  font-size: 0.82rem;
+  line-height: 1.38;
+  opacity: 0.78;
+}
+.ltracker-status-chip {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.1;
+  min-height: 24px;
+  padding: 4px 8px;
+}
+.ltracker-status-chip[data-tone="success"] {
+  background: rgba(52, 168, 83, 0.14);
+  border-color: rgba(52, 168, 83, 0.36);
+  color: #66d18f;
+}
+.ltracker-status-chip[data-tone="warning"] {
+  background: rgba(251, 188, 5, 0.14);
+  border-color: rgba(251, 188, 5, 0.36);
+  color: #ffd45a;
+}
+.ltracker-status-chip[data-tone="error"] {
+  background: rgba(234, 67, 53, 0.14);
+  border-color: rgba(234, 67, 53, 0.40);
+  color: #ff8f86;
+}
+.ltracker-status-chip[data-tone="active"] {
+  background: rgba(110, 92, 255, 0.18);
+  border-color: rgba(110, 92, 255, 0.44);
+  color: #b8b0ff;
+}
+.ltracker-display-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ltracker-display-card[data-active="true"] {
+  border-color: rgba(110, 92, 255, 0.56);
+  box-shadow: 0 0 0 1px rgba(110, 92, 255, 0.20) inset;
+}
+.ltracker-display-card .ltracker-button,
+.ltracker-setup-card .ltracker-button {
+  width: 100%;
+}
+.ltracker-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ltracker-subtle-panel {
+  background: color-mix(in srgb, currentColor 4%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: 8px;
+  padding: 9px;
+}
+.ltracker-row {
+  display: contents;
 }
 .ltracker-render-lab {
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
@@ -490,6 +638,12 @@ const STYLES = `
     flex: 1 1 140px;
   }
   .ltracker-grid {
+    grid-template-columns: 1fr;
+  }
+  .ltracker-command-nav {
+    top: 86px;
+  }
+  .ltracker-card-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -893,8 +1047,10 @@ function labelForStatus(status: FrontendState["status"]): string {
 
 function renderRow(label: string, value: string | number | null): string {
   return `
-    <div class="ltracker-key">${escapeHtml(label)}</div>
-    <div class="ltracker-value">${escapeHtml(value === null || value === "" ? "None" : String(value))}</div>
+    <div class="ltracker-row" data-ltracker-row="${escapeHtml(`${label} ${value ?? ""}`)}">
+      <div class="ltracker-key">${escapeHtml(label)}</div>
+      <div class="ltracker-value">${escapeHtml(value === null || value === "" ? "None" : String(value))}</div>
+    </div>
   `;
 }
 
@@ -961,6 +1117,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let historySelectedSwipeOnly = false;
   let currentHistoryLimit = 25;
   let recentlyDeletedBanner: { messageId: string; swipeKey: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  let diagnosticsSearchText = "";
 
   let stagedImportPack: PresetPackImportResult | null = null;
   let stagedImportRawText = "";
@@ -2690,14 +2847,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     };
   }
 
-  function saveSettings(prefix = "settings"): void {
+  function saveSettingsValue(settings: LTrackerSettings, prefix = "settings"): void {
     setSettingsSaveStatus("saving");
     send({
       type: "save_settings",
       chatId: activeChatId(),
-      settings: readSettings(),
+      settings,
       requestId: requestId(prefix),
     });
+  }
+
+  function saveSettings(prefix = "settings"): void {
+    saveSettingsValue(readSettings(), prefix);
   }
 
   function resetSettings(): void {
@@ -2708,6 +2869,247 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       chatId: activeChatId(),
       requestId: requestId("settings-reset"),
     });
+  }
+
+  type QuickSetupProfileId =
+    | "mobile_wide"
+    | "popover_hud"
+    | "fullscreen_reader"
+    | "minimal_inline"
+    | "authoring_mode"
+    | "safe_mode"
+    | "ultra_budget";
+
+  interface QuickSetupProfile {
+    id: QuickSetupProfileId;
+    name: string;
+    summary: string;
+    changes: string[];
+    apply: (settings: LTrackerSettings) => LTrackerSettings;
+  }
+
+  function withDisplaySurface(settings: LTrackerSettings, surface: LTrackerDisplaySurface): LTrackerSettings {
+    return {
+      ...settings,
+      messageDisplay: {
+        ...settings.messageDisplay,
+        enabled: true,
+        useDomInjection: surface !== "drawer_only" ? true : settings.messageDisplay.useDomInjection,
+        displaySurface: surface,
+        displayMode: displayModeForSurface(surface),
+      },
+    };
+  }
+
+  function quickSetupProfiles(): QuickSetupProfile[] {
+    return [
+      {
+        id: "mobile_wide",
+        name: "Mobile Wide Tracker",
+        summary: "Best everyday phone setup: inline tracker uses the practical chat width.",
+        changes: [
+          "Display surface: Inline wide",
+          "Expanded width: Full mobile",
+          "Max width: 1100px",
+          "Mobile margin: 0px",
+          "Expanded height: 92vh",
+        ],
+        apply: (settings) => ({
+          ...withDisplaySurface(settings, "inline_wide"),
+          expandedWidth: {
+            ...settings.expandedWidth,
+            expandedWidthMode: "full_mobile",
+            maxExpandedWidthPx: 1100,
+            mobileHorizontalMarginPx: 0,
+            expandedContentMaxHeightVh: 92,
+            preferFullscreenOnMobile: true,
+          },
+        }),
+      },
+      {
+        id: "popover_hud",
+        name: "Popover HUD",
+        summary: "Keeps chat compact while opening large HUDs in a detached popover.",
+        changes: [
+          "Display surface: Anchored popover",
+          "Backdrop on",
+          "Close on backdrop and Escape",
+          "Prefer fullscreen on small screens",
+        ],
+        apply: (settings) => ({
+          ...withDisplaySurface(settings, "anchored_popover"),
+          expandedWidth: {
+            ...settings.expandedWidth,
+            preferFullscreenOnMobile: true,
+            popoverBackdrop: true,
+            closeOnBackdropClick: true,
+            closeOnEscape: true,
+          },
+        }),
+      },
+      {
+        id: "fullscreen_reader",
+        name: "Fullscreen Reader",
+        summary: "Opens tracker snapshots as a mobile-safe reader with a fixed close button.",
+        changes: [
+          "Display surface: Fullscreen reader",
+          "Reader height: 95vh",
+          "Close on Escape",
+        ],
+        apply: (settings) => ({
+          ...withDisplaySurface(settings, "fullscreen_reader"),
+          expandedWidth: {
+            ...settings.expandedWidth,
+            expandedContentMaxHeightVh: 95,
+            closeOnEscape: true,
+          },
+        }),
+      },
+      {
+        id: "minimal_inline",
+        name: "Minimal Inline",
+        summary: "Compatibility-first inline tracker with compact collapsed controls.",
+        changes: [
+          "Display surface: Inline contained",
+          "Collapsed by default",
+          "Compact controls",
+          "Bottom inline actions off",
+        ],
+        apply: (settings) => ({
+          ...withDisplaySurface(settings, "inline_contained"),
+          expandedWidth: {
+            ...settings.expandedWidth,
+            expandedWidthMode: "contained",
+          },
+          messageDisplay: {
+            ...withDisplaySurface(settings, "inline_contained").messageDisplay,
+            collapsedByDefault: true,
+            compactCollapsedHeader: true,
+            controlDensity: "compact",
+            showBottomActionsInInlineTracker: false,
+          },
+        }),
+      },
+      {
+        id: "authoring_mode",
+        name: "Authoring Mode",
+        summary: "Trusted renderer, larger preview budgets, and visible render warnings.",
+        changes: [
+          "Renderer: Trusted",
+          "Rendered HTML budget: 500k chars",
+          "Raw output budget: 500k chars",
+          "Render warnings visible",
+        ],
+        apply: (settings) => ({
+          ...settings,
+          renderer: {
+            ...settings.renderer,
+            enabled: true,
+            allowInlineStyles: true,
+            templateTrustMode: "trusted",
+          },
+          messageDisplay: {
+            ...settings.messageDisplay,
+            allowInlineStyles: true,
+            deduplicateRenderWarnings: false,
+          },
+          budget: {
+            ...settings.budget,
+            renderedHtmlMaxChars: 500_000,
+            rawOutputMaxChars: 500_000,
+          },
+        }),
+      },
+      {
+        id: "safe_mode",
+        name: "Safe Mode",
+        summary: "Strict rendering for unknown imports or conservative sharing.",
+        changes: [
+          "Renderer: Safe",
+          "Inline styles off",
+          "Prompt injection off",
+          "Ultra mode off",
+        ],
+        apply: (settings) => ({
+          ...settings,
+          renderer: {
+            ...settings.renderer,
+            allowInlineStyles: false,
+            templateTrustMode: "safe",
+          },
+          messageDisplay: {
+            ...settings.messageDisplay,
+            allowInlineStyles: false,
+          },
+          injection: {
+            ...settings.injection,
+            enabled: false,
+          },
+          budget: {
+            ...settings.budget,
+            ultraModeEnabled: false,
+          },
+        }),
+      },
+      {
+        id: "ultra_budget",
+        name: "Ultra Budget",
+        summary: "Higher prompt, memory, output, import, and render limits for huge presets.",
+        changes: [
+          "Ultra Tracker Mode on",
+          "Recent message budget: 64k tokens",
+          "Tracker output: 16k tokens",
+          "Preset import cap: 50m chars",
+        ],
+        apply: (settings) => ({
+          ...settings,
+          budget: {
+            ...settings.budget,
+            ultraModeEnabled: true,
+            recentMessageBudgetTokens: 64_000,
+            perMessageBudgetTokens: 16_000,
+            trackerMemoryBudgetTokens: 16_000,
+            promptInjectionBudgetTokens: 16_000,
+            maxTrackerOutputTokens: 16_000,
+            promptPreviewBudgetTokens: 64_000,
+            renderedHtmlMaxChars: 1_000_000,
+            rawOutputMaxChars: 1_000_000,
+            presetImportMaxChars: 50_000_000,
+          },
+        }),
+      },
+    ];
+  }
+
+  function commitLocalSettings(settings: LTrackerSettings, prefix = "settings-auto"): void {
+    clearSettingsAutosaveTimer();
+    state = {
+      ...state,
+      settings,
+    };
+    localDiagnostics({
+      selectedDisplaySurface: settings.messageDisplay.displaySurface,
+      resolvedDisplaySurface: resolveDisplaySurface(settings),
+      displaySurfaceKind: displaySurfaceKind(resolveDisplaySurface(settings)),
+      lastDisplaySurfaceRehydratedAt: new Date().toISOString(),
+    });
+    hydrateMessageWidgets();
+    render();
+    saveSettingsValue(settings, prefix);
+  }
+
+  function applyDisplaySurface(surface: LTrackerDisplaySurface): void {
+    const next = withDisplaySurface(readSettings(), surface);
+    commitLocalSettings(next, "settings-display");
+  }
+
+  function applyQuickSetupProfile(profileId: string | undefined): void {
+    const profile = quickSetupProfiles().find((item) => item.id === profileId);
+    if (!profile) {
+      setLocalError("Unknown quick setup profile.");
+      return;
+    }
+    commitLocalSettings(profile.apply(readSettings()), `quick-setup-${profile.id}`);
   }
 
   function setLocalError(message: string): void {
@@ -3918,78 +4320,379 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       `;
     }
 
-    tab.root.innerHTML = `
-      <section class="ltracker-shell">
-        <header class="ltracker-header">
-          <div>
-            <h2 class="ltracker-title">LTracker</h2>
-            <div class="ltracker-version">Version ${escapeHtml(state.version)}</div>
+    const statusTone = (tone: "success" | "warning" | "error" | "active", label: string): string =>
+      `<span class="ltracker-status-chip" data-tone="${tone}">${escapeHtml(label)}</span>`;
+    const card = (title: string, badge: string, body: string, actionHtml = ""): string => `
+      <article class="ltracker-command-card">
+        <div class="ltracker-command-card-header">
+          <span class="ltracker-card-title">${escapeHtml(title)}</span>
+          ${badge}
+        </div>
+        <div class="ltracker-card-body">${body}</div>
+        ${actionHtml ? `<div class="ltracker-toolbar" style="margin-top: 9px;">${actionHtml}</div>` : ""}
+      </article>
+    `;
+    const displaySurfaceLabel = (surface: LTrackerDisplaySurface): string => {
+      if (surface === "inline_wide") return "Inline Wide";
+      if (surface === "anchored_popover") return "Anchored Popover";
+      if (surface === "fullscreen_reader") return "Fullscreen Reader";
+      if (surface === "drawer_only") return "Drawer Only";
+      return "Inline Contained";
+    };
+    const quickSetupHtml = quickSetupProfiles().map((profile) => `
+      <details class="ltracker-setup-card">
+        <summary>
+          <span class="ltracker-card-title">${escapeHtml(profile.name)}</span>
+          <span class="ltracker-card-body">${escapeHtml(profile.summary)}</span>
+        </summary>
+        <ul class="ltracker-card-body" style="margin: 8px 0 10px 18px; padding: 0;">
+          ${profile.changes.map((change) => `<li>${escapeHtml(change)}</li>`).join("")}
+        </ul>
+        <button class="ltracker-button" type="button" data-action="apply-quick-setup" data-profile="${escapeHtml(profile.id)}">Apply ${escapeHtml(profile.name)}</button>
+      </details>
+    `).join("");
+    const displaySurfaceCards = ([
+      {
+        surface: "inline_wide" as const,
+        title: "Inline Wide",
+        badge: "Recommended",
+        copy: "Uses the widest practical chat/message row. Best everyday mode when you want readable trackers in chat.",
+      },
+      {
+        surface: "anchored_popover" as const,
+        title: "Anchored Popover",
+        badge: "HUD",
+        copy: "Keeps a compact LTracker pill in chat and opens the tracker in a detached popover.",
+      },
+      {
+        surface: "fullscreen_reader" as const,
+        title: "Fullscreen Reader",
+        badge: "Mobile",
+        copy: "Opens snapshots as a scrollable reader with the fixed mobile close control from v0.19.1.",
+      },
+      {
+        surface: "drawer_only" as const,
+        title: "Drawer Only",
+        badge: "Quiet",
+        copy: "Removes inline tracker display from chat. History and previews stay in the drawer.",
+      },
+      {
+        surface: "inline_contained" as const,
+        title: "Inline Contained",
+        badge: "Compat",
+        copy: "Keeps the tracker inside the message bubble for maximum host compatibility.",
+      },
+    ]).map((item) => {
+      const active = currentDisplaySurface === item.surface;
+      return `
+        <article class="ltracker-display-card" data-active="${active ? "true" : "false"}">
+          <div class="ltracker-display-card-header">
+            <span class="ltracker-card-title">${escapeHtml(item.title)}</span>
+            ${active ? statusTone("active", "Active") : statusTone(item.surface === "inline_wide" ? "success" : "warning", item.badge)}
+          </div>
+          <div class="ltracker-card-body">${escapeHtml(item.copy)}</div>
+          <button class="ltracker-button" type="button" data-action="apply-display-surface" data-surface="${escapeHtml(item.surface)}">${active ? "Selected" : `Use ${escapeHtml(item.title)}`}</button>
+        </article>
+      `;
+    }).join("");
+    const nextAction = error
+      ? "Check Diagnostics, then copy the last error if you want to share it."
+      : !state.activePreset
+        ? "Import or reset a preset before generating."
+        : connectionWarning
+          ? "Open Connection and choose or refresh a tracker profile."
+          : !state.snapshot && !state.latestMessageSnapshot
+            ? "Generate a tracker to create the first snapshot."
+            : "Open Render Lab or regenerate the latest tracker when you change presets.";
+    const lastGenerationSummary = [
+      diagnostics.lastGenerationSource ? `source ${diagnostics.lastGenerationSource}` : null,
+      diagnostics.lastGenerationDurationMs !== null ? `duration ${formatDurationMs(diagnostics.lastGenerationDurationMs)}` : null,
+      diagnostics.lastGenerationCompletedAt ? `completed ${diagnostics.lastGenerationCompletedAt}` : null,
+    ].filter((item): item is string => Boolean(item)).join(" / ");
+    const diagnosticsButtons = `
+      <button class="ltracker-button" type="button" data-action="copy-all-diagnostics">Copy all diagnostics</button>
+      <button class="ltracker-button" type="button" data-action="copy-last-error">Copy last error</button>
+      <button class="ltracker-button" type="button" data-action="copy-prompt" ${disabled(!prompt)}>Copy last prompt preview</button>
+      <button class="ltracker-button" type="button" data-action="copy-raw" ${disabled(!rawOutput)}>Copy last raw model output</button>
+    `;
+
+    const commandCenterHtml = `
+      <section class="ltracker-shell ltracker-command-center">
+        <header class="ltracker-header ltracker-command-header">
+          <div class="ltracker-brand">
+            <span class="ltracker-brand-icon">${ICON}</span>
+            <div>
+              <h2 class="ltracker-title">LTracker Command Center</h2>
+              <div class="ltracker-version">Version ${escapeHtml(state.version)} / ${escapeHtml(settingsSaveStatusLabel())}</div>
+            </div>
           </div>
           <div class="ltracker-actions">
-            <span class="ltracker-status">${escapeHtml(labelForStatus(state.status))}</span>
-            <span class="ltracker-save-status" data-settings-save-status>${escapeHtml(settingsSaveStatusLabel())}</span>
+            ${statusTone(state.status === "error" ? "error" : state.status === "generating" ? "active" : "success", labelForStatus(state.status))}
+            ${state.settings.auto.autoModeEnabled ? statusTone("active", "Auto on") : statusTone("warning", "Auto off")}
+            ${connectionWarning ? statusTone("warning", "Fallback") : statusTone("success", "Ready")}
           </div>
         </header>
 
-        <nav class="ltracker-section-nav" aria-label="LTracker sections">
-          ${["Dashboard", "Generation", "Auto", "Connection", "Display", "Renderer", "Memory / Injection", "Presets", "History", "Diagnostics", "Advanced"].map((label) => {
-            const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-            return `<a class="ltracker-nav-chip" data-drawer-section="${escapeHtml(id)}" href="#ltracker-section-${id}">${escapeHtml(label)}</a>`;
-          }).join("")}
+        <nav class="ltracker-section-nav ltracker-command-nav" aria-label="LTracker sections">
+          ${([
+            ["Home", "home"],
+            ["Presets", "presets"],
+            ["Render Lab", "render-lab"],
+            ["Display", "display"],
+            ["Generation", "generation"],
+            ["Connection", "connection"],
+            ["Memory / Context", "memory-context"],
+            ["Diagnostics", "diagnostics"],
+            ["Advanced", "advanced"],
+          ] as Array<[string, string]>).map(([label, id]) => `<a class="ltracker-nav-chip" data-drawer-section="${escapeHtml(id)}" href="#ltracker-section-${escapeHtml(id)}">${escapeHtml(label)}</a>`).join("")}
         </nav>
 
-        <div class="ltracker-actions">
-          <button class="ltracker-button" type="button" data-action="generate" ${disabled(!canGenerate)}>
-            Generate Tracker
-          </button>
-          <button class="ltracker-button" type="button" data-action="refresh">
-            Refresh State
-          </button>
-          <button class="ltracker-button" type="button" data-action="clear-snapshot" ${disabled(!state.chatId)}>
-            Clear Current Chat Snapshot
-          </button>
-        </div>
-
-        <section class="ltracker-panel ltracker-section" id="ltracker-section-dashboard">
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-home">
           <div class="ltracker-section-title">
-            <span class="ltracker-label">Dashboard</span>
+            <span class="ltracker-label">Home</span>
+            ${error ? statusTone("error", "Needs attention") : statusTone("success", "Command ready")}
           </div>
-          <div class="ltracker-chip-row">
-            <span class="ltracker-chip">Auto ${escapeHtml(state.settings.auto.autoModeEnabled ? "on" : "off")}</span>
-            <span class="ltracker-chip">Memory ${escapeHtml(state.settings.memory.enabled ? "on" : "off")}</span>
-            <span class="ltracker-chip">Inject ${escapeHtml(state.settings.injection.enabled ? "on" : "off")}</span>
-            <span class="ltracker-chip">Display ${escapeHtml(diagnostics.messageDisplayMode ?? "drawer")}</span>
-            <span class="ltracker-chip">Attach ${escapeHtml(state.settings.messageDisplay.attachmentMode)}</span>
+          <div class="ltracker-card-grid">
+            ${card("Active preset", statusTone("active", activePreset.origin), escapeHtml(`${activePreset.name} v${activePreset.version}`), `<a class="ltracker-button" href="#ltracker-section-presets" data-drawer-section="presets">Manage presets</a>`)}
+            ${card("Tracker profile", connectionWarning ? statusTone("warning", "Fallback") : statusTone(selectedConnection ? "success" : "warning", selectedConnection ? "Selected" : "Active chat"), escapeHtml(selectedConnection?.name ?? connectionSettings.selectedConnectionName ?? "Active roleplay connection fallback"), `<a class="ltracker-button" href="#ltracker-section-connection" data-drawer-section="connection">Open connection</a>`)}
+            ${card("Display mode", statusTone(currentDisplaySurface === "inline_wide" ? "success" : "active", displaySurfaceLabel(currentDisplaySurface)), escapeHtml(displaySurfaceNote), `<a class="ltracker-button" href="#ltracker-section-display" data-drawer-section="display">Tune display</a>`)}
+            ${card("Auto mode", state.settings.auto.autoModeEnabled ? statusTone("active", "Armed") : statusTone("warning", "Manual"), escapeHtml(autoStatus), `<a class="ltracker-button" href="#ltracker-section-generation" data-drawer-section="generation">Generation</a>`)}
+            ${card("Last generation", state.status === "generating" ? statusTone("active", "Running") : statusTone(lastGenerationSummary ? "success" : "warning", lastGenerationSummary ? "Recorded" : "None"), escapeHtml(lastGenerationSummary || "No generation completed in this drawer session."), "")}
+            ${card("Recommended next action", error ? statusTone("error", "Error") : statusTone("active", "Next"), escapeHtml(nextAction), "")}
           </div>
-          <div class="ltracker-grid ltracker-details">
-            ${renderRow("Active preset", activePreset.name)}
-            ${renderRow("Tracker connection", connectionSettings.selectedConnectionName ?? connectionSettings.mode)}
-            ${renderRow("Latest snapshot", state.snapshot?.createdAt ?? null)}
-            ${renderRow("Latest memory", diagnostics.lastMemorySourceSummary)}
-            ${renderRow("Auto finalization", diagnostics.lastAutoFinalizationState)}
-            ${renderRow("Waiting message", diagnostics.lastAutoWaitingMessageId)}
-          </div>
-          <div class="ltracker-actions" style="margin-top: 10px;">
+          ${error ? `<p class="ltracker-note ltracker-error">${escapeHtml(renderError(error))}</p>` : ""}
+          <div class="ltracker-toolbar" style="margin-top: 12px;">
             <button class="ltracker-button" type="button" data-action="generate" ${disabled(!canGenerate)}>Generate Tracker</button>
-            <button class="ltracker-button" type="button" data-action="refresh">Refresh State</button>
-            <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>Render Latest Snapshot</button>
-            <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
+            <button class="ltracker-button" type="button" data-action="regenerate-latest">Regenerate Selected / Latest</button>
+            <button class="ltracker-button" type="button" data-action="import-file-pack">Import Preset</button>
+            <a class="ltracker-button" href="#ltracker-section-render-lab" data-drawer-section="render-lab">Open Render Lab</a>
+            <button class="ltracker-button" type="button" data-action="test-connection" ${disabled(connectionTestRunning)}>Test Connection</button>
+            <a class="ltracker-button" href="#ltracker-section-diagnostics" data-drawer-section="diagnostics">Diagnostics</a>
           </div>
         </section>
 
-        <section class="ltracker-panel ltracker-section" id="ltracker-section-generation">
-          <span class="ltracker-label">Generation</span>
-          <div class="ltracker-settings">
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-presets">
+          <div class="ltracker-section-title">
+            <span class="ltracker-label">Presets</span>
+            ${statusTone(activePresetIsBuiltIn ? "warning" : "active", activePresetIsBuiltIn ? "Built-in" : "Editable")}
+          </div>
+          ${importReviewHtml}
+          <div class="ltracker-card-grid">
+            ${card("Active preset", statusTone("active", activePreset.origin), escapeHtml(`${activePreset.name} / ${activePreset.description || "No description"}`), "")}
+            ${card("Compatibility", recommendedConnection ? statusTone("active", "Recommendations") : statusTone("success", "Standard"), escapeHtml(recommendedConnectionText ?? "No special tracker connection recommendations in this preset."), "")}
+          </div>
+          <div class="ltracker-settings" style="margin-top: 10px;">
             <label class="ltracker-field">
-              Recent message limit
+              Active preset
+              <select data-preset-select>
+                ${presetOptions}
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Preset name
+              <input type="text" data-preset-field="name" value="${escapeHtml(activePreset.name)}"${disabled(activePresetIsBuiltIn)}>
+            </label>
+            <label class="ltracker-field">
+              Preset version
+              <input type="text" data-preset-field="version" value="${escapeHtml(activePreset.version)}"${disabled(activePresetIsBuiltIn)}>
+            </label>
+            <label class="ltracker-field ltracker-field-wide">
+              Notes
+              <textarea data-preset-field="notes"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.notes ?? "")}</textarea>
+            </label>
+          </div>
+          <div class="ltracker-toolbar" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="import-file-pack">Import .ltracker.json</button>
+            <button class="ltracker-button" type="button" data-action="export-preset-pack">Export active preset</button>
+            <button class="ltracker-button" type="button" data-action="validate-preset-report">Validate preset</button>
+            <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate preset</button>
+            <button class="ltracker-button" type="button" data-action="delete-preset" ${disabled(activePresetIsBuiltIn)}>Delete preset</button>
+            <button class="ltracker-button" type="button" data-action="reset-preset">Reset built-in preset</button>
+            <button class="ltracker-button" type="button" data-action="apply-preset-connection" ${disabled(!recommendedConnection)}>Apply recommended tracker settings</button>
+          </div>
+          <details class="ltracker-details">
+            <summary>Import and export pack tools</summary>
+            <div class="ltracker-subtle-panel">
+              <p class="ltracker-note" style="margin-top: 0;">Preset packs are .ltracker.json files for schemas, templates, prompt instructions, notes, and optional settings recommendations. They do not contain generated tracker snapshots.</p>
+              <div class="ltracker-toolbar">
+                <button class="ltracker-button" type="button" data-action="export-preset-pack-settings">Export preset + current settings</button>
+                <button class="ltracker-button" type="button" data-action="copy-preset-pack-json">Copy pack JSON</button>
+                <button class="ltracker-button" type="button" data-action="copy-legacy-preset-json">Copy legacy preset JSON</button>
+              </div>
+              <label class="ltracker-field ltracker-field-wide" style="margin-top: 10px;">
+                Paste preset or pack JSON
+                <textarea data-preset-import placeholder="Paste JSON here..."></textarea>
+              </label>
+              <button class="ltracker-button" type="button" data-action="import-preset-pack-preview">Preview pasted JSON</button>
+            </div>
+          </details>
+          <details class="ltracker-details">
+            <summary>Authoring mode</summary>
+            <div class="ltracker-settings">
+              <label class="ltracker-field ltracker-field-wide">
+                JSON Schema
+                <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml(presetSchemaText)}</textarea>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                HTML Template
+                <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.htmlTemplate ?? "")}</textarea>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Prompt Instructions
+                <textarea data-preset-field="promptInstructions"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.promptInstructions)}</textarea>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Description
+                <textarea data-preset-field="description"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.description)}</textarea>
+              </label>
+            </div>
+            <div class="ltracker-toolbar" style="margin-top: 10px;">
+              <button class="ltracker-button" type="button" data-action="save-preset-new">Save as new preset</button>
+              <button class="ltracker-button" type="button" data-action="update-preset" ${disabled(activePresetIsBuiltIn)}>Update current preset</button>
+            </div>
+          </details>
+          ${validationReportHtml}
+          ${sampleSnapshotHtml}
+        </section>
+
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-render-lab">
+          <div class="ltracker-section-title">
+            <span class="ltracker-label">Render Lab</span>
+            ${statusTone("active", "Preview only")}
+          </div>
+          <div class="ltracker-toolbar">
+            <button class="ltracker-button" type="button" data-action="generate-sample-snapshot">Render sample</button>
+            <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>Render latest</button>
+            <button class="ltracker-button" type="button" data-action="copy-render-lab-sample">Copy sample JSON</button>
+            <button class="ltracker-button" type="button" data-action="copy-render-lab-html">Copy sanitized HTML</button>
+            <button class="ltracker-button" type="button" data-action="copy-render-lab-report">Copy validation report</button>
+          </div>
+          ${renderLabHtml}
+          ${validationReportHtml}
+          ${sampleSnapshotHtml}
+          <details class="ltracker-details">
+            <summary>Latest sanitized preview</summary>
+            ${renderHtmlPreview}
+          </details>
+        </section>
+
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-display">
+          <div class="ltracker-section-title">
+            <span class="ltracker-label">Display</span>
+            ${statusTone("active", displaySurfaceLabel(currentDisplaySurface))}
+          </div>
+          <div class="ltracker-settings" style="margin-bottom: 10px;">
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="enabled"${checked(state.settings.messageDisplay.enabled)}>
+              Message tracker display enabled
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="useDomInjection"${checked(state.settings.messageDisplay.useDomInjection)}>
+              Use native DOM display
+            </label>
+          </div>
+          <div class="ltracker-card-grid">
+            ${displaySurfaceCards}
+          </div>
+          <p class="ltracker-note">${escapeHtml("Display surface controls where the tracker opens. Expanded width controls only affect inline sizing.")}</p>
+          <details class="ltracker-details">
+            <summary>Advanced Display</summary>
+            <div class="ltracker-settings">
+              <label class="ltracker-field">
+                Expanded width mode${escapeHtml(inlineOnlySuffix)}
+                <select data-expanded-width-setting="expandedWidthMode">
+                  <option value="contained"${selected(state.settings.expandedWidth.expandedWidthMode === "contained")}>Contained</option>
+                  <option value="wide"${selected(state.settings.expandedWidth.expandedWidthMode === "wide")}>Wide</option>
+                  <option value="full_mobile"${selected(state.settings.expandedWidth.expandedWidthMode === "full_mobile")}>Full mobile</option>
+                </select>
+              </label>
+              <label class="ltracker-field">
+                Max expanded width cap${escapeHtml(inlineOnlySuffix)}
+                <input type="number" min="320" max="1800" step="20" data-expanded-width-setting="maxExpandedWidthPx" value="${escapeHtml(String(state.settings.expandedWidth.maxExpandedWidthPx))}">
+              </label>
+              <label class="ltracker-field">
+                Mobile horizontal margin${escapeHtml(inlineOnlySuffix)}
+                <input type="number" min="0" max="32" step="1" data-expanded-width-setting="mobileHorizontalMarginPx" value="${escapeHtml(String(state.settings.expandedWidth.mobileHorizontalMarginPx))}">
+              </label>
+              <label class="ltracker-field">
+                Expanded max height
+                <input type="number" min="30" max="95" step="1" data-expanded-width-setting="expandedContentMaxHeightVh" value="${escapeHtml(String(state.settings.expandedWidth.expandedContentMaxHeightVh))}">
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-expanded-width-setting="preferFullscreenOnMobile"${checked(state.settings.expandedWidth.preferFullscreenOnMobile)}>
+                Prefer fullscreen on mobile
+              </label>
+              <label class="ltracker-field">
+                Fullscreen breakpoint px
+                <input type="number" min="320" max="1800" step="50" data-expanded-width-setting="fullscreenBreakpointPx" value="${escapeHtml(String(state.settings.expandedWidth.fullscreenBreakpointPx))}">
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-expanded-width-setting="popoverBackdrop"${checked(state.settings.expandedWidth.popoverBackdrop)}>
+                Popover backdrop
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-expanded-width-setting="closeOnBackdropClick"${checked(state.settings.expandedWidth.closeOnBackdropClick)}>
+                Close on backdrop click
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-expanded-width-setting="closeOnEscape"${checked(state.settings.expandedWidth.closeOnEscape)}>
+                Close on Escape
+              </label>
+              <label class="ltracker-field">
+                Tracker display format
+                <select data-message-display-setting="renderMode">
+                  <option value="html_template"${selected(state.settings.messageDisplay.renderMode === "html_template")}>HTML template</option>
+                  <option value="compact_text"${selected(state.settings.messageDisplay.renderMode === "compact_text")}>Compact text</option>
+                  <option value="pretty_json"${selected(state.settings.messageDisplay.renderMode === "pretty_json")}>Pretty JSON</option>
+                </select>
+              </label>
+              <label class="ltracker-field">
+                Message render chars
+                <input type="number" min="1000" max="2000000" step="1000" data-message-display-setting="maxRenderedChars" value="${escapeHtml(String(state.settings.messageDisplay.maxRenderedChars))}">
+              </label>
+            </div>
+          </details>
+          <div class="ltracker-toolbar" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="contained">Preview Contained</button>
+            <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="wide">Preview Wide</button>
+            <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="popover">Preview Popover</button>
+            <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="fullscreen">Preview Fullscreen</button>
+          </div>
+          ${placementWarning}
+        </section>
+
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-generation">
+          <div class="ltracker-section-title">
+            <span class="ltracker-label">Generation</span>
+            ${state.settings.auto.autoModeEnabled ? statusTone("active", "Auto enabled") : statusTone("warning", "Manual")}
+          </div>
+          <div class="ltracker-settings">
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="autoModeEnabled"${checked(state.settings.auto.autoModeEnabled)}>
+              Auto mode
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="triggerAfterAssistantMessages"${checked(state.settings.auto.triggerAfterAssistantMessages)}>
+              Trigger after assistant
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-setting="triggerAfterUserMessages"${checked(state.settings.auto.triggerAfterUserMessages)}>
+              Trigger after user
+            </label>
+            <label class="ltracker-field">
+              Skip first messages
+              <input type="number" min="0" max="100" step="1" data-setting="skipFirstMessages" value="${escapeHtml(String(state.settings.auto.skipFirstMessages))}">
+            </label>
+            <label class="ltracker-field">
+              Messages used for tracker
               <input type="number" min="1" max="200" step="1" data-setting="recentMessageLimit" value="${escapeHtml(String(state.settings.recentMessageLimit))}">
             </label>
             <label class="ltracker-field">
-              Per-message chars
+              Per-message budget
               <input type="number" min="500" max="512000" step="100" data-setting="maxMessageChars" value="${escapeHtml(String(state.settings.maxMessageChars))}">
             </label>
             <label class="ltracker-field">
-              Timeout ms
+              Generation timeout
               <input type="number" min="10000" max="180000" step="1000" data-setting="generationTimeoutMs" value="${escapeHtml(String(state.settings.generationTimeoutMs))}">
             </label>
             <label class="ltracker-check">
@@ -4000,109 +4703,57 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               <input type="checkbox" data-setting="savePromptPreview"${checked(state.settings.savePromptPreview)}>
               Save prompt preview
             </label>
-            <label class="ltracker-field">
-              Budget mode
-              <select data-budget-setting="mode">
-                <option value="estimated_tokens"${selected(state.settings.budget.mode === "estimated_tokens")}>Estimated tokens</option>
-                <option value="characters"${selected(state.settings.budget.mode === "characters")}>Characters</option>
-              </select>
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-budget-setting="ultraModeEnabled"${checked(state.settings.budget.ultraModeEnabled)}>
-              Ultra Tracker Mode
-            </label>
-            <label class="ltracker-field">
-              Recent budget tokens
-              <input type="number" min="256" max="128000" step="256" data-budget-setting="recentMessageBudgetTokens" value="${escapeHtml(String(state.settings.budget.recentMessageBudgetTokens))}">
-              <span class="ltracker-key">${escapeHtml(budgetHint(state.settings.budget.recentMessageBudgetTokens))}</span>
-            </label>
-            <label class="ltracker-field">
-              Per-message budget tokens
-              <input type="number" min="256" max="128000" step="256" data-budget-setting="perMessageBudgetTokens" value="${escapeHtml(String(state.settings.budget.perMessageBudgetTokens))}">
-              <span class="ltracker-key">${escapeHtml(budgetHint(state.settings.budget.perMessageBudgetTokens))}</span>
-            </label>
-            <label class="ltracker-field">
-              Max tracker output tokens
-              <input type="number" min="256" max="64000" step="256" data-budget-setting="maxTrackerOutputTokens" value="${escapeHtml(String(state.settings.budget.maxTrackerOutputTokens))}">
-            </label>
-            <label class="ltracker-field">
-              Prompt preview tokens
-              <input type="number" min="256" max="128000" step="256" data-budget-setting="promptPreviewBudgetTokens" value="${escapeHtml(String(state.settings.budget.promptPreviewBudgetTokens))}">
-            </label>
-            <label class="ltracker-field">
-              Raw output chars
-              <input type="number" min="1000" max="2000000" step="1000" data-budget-setting="rawOutputMaxChars" value="${escapeHtml(String(state.settings.budget.rawOutputMaxChars))}">
-              <span class="ltracker-key">${escapeHtml(charLimitHint(state.settings.budget.rawOutputMaxChars))}</span>
-            </label>
-          </div>
-          <div class="ltracker-actions" style="margin-top: 10px;">
-            <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
-          </div>
-        </section>
-
-        <section class="ltracker-panel ltracker-section" id="ltracker-section-auto">
-          <span class="ltracker-label">Auto</span>
-          <div class="ltracker-settings">
-            <label class="ltracker-check">
-              <input type="checkbox" data-setting="autoModeEnabled"${checked(state.settings.auto.autoModeEnabled)}>
-              Auto mode
-            </label>
-            <label class="ltracker-field">
-              Wait after message finishes
-              <input type="number" min="250" max="30000" step="250" data-setting="autoDebounceMs" value="${escapeHtml(String(state.settings.auto.autoDebounceMs))}">
-            </label>
-            <label class="ltracker-field">
-              Skip first messages
-              <input type="number" min="0" max="100" step="1" data-setting="skipFirstMessages" value="${escapeHtml(String(state.settings.auto.skipFirstMessages))}">
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-setting="triggerAfterAssistantMessages"${checked(state.settings.auto.triggerAfterAssistantMessages)}>
-              Trigger after assistant
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-setting="triggerAfterUserMessages"${checked(state.settings.auto.triggerAfterUserMessages)}>
-              Trigger after user
-            </label>
             <label class="ltracker-check">
               <input type="checkbox" data-setting="attachSnapshotToMessage"${checked(state.settings.auto.attachSnapshotToMessage)}>
-              Attach snapshot to message
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-setting="onlyWhenChatActive"${checked(state.settings.auto.onlyWhenChatActive)}>
-              Active chat only
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-auto-timing-setting="waitForAssistantFinalization"${checked(state.settings.autoTiming.waitForAssistantFinalization)}>
-              Wait for assistant finalization
-            </label>
-            <label class="ltracker-field">
-              Settle ms
-              <input type="number" min="0" max="10000" step="50" data-auto-timing-setting="postCompletionSettleMs" value="${escapeHtml(String(state.settings.autoTiming.postCompletionSettleMs))}">
-            </label>
-            <label class="ltracker-field">
-              Stable check ms
-              <input type="number" min="0" max="5000" step="50" data-auto-timing-setting="stableContentCheckMs" value="${escapeHtml(String(state.settings.autoTiming.stableContentCheckMs))}">
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-auto-timing-setting="requireStableSwipeContent"${checked(state.settings.autoTiming.requireStableSwipeContent)}>
-              Require stable swipe content
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-auto-timing-setting="cancelPendingOnSwipeChange"${checked(state.settings.autoTiming.cancelPendingOnSwipeChange)}>
-              Cancel pending on swipe change
+              Attach tracker to message
             </label>
           </div>
           <div class="ltracker-grid ltracker-details">
-            ${renderRow("Finalization state", diagnostics.lastAutoFinalizationState)}
-            ${renderRow("Waiting message", diagnostics.lastAutoWaitingMessageId)}
-            ${renderRow("Waiting swipe", diagnostics.lastAutoWaitingSwipeKey)}
-            ${renderRow("Stable passed", diagnostics.lastAutoStableCheckPassed === null ? null : diagnostics.lastAutoStableCheckPassed ? "yes" : "no")}
-            ${renderRow("Pending finalizations", diagnostics.pendingAutoFinalizationCount)}
+            ${renderRow("Stop/cancel behavior", "One active tracker job per message/swipe; stale jobs are ignored or cancelled.")}
+            ${renderRow("Swipe behavior", diagnostics.lastSwipeKey ? `${diagnostics.lastSwipeKeySource}: ${diagnostics.lastSwipeKey}` : "No swipe observed yet")}
+            ${renderRow("Recent token budget", `${state.settings.budget.recentMessageBudgetTokens} (${budgetHint(state.settings.budget.recentMessageBudgetTokens)})`)}
+            ${renderRow("Per-message token budget", `${state.settings.budget.perMessageBudgetTokens} (${budgetHint(state.settings.budget.perMessageBudgetTokens)})`)}
           </div>
+          <details class="ltracker-details">
+            <summary>Advanced Generation</summary>
+            <div class="ltracker-settings">
+              <label class="ltracker-field">
+                Wait before auto-generating
+                <input type="number" min="250" max="30000" step="250" data-setting="autoDebounceMs" value="${escapeHtml(String(state.settings.auto.autoDebounceMs))}">
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-auto-timing-setting="waitForAssistantFinalization"${checked(state.settings.autoTiming.waitForAssistantFinalization)}>
+                Wait for assistant finalization
+              </label>
+              <label class="ltracker-field">
+                Wait after AI finishes
+                <input type="number" min="0" max="10000" step="50" data-auto-timing-setting="postCompletionSettleMs" value="${escapeHtml(String(state.settings.autoTiming.postCompletionSettleMs))}">
+              </label>
+              <label class="ltracker-field">
+                Verify swipe finished changing
+                <input type="number" min="0" max="5000" step="50" data-auto-timing-setting="stableContentCheckMs" value="${escapeHtml(String(state.settings.autoTiming.stableContentCheckMs))}">
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-auto-timing-setting="requireStableSwipeContent"${checked(state.settings.autoTiming.requireStableSwipeContent)}>
+                Require stable swipe content
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-auto-timing-setting="cancelPendingOnSwipeChange"${checked(state.settings.autoTiming.cancelPendingOnSwipeChange)}>
+                Cancel pending on swipe change
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-setting="onlyWhenChatActive"${checked(state.settings.auto.onlyWhenChatActive)}>
+                Active chat only
+              </label>
+            </div>
+          </details>
         </section>
 
         <section class="ltracker-panel ltracker-section" id="ltracker-section-connection">
-          <span class="ltracker-label">Tracker Connection</span>
+          <div class="ltracker-section-title">
+            <span class="ltracker-label">Connection</span>
+            ${connectionWarning ? statusTone("warning", "Fallback") : statusTone(selectedConnection ? "success" : "warning", selectedConnection ? "Selected profile" : "Active fallback")}
+          </div>
           <div class="ltracker-settings">
             <label class="ltracker-field">
               Tracker Profile
@@ -4110,43 +4761,34 @@ export function setup(ctx: SpindleFrontendContext): () => void {
                 ${connectionOptions}
               </select>
             </label>
-            <p class="ltracker-note" style="margin-top: 2px; margin-bottom: 8px;">Fallback: Use active roleplay connection if tracker profile is unavailable</p>
             <label class="ltracker-check">
               <input type="checkbox" data-connection-setting="refreshConnectionsOnDrawerOpen"${checked(connectionSettings.refreshConnectionsOnDrawerOpen)}>
-              Refresh on drawer open
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Test prompt
-              <textarea data-connection-setting="testPrompt">${escapeHtml(connectionSettings.testPrompt || TRACKER_CONNECTION_DEFAULT_TEST_PROMPT)}</textarea>
+              Refresh profiles on drawer open
             </label>
           </div>
+          <p class="ltracker-note">${escapeHtml("Default workflow: select a tracker profile for raw tracker parameters. If unavailable, LTracker falls back to the active roleplay connection. API keys are never exposed or stored.")}</p>
           ${connectionWarning ? `<p class="ltracker-note">${escapeHtml(connectionWarning)}</p>` : ""}
-          <div class="ltracker-actions" style="margin-top: 10px; margin-bottom: 10px;">
-            <button class="ltracker-button" type="button" data-action="refresh-connections">Refresh Connections</button>
+          <div class="ltracker-toolbar" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="refresh-connections">Refresh profiles</button>
             <button class="ltracker-button" type="button" data-action="test-connection" ${disabled(connectionTestRunning)}>Test Tracker Connection</button>
-            <button class="ltracker-button" type="button" data-action="cancel-connection-test" ${disabled(!connectionTestRunning)}>Cancel Test</button>
+            <button class="ltracker-button" type="button" data-action="cancel-connection-test" ${disabled(!connectionTestRunning)}>Cancel test</button>
           </div>
           <div class="ltracker-grid ltracker-details">
-            ${renderRow("Selected name", selectedConnection?.name ?? connectionSettings.selectedConnectionName)}
-            ${renderRow("Selected id", connectionSettings.selectedConnectionId)}
+            ${renderRow("Selected profile name", selectedConnection?.name ?? connectionSettings.selectedConnectionName)}
+            ${renderRow("Selected profile id", connectionSettings.selectedConnectionId)}
             ${renderRow("Provider", selectedConnection?.provider ?? null)}
             ${renderRow("Model", selectedConnection?.model ?? null)}
-            ${renderRow("Has API key", selectedConnection?.has_api_key === null || selectedConnection?.has_api_key === undefined ? null : selectedConnection.has_api_key ? "yes" : "no")}
-            ${renderRow("Reasoning binding", compactRecord(selectedConnection?.reasoning_bindings ?? null))}
             ${renderRow("Profiles loaded", state.connectionProfiles.length)}
-            ${renderRow("Last refresh", diagnostics.lastConnectionRefreshAt)}
-            ${renderRow("Refresh error", diagnostics.lastConnectionRefreshError)}
-            ${renderRow("Connection test", connectionTestSummary || null)}
+            ${renderRow("Last test", connectionTestSummary || null)}
           </div>
-
-          <details class="ltracker-details" style="margin-top: 15px;">
-            <summary style="font-weight: bold; cursor: pointer;">Advanced Connection & Model Parameters</summary>
-            <div class="ltracker-settings" style="margin-top: 10px;">
+          <details class="ltracker-details">
+            <summary>Advanced Connection</summary>
+            <div class="ltracker-settings">
               <label class="ltracker-field">
-                Low-level Connection Mode
+                Internal connection mode
                 <select data-connection-setting="mode">
-                  <option value="selected_connection_raw"${selected(connectionSettings.mode === "selected_connection_raw")}>Selected profile + raw parameters (Default)</option>
-                  <option value="active_quiet"${selected(connectionSettings.mode === "active_quiet")}>Always use active chat connection</option>
+                  <option value="selected_connection_raw"${selected(connectionSettings.mode === "selected_connection_raw")}>Selected profile + raw parameters</option>
+                  <option value="active_quiet"${selected(connectionSettings.mode === "active_quiet")}>Active chat connection</option>
                   <option value="selected_connection_quiet"${selected(connectionSettings.mode === "selected_connection_quiet")}>Selected profile, quiet mode</option>
                 </select>
               </label>
@@ -4155,11 +4797,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
                 <input type="number" min="0" max="2" step="0.05" data-connection-parameter="temperature" value="${escapeHtml(numberInputValue(connectionSettings.parameters.temperature))}">
               </label>
               <label class="ltracker-field">
-                Max tokens
+                Max output tokens
                 <input type="number" min="256" max="64000" step="256" data-connection-parameter="max_tokens" value="${escapeHtml(numberInputValue(connectionSettings.parameters.max_tokens))}">
               </label>
               <label class="ltracker-field">
-                Top p
+                Top-p
                 <input type="number" min="0" max="1" step="0.05" data-connection-parameter="top_p" value="${escapeHtml(numberInputValue(connectionSettings.parameters.top_p))}">
               </label>
               <label class="ltracker-field">
@@ -4171,7 +4813,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
                 <input type="number" min="-2" max="2" step="0.05" data-connection-parameter="presence_penalty" value="${escapeHtml(numberInputValue(connectionSettings.parameters.presence_penalty))}">
               </label>
               <label class="ltracker-field">
-                Reasoning Source
+                Reasoning source
                 <select data-connection-reasoning="source">
                   <option value="inherit"${selected(connectionSettings.reasoning.source === "inherit")}>Inherit</option>
                   <option value="off"${selected(connectionSettings.reasoning.source === "off")}>Off</option>
@@ -4179,45 +4821,56 @@ export function setup(ctx: SpindleFrontendContext): () => void {
                 </select>
               </label>
               ${reasoningControls}
+              <label class="ltracker-field ltracker-field-wide">
+                Test prompt
+                <textarea data-connection-setting="testPrompt">${escapeHtml(connectionSettings.testPrompt || TRACKER_CONNECTION_DEFAULT_TEST_PROMPT)}</textarea>
+              </label>
             </div>
-            <div class="ltracker-actions" style="margin-top: 10px;">
-              <button class="ltracker-button" type="button" data-action="reset-connection-parameters">Reset Parameters</button>
-            </div>
+            <button class="ltracker-button" type="button" data-action="reset-connection-parameters">Reset tracker parameters</button>
           </details>
-
           <details class="ltracker-details">
             <summary>Last connection test output</summary>
             <pre class="ltracker-text">${escapeHtml(diagnostics.lastConnectionTestOutputPreview ?? "None")}</pre>
           </details>
-          <details class="ltracker-details">
-            <summary>Last connection test usage</summary>
-            <pre class="ltracker-text">${escapeHtml(compactRecord(diagnostics.lastConnectionTestUsage) ?? "None")}</pre>
-          </details>
         </section>
 
-        <section class="ltracker-panel ltracker-section" id="ltracker-section-memory-injection">
-          <span class="ltracker-label">Tracker Memory</span>
-          <div class="ltracker-settings">
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-memory-context">
+          <div class="ltracker-section-title">
+            <span class="ltracker-label">Memory / Context</span>
+            ${statusTone(state.settings.memory.enabled ? "active" : "warning", state.settings.memory.enabled ? "Memory on" : "Memory off")}
+          </div>
+          <div class="ltracker-card-grid">
+            ${card("Tracker Memory", state.settings.memory.includeInTrackerGeneration ? statusTone("active", "Generator") : statusTone("warning", "Stored only"), escapeHtml("Tracker Memory helps the tracker generator stay consistent by showing recent tracker snapshots while extracting the next state."), "")}
+            ${card("Prompt Injection", state.settings.injection.enabled ? statusTone("active", "Roleplay context") : statusTone("warning", "Off"), escapeHtml("Prompt Injection gives the roleplay model recent tracker state. It is related to memory, but it is not the same feature."), "")}
+          </div>
+          <div class="ltracker-settings" style="margin-top: 10px;">
             <label class="ltracker-check">
               <input type="checkbox" data-memory-setting="enabled"${checked(state.settings.memory.enabled)}>
-              Enable tracker memory
+              Tracker memory enabled
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-memory-setting="includeInTrackerGeneration"${checked(state.settings.memory.includeInTrackerGeneration)}>
-              Include in tracker generation
+              Include memory in tracker generation
             </label>
             <label class="ltracker-field">
-              Retain last N
+              Prior trackers retained
               <input type="number" min="0" max="10" step="1" data-memory-setting="retainCount" value="${escapeHtml(String(state.settings.memory.retainCount))}">
             </label>
             <label class="ltracker-field">
-              Full snapshots
+              Full snapshots retained
               <input type="number" min="0" max="10" step="1" data-memory-setting="fullSnapshotCount" value="${escapeHtml(String(state.settings.memory.fullSnapshotCount))}">
             </label>
-            <label class="ltracker-field">
-              Memory budget tokens
-              <input type="number" min="256" max="128000" step="256" data-budget-setting="trackerMemoryBudgetTokens" value="${escapeHtml(String(state.settings.budget.trackerMemoryBudgetTokens))}">
-              <span class="ltracker-key">${escapeHtml(budgetHint(state.settings.budget.trackerMemoryBudgetTokens))}</span>
+            <label class="ltracker-check">
+              <input type="checkbox" data-memory-setting="compactOlderSnapshots"${checked(state.settings.memory.compactOlderSnapshots)}>
+              Compact older snapshots
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-memory-setting="requireSamePreset"${checked(state.settings.memory.requireSamePreset)}>
+              Same preset only
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-memory-setting="requireSameSwipeWhenAvailable"${checked(state.settings.memory.requireSameSwipeWhenAvailable)}>
+              Same swipe only
             </label>
             <label class="ltracker-field">
               Memory source
@@ -4229,54 +4882,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               </select>
             </label>
             <label class="ltracker-field">
-              Order
+              Memory order
               <select data-memory-setting="order">
                 <option value="oldest_to_newest"${selected(state.settings.memory.order === "oldest_to_newest")}>Oldest to newest</option>
                 <option value="newest_to_oldest"${selected(state.settings.memory.order === "newest_to_oldest")}>Newest to oldest</option>
               </select>
             </label>
             <label class="ltracker-check">
-              <input type="checkbox" data-memory-setting="compactOlderSnapshots"${checked(state.settings.memory.compactOlderSnapshots)}>
-              Compact older snapshots
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-memory-setting="excludeTargetMessage"${checked(state.settings.memory.excludeTargetMessage)}>
-              Exclude target message
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-memory-setting="requireSamePreset"${checked(state.settings.memory.requireSamePreset)}>
-              Require same preset
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-memory-setting="requireSameSwipeWhenAvailable"${checked(state.settings.memory.requireSameSwipeWhenAvailable)}>
-              Require same swipe when available
-            </label>
-          </div>
-          <div class="ltracker-actions" style="margin-top: 10px;">
-            <button class="ltracker-button" type="button" data-action="copy-memory-preview" ${disabled(!state.memoryPreview)}>
-              Copy Memory Block
-            </button>
-          </div>
-          <details class="ltracker-details">
-            <summary>Preview memory block</summary>
-            <pre class="ltracker-text">${escapeHtml(memoryPreviewText)}</pre>
-          </details>
-        </section>
-
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Advanced Prompt Injection</span>
-          <p class="ltracker-note">${escapeHtml("Normal prompt injection affects roleplay prompt context and uses the interceptor path. Keep it off if you only want tracker-generation memory.")}</p>
-          <div class="ltracker-settings">
-            <label class="ltracker-check">
               <input type="checkbox" data-injection-setting="enabled"${checked(state.settings.injection.enabled)}>
-              Enable normal prompt injection
+              Prompt injection enabled
             </label>
             <label class="ltracker-field">
-              Retain last N
-              <input type="number" min="0" max="10" step="1" data-injection-setting="retainCount" value="${escapeHtml(String(state.settings.injection.retainCount))}">
-            </label>
-            <label class="ltracker-field">
-              Format
+              Injection format
               <select data-injection-setting="format">
                 <option value="embedded_tag"${selected(state.settings.injection.format === "embedded_tag")}>Embedded tag</option>
                 <option value="compact_text"${selected(state.settings.injection.format === "compact_text")}>Compact text</option>
@@ -4285,7 +4902,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               </select>
             </label>
             <label class="ltracker-field">
-              Placement
+              Injection placement
               <select data-injection-setting="injectionPlacement">
                 <option value="append_to_last_assistant"${selected(state.settings.injection.injectionPlacement === "append_to_last_assistant")}>Append to last assistant</option>
                 <option value="system_before_last"${selected(state.settings.injection.injectionPlacement === "system_before_last")}>System before last</option>
@@ -4293,745 +4910,153 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               </select>
             </label>
             <label class="ltracker-field">
-              Injection budget tokens
+              Prompt injection budget
               <input type="number" min="256" max="128000" step="256" data-budget-setting="promptInjectionBudgetTokens" value="${escapeHtml(String(state.settings.budget.promptInjectionBudgetTokens))}">
               <span class="ltracker-key">${escapeHtml(budgetHint(state.settings.budget.promptInjectionBudgetTokens))}</span>
             </label>
             <label class="ltracker-field">
-              Role fallback
-              <select data-injection-setting="roleFallback">
-                <option value="system"${selected(state.settings.injection.roleFallback === "system")}>System</option>
-                <option value="assistant"${selected(state.settings.injection.roleFallback === "assistant")}>Assistant</option>
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Header
-              <input type="text" data-injection-setting="header" value="${escapeHtml(state.settings.injection.header)}">
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-injection-setting="includeOnlyIfMissingFromPrompt"${checked(state.settings.injection.includeOnlyIfMissingFromPrompt)}>
-              Only backfill if missing
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-injection-setting="stripOlderTrackerBlocks"${checked(state.settings.injection.stripOlderTrackerBlocks)}>
-              Strip older tracker blocks
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-injection-setting="includeHeader"${checked(state.settings.injection.includeHeader)}>
-              Include header
+              Max injected chars
+              <input type="number" min="0" max="100000" step="100" data-injection-setting="maxInjectedChars" value="${escapeHtml(String(state.settings.injection.maxInjectedChars))}">
             </label>
           </div>
-          <div class="ltracker-actions" style="margin-top: 10px;">
-            <button class="ltracker-button" type="button" data-action="copy-injection-preview" ${disabled(!state.injectionPreview)}>
-              Copy Injection Preview
-            </button>
+          <div class="ltracker-toolbar" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="copy-memory-preview" ${disabled(!state.memoryPreview)}>Copy memory preview</button>
+            <button class="ltracker-button" type="button" data-action="copy-injection-preview" ${disabled(!state.injectionPreview)}>Copy injection preview</button>
           </div>
           <details class="ltracker-details">
-            <summary>Current injection preview</summary>
+            <summary>Tracker memory preview</summary>
+            <pre class="ltracker-text">${escapeHtml(memoryPreviewText)}</pre>
+          </details>
+          <details class="ltracker-details">
+            <summary>Prompt injection preview</summary>
             <pre class="ltracker-text">${escapeHtml(injectionPreviewText)}</pre>
           </details>
         </section>
 
-        <section class="ltracker-panel ltracker-section" id="ltracker-section-renderer">
-          <span class="ltracker-label">Renderer</span>
-          <div class="ltracker-settings">
-            <label class="ltracker-check">
-              <input type="checkbox" data-renderer-setting="enabled"${checked(state.settings.renderer.enabled)}>
-              Enable drawer renderer
-            </label>
-            <label class="ltracker-field">
-              Preview source
-              <select data-renderer-setting="previewSource">
-                <option value="latest_chat_snapshot"${selected(state.settings.renderer.previewSource === "latest_chat_snapshot")}>Latest chat snapshot</option>
-                <option value="latest_message_snapshot"${selected(state.settings.renderer.previewSource === "latest_message_snapshot")}>Latest message snapshot</option>
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Missing value placeholder
-              <input type="text" data-renderer-setting="missingValuePlaceholder" value="${escapeHtml(state.settings.renderer.missingValuePlaceholder)}">
-            </label>
-            <label class="ltracker-field">
-              Template mode
-              <select data-renderer-setting="templateTrustMode">
-                <option value="trusted"${selected(state.settings.renderer.templateTrustMode === "trusted")}>Trusted</option>
-                <option value="safe"${selected(state.settings.renderer.templateTrustMode === "safe")}>Safe</option>
-                <option value="dev"${selected(state.settings.renderer.templateTrustMode === "dev")}>Dev future</option>
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Rendered HTML chars
-              <input type="number" min="1000" max="2000000" step="1000" data-budget-setting="renderedHtmlMaxChars" value="${escapeHtml(String(state.settings.budget.renderedHtmlMaxChars))}">
-              <span class="ltracker-key">${escapeHtml(charLimitHint(state.settings.budget.renderedHtmlMaxChars))}</span>
-            </label>
-          </div>
-          <div class="ltracker-grid ltracker-details">
-            ${renderRow("Active preset", activePreset.name)}
-            ${renderRow("Has HTML template", renderHasTemplate)}
-            ${renderRow("Latest snapshot timestamp", renderSnapshotAt)}
-            ${renderRow("Render status", renderStatus)}
-          </div>
-          <div class="ltracker-actions" style="margin-top: 10px;">
-            <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
-              Render Latest Snapshot
-            </button>
-            <button class="ltracker-button" type="button" data-action="copy-render-html" ${disabled(!renderPreview?.html)}>
-              Copy Sanitized HTML
-            </button>
-            <button class="ltracker-button" type="button" data-action="copy-render-fallback" ${disabled(!renderPreview?.textFallback)}>
-              Copy Text Fallback
-            </button>
-            <button class="ltracker-button" type="button" data-action="copy-render-errors" ${disabled(!renderPreview || (renderPreview.errors.length === 0 && renderPreview.warnings.length === 0))}>
-              Copy Render Errors
-            </button>
-          </div>
-          <details class="ltracker-details" open>
-            <summary>Sanitized rendered HTML preview</summary>
-            ${renderHtmlPreview}
-          </details>
-          <details class="ltracker-details">
-            <summary>Plain-text fallback preview</summary>
-            <pre class="ltracker-text">${escapeHtml(renderTextFallback)}</pre>
-          </details>
-          <details class="ltracker-details">
-            <summary>Render warnings</summary>
-            <pre class="ltracker-text">${escapeHtml(renderWarningsText)}</pre>
-          </details>
-          <details class="ltracker-details">
-            <summary>Render errors</summary>
-            <pre class="ltracker-text ltracker-error">${escapeHtml(renderErrorsText)}</pre>
-          </details>
-        </section>
-
-        <section class="ltracker-panel ltracker-section" id="ltracker-section-display">
-          <span class="ltracker-label">Display</span>
-          <div class="ltracker-settings">
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="enabled"${checked(state.settings.messageDisplay.enabled)}>
-              Enable message display
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="useDomInjection"${checked(state.settings.messageDisplay.useDomInjection)}>
-              DOM injection primary
-            </label>
-            <label class="ltracker-field">
-              Attachment mode
-              <select data-message-display-setting="attachmentMode">
-                <option value="sidecar_snapshot"${selected(state.settings.messageDisplay.attachmentMode === "sidecar_snapshot")}>Sidecar snapshot</option>
-                <option value="embedded_tracker_tag"${selected(state.settings.messageDisplay.attachmentMode === "embedded_tracker_tag")}>Embedded tracker tag</option>
-                <option value="both"${selected(state.settings.messageDisplay.attachmentMode === "both")}>Both</option>
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Display surface
-              <select data-message-display-setting="displaySurface">
-                <option value="inline_contained"${selected(state.settings.messageDisplay.displaySurface === "inline_contained")}>Inline contained</option>
-                <option value="inline_wide"${selected(state.settings.messageDisplay.displaySurface === "inline_wide")}>Inline wide</option>
-                <option value="anchored_popover"${selected(state.settings.messageDisplay.displaySurface === "anchored_popover")}>Anchored popover</option>
-                <option value="fullscreen_reader"${selected(state.settings.messageDisplay.displaySurface === "fullscreen_reader")}>Fullscreen reader</option>
-                <option value="drawer_only"${selected(state.settings.messageDisplay.displaySurface === "drawer_only")}>Drawer history only</option>
-              </select>
-            </label>
-            <p class="ltracker-note ltracker-field-wide">${escapeHtml(displaySurfaceNote)}</p>
-            <label class="ltracker-field">
-              Placement
-              <select data-message-display-setting="placement">
-                <option value="top"${selected(state.settings.messageDisplay.placement === "top")}>Top</option>
-                <option value="bottom"${selected(state.settings.messageDisplay.placement === "bottom")}>Bottom</option>
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Source
-              <select data-message-display-setting="source">
-                <option value="message_attached_snapshot"${selected(state.settings.messageDisplay.source === "message_attached_snapshot")}>Message-attached snapshot</option>
-                <option value="latest_chat_snapshot"${selected(state.settings.messageDisplay.source === "latest_chat_snapshot")}>Latest chat snapshot</option>
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Render mode
-              <select data-message-display-setting="renderMode">
-                <option value="html_template"${selected(state.settings.messageDisplay.renderMode === "html_template")}>HTML template</option>
-                <option value="compact_text"${selected(state.settings.messageDisplay.renderMode === "compact_text")}>Compact text</option>
-                <option value="pretty_json"${selected(state.settings.messageDisplay.renderMode === "pretty_json")}>Pretty JSON</option>
-              </select>
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="deduplicateRenderWarnings"${checked(state.settings.messageDisplay.deduplicateRenderWarnings)}>
-              Deduplicate render warnings
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showRenderWarningsInDiagnosticsOnly"${checked(state.settings.messageDisplay.showRenderWarningsInDiagnosticsOnly)}>
-              Keep warning details in diagnostics
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showGenerateButtonForMissingTracker"${checked(state.settings.messageDisplay.showGenerateButtonForMissingTracker)}>
-              Missing tracker generate icon
-            </label>
-            <label class="ltracker-field">
-              Control density
-              <select data-message-display-setting="controlDensity">
-                <option value="compact"${selected(state.settings.messageDisplay.controlDensity === "compact")}>Compact</option>
-                <option value="comfortable"${selected(state.settings.messageDisplay.controlDensity === "comfortable")}>Comfortable</option>
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Control placement
-              <select data-message-display-setting="controlPlacement">
-                <option value="message_header"${selected(state.settings.messageDisplay.controlPlacement === "message_header")}>Message header</option>
-                <option value="inside_tracker_header"${selected(state.settings.messageDisplay.controlPlacement === "inside_tracker_header")}>Inside tracker header</option>
-              </select>
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showExpandedHeaderActions"${checked(state.settings.messageDisplay.showExpandedHeaderActions)}>
-              Expanded header actions
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showBottomActionsInInlineTracker"${checked(state.settings.messageDisplay.showBottomActionsInInlineTracker)}>
-              Bottom inline actions
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="collapsedByDefault"${checked(state.settings.messageDisplay.collapsedByDefault)}>
-              Collapsed by default
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="compactCollapsedHeader"${checked(state.settings.messageDisplay.compactCollapsedHeader)}>
-              Compact collapsed header
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showTimestamp"${checked(state.settings.messageDisplay.showTimestamp)}>
-              Show timestamp
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showPresetName"${checked(state.settings.messageDisplay.showPresetName)}>
-              Show preset name
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showDebugCopyButtonsInHistory"${checked(state.settings.messageDisplay.showDebugCopyButtonsInHistory)}>
-              History debug copy buttons
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showWidgetRegenerateButton"${checked(state.settings.messageDisplay.showWidgetRegenerateButton)}>
-              Widget regenerate button
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showEditButton"${checked(state.settings.messageDisplay.showEditButton)}>
-              Edit button
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showDeleteButton"${checked(state.settings.messageDisplay.showDeleteButton)}>
-              Delete button
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showNoTrackerForSwipe"${checked(state.settings.messageDisplay.showNoTrackerForSwipe)}>
-              No-tracker swipe state
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showGenerationDuration"${checked(state.settings.messageDisplay.showGenerationDuration)}>
-              Generation duration
-            </label>
-            <label class="ltracker-field">
-              Expanded width mode${escapeHtml(inlineOnlySuffix)}
-              <select data-expanded-width-setting="expandedWidthMode">
-                <option value="contained"${selected(state.settings.expandedWidth.expandedWidthMode === "contained")}>Contained</option>
-                <option value="wide"${selected(state.settings.expandedWidth.expandedWidthMode === "wide")}>Wide</option>
-                <option value="full_mobile"${selected(state.settings.expandedWidth.expandedWidthMode === "full_mobile")}>Full mobile</option>
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Max expanded width${escapeHtml(inlineOnlySuffix)}
-              <input type="number" min="320" max="1800" step="20" data-expanded-width-setting="maxExpandedWidthPx" value="${escapeHtml(String(state.settings.expandedWidth.maxExpandedWidthPx))}">
-            </label>
-            <label class="ltracker-field">
-              Mobile margin${escapeHtml(inlineOnlySuffix)}
-              <input type="number" min="0" max="32" step="1" data-expanded-width-setting="mobileHorizontalMarginPx" value="${escapeHtml(String(state.settings.expandedWidth.mobileHorizontalMarginPx))}">
-            </label>
-            <label class="ltracker-field">
-              Expanded max height${escapeHtml(inlineOnlySuffix)}
-              <input type="number" min="30" max="95" step="1" data-expanded-width-setting="expandedContentMaxHeightVh" value="${escapeHtml(String(state.settings.expandedWidth.expandedContentMaxHeightVh))}">
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-expanded-width-setting="preferFullscreenOnMobile"${checked(state.settings.expandedWidth.preferFullscreenOnMobile)}>
-              Prefer fullscreen on mobile
-            </label>
-            <label class="ltracker-field">
-              Fullscreen breakpoint px
-              <input type="number" min="320" max="1800" step="50" data-expanded-width-setting="fullscreenBreakpointPx" value="${escapeHtml(String(state.settings.expandedWidth.fullscreenBreakpointPx))}">
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-expanded-width-setting="popoverBackdrop"${checked(state.settings.expandedWidth.popoverBackdrop)}>
-              Popover backdrop overlay
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-expanded-width-setting="closeOnBackdropClick"${checked(state.settings.expandedWidth.closeOnBackdropClick)}>
-              Close popover on backdrop click
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-expanded-width-setting="closeOnEscape"${checked(state.settings.expandedWidth.closeOnEscape)}>
-              Close popover/reader on Escape
-            </label>
-            <label class="ltracker-field">
-              Legacy minimized height
-              <input type="number" min="0" max="400" step="10" data-message-display-setting="minimizedMaxHeightPx" value="${escapeHtml(String(state.settings.messageDisplay.minimizedMaxHeightPx))}">
-            </label>
-            <label class="ltracker-field">
-              Message render chars
-              <input type="number" min="1000" max="2000000" step="1000" data-message-display-setting="maxRenderedChars" value="${escapeHtml(String(state.settings.messageDisplay.maxRenderedChars))}">
-            </label>
-          </div>
-          <div class="ltracker-presets-subsection" style="margin-top: 15px; margin-bottom: 10px;">
-            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Display Surface Preview / Testing</span>
-            <div class="ltracker-actions">
-              <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="contained">Preview Contained</button>
-              <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="wide">Preview Wide</button>
-              <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="popover">Preview Popover</button>
-              <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="fullscreen">Preview Fullscreen</button>
-            </div>
-          </div>
-          ${placementWarning}
-        </section>
-
-        <section class="ltracker-panel ltracker-section" id="ltracker-section-history">
-          <span class="ltracker-label">Message Tracker History</span>
-          <div class="ltracker-settings" style="margin-bottom: 10px;">
-            <label class="ltracker-field ltracker-field-wide">
-              Search/filter
-              <input type="search" data-history-filter="text" value="${escapeHtml(historyFilterText)}">
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-history-filter="showDuplicates"${checked(historyShowDuplicates)}>
-              Show duplicates
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-history-filter="currentMessageOnly"${checked(historyCurrentMessageOnly)}>
-              Current message only
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-history-filter="selectedSwipeOnly"${checked(historySelectedSwipeOnly)}>
-              Selected swipe only
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-history-filter="currentPresetOnly"${checked(historyCurrentPresetOnly)}>
-              Current preset only
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-history-filter="errorsOnly"${checked(historyErrorsOnly)}>
-              Errors only
-            </label>
-          </div>
-          <div class="ltracker-actions" style="margin-bottom: 10px;">
-            <button class="ltracker-button" type="button" data-action="refresh">Refresh History</button>
-            <button class="ltracker-button" type="button" data-action="cleanup-duplicates" ${disabled(diagnostics.lastHistoryDuplicateCount <= 0)}>Clear Duplicate Index Entries</button>
-            <button class="ltracker-button" type="button" data-action="run-storage-maintenance-scan">Scan History Index</button>
-            <button class="ltracker-button" type="button" data-action="cleanup-missing-index">Cleanup Missing Index Entries</button>
-            <button class="ltracker-button" type="button" data-action="copy-storage-report">Copy Storage Report</button>
-          </div>
-          <div class="ltracker-chip-row" style="margin-bottom: 10px;">
-            <span class="ltracker-chip">Groups ${escapeHtml(String(diagnostics.lastHistoryGroupedCount))}</span>
-            <span class="ltracker-chip">Duplicates ${escapeHtml(String(diagnostics.lastHistoryDuplicateCount))}</span>
-          </div>
-          ${messageHistoryHtml}
-        </section>
-
-        <section class="ltracker-panel ltracker-section" id="ltracker-section-presets">
-          <span class="ltracker-label">Presets</span>
-          
-          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
-            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Current Preset</span>
-            <div class="ltracker-settings">
-              <label class="ltracker-field">
-                Selected preset
-                <select data-preset-select>
-                  ${presetOptions}
-                </select>
-              </label>
-              <label class="ltracker-field">
-                Preset name
-                <input type="text" data-preset-field="name" value="${escapeHtml(activePreset.name)}"${disabled(activePresetIsBuiltIn)}>
-              </label>
-              <label class="ltracker-field">
-                Preset version
-                <input type="text" data-preset-field="version" value="${escapeHtml(activePreset.version)}"${disabled(activePresetIsBuiltIn)}>
-              </label>
-              <label class="ltracker-field">
-                Origin
-                <input type="text" value="${escapeHtml(activePreset.origin)}" disabled>
-              </label>
-              <label class="ltracker-field ltracker-field-wide">
-                Preset description
-                <textarea data-preset-field="description"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.description)}</textarea>
-              </label>
-            </div>
-          </div>
-
-          ${importReviewHtml}
-
-          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
-            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Preset Configuration</span>
-            <div class="ltracker-settings">
-              <label class="ltracker-field ltracker-field-wide">
-                Schema Box 1 - JSON Schema
-                <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml(presetSchemaText)}</textarea>
-              </label>
-              <label class="ltracker-field ltracker-field-wide">
-                Schema Box 2 - HTML Template (Sanitized preview/message display)
-                <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.htmlTemplate ?? "")}</textarea>
-              </label>
-              <label class="ltracker-field ltracker-field-wide">
-                Prompt Box - AI Instructions
-                <textarea data-preset-field="promptInstructions"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.promptInstructions)}</textarea>
-              </label>
-              <label class="ltracker-field ltracker-field-wide">
-                Notes
-                <textarea data-preset-field="notes"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.notes ?? "")}</textarea>
-              </label>
-            </div>
-          </div>
-
-          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
-            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Validate & Preview</span>
-            <div class="ltracker-actions">
-              <button class="ltracker-button" type="button" data-action="validate-preset-report">
-                Validate Preset (Full Report)
-              </button>
-              <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
-                Render With Latest Snapshot
-              </button>
-              <button class="ltracker-button" type="button" data-action="generate-sample-snapshot">
-                Render With Sample Snapshot
-              </button>
-            </div>
-            ${renderLabHtml}
-            ${validationReportHtml}
-            ${sampleSnapshotHtml}
-          </div>
-
-          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
-            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Import & Export Preset Packs</span>
-            <div style="font-size: 11px; color: #aaa; margin-bottom: 8px;">
-              Manage presets as single <code>.ltracker.json</code> files containing schemas, templates, instructions, notes, and settings recommendations.
-            </div>
-            <div class="ltracker-actions" style="margin-bottom: 10px;">
-              <button class="ltracker-button" type="button" data-action="import-file-pack">
-                Import Preset Pack File (.ltracker.json)
-              </button>
-              <button class="ltracker-button" type="button" data-action="export-preset-pack">
-                Export Selected Preset Pack
-              </button>
-              <button class="ltracker-button" type="button" data-action="export-preset-pack-settings">
-                Export Preset Pack + Current Settings
-              </button>
-            </div>
-            <div class="ltracker-actions" style="margin-bottom: 10px;">
-              <button class="ltracker-button" type="button" data-action="copy-preset-pack-json">
-                Copy Preset Pack JSON
-              </button>
-              <button class="ltracker-button" type="button" data-action="copy-legacy-preset-json">
-                Copy Current Preset Legacy JSON
-              </button>
-            </div>
-            <label class="ltracker-field ltracker-field-wide">
-              Or paste Preset / Pack JSON below and click preview:
-              <textarea data-preset-import placeholder="Paste JSON here..."></textarea>
-            </label>
-            <div class="ltracker-actions" style="margin-top: 5px;">
-              <button class="ltracker-button" type="button" data-action="import-preset-pack-preview">
-                Preview Pasted JSON
-              </button>
-            </div>
-          </div>
-
-          <div class="ltracker-presets-subsection">
-            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Preset Storage Management</span>
-            <div class="ltracker-actions">
-              <button class="ltracker-button" type="button" data-action="save-preset-new">Save As New Preset</button>
-              <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate Preset</button>
-              <button class="ltracker-button" type="button" data-action="update-preset" ${disabled(activePresetIsBuiltIn)}>Update Current Preset</button>
-              <button class="ltracker-button" type="button" data-action="delete-preset" ${disabled(activePresetIsBuiltIn)}>Delete Preset</button>
-              <button class="ltracker-button" type="button" data-action="reset-preset">Reset To Default Preset</button>
-              <button class="ltracker-button" type="button" data-action="apply-preset-connection" ${disabled(!recommendedConnection)}>
-                Apply Preset Recommended Tracker Settings
-              </button>
-            </div>
-            ${presetHtmlWarning ? `<p class="ltracker-note">${escapeHtml(presetHtmlWarning)}</p>` : ""}
-            ${recommendedConnectionText ? `<p class="ltracker-note">${escapeHtml(recommendedConnectionText)}</p>` : ""}
-          </div>
-        </section>
-
         <section class="ltracker-panel ltracker-section" id="ltracker-section-diagnostics">
-          <span class="ltracker-label">Diagnostics</span>
-          <div class="ltracker-actions" style="margin-bottom: 12px;">
-            <button class="ltracker-button" type="button" data-action="copy-all-diagnostics">Copy All Diagnostics</button>
-            <button class="ltracker-button" type="button" data-action="copy-last-error">Copy Last Error</button>
+          <div class="ltracker-section-title">
+            <span class="ltracker-label">Diagnostics</span>
+            ${error ? statusTone("error", "Error recorded") : statusTone("success", "No drawer error")}
           </div>
-          
-          <details class="ltracker-details">
-            <summary>Status & General</summary>
+          <label class="ltracker-field ltracker-field-wide">
+            Search diagnostics...
+            <input type="search" data-diagnostics-search value="${escapeHtml(diagnosticsSearchText)}" placeholder="Search diagnostics...">
+          </label>
+          <div class="ltracker-toolbar" style="margin-top: 10px;">${diagnosticsButtons}</div>
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Status</summary>
             <div class="ltracker-grid">
               ${renderRow("Extension version", state.version)}
               ${renderRow("Active chat id", state.chatId)}
               ${renderRow("Current status", state.status)}
               ${renderRow("Auto mode", autoStatus)}
               ${renderRow("Permission status", permissionText)}
-              ${renderRow("Connection mode", diagnostics.connectionMode)}
-              ${renderRow("Native toolbar supported", diagnostics.nativeToolbarSupported ? "yes" : "no")}
-              ${renderRow("Native toolbar fallback", diagnostics.nativeToolbarFallbackReason)}
-              ${renderRow("Message-local UI supported", diagnostics.messageLocalUiSupported ? "yes" : "no")}
-              ${renderRow("Message-local fallback reason", diagnostics.messageLocalUiFallbackReason)}
-              ${renderRow("Build target", diagnostics.buildInfo.buildTarget)}
-              ${renderRow("Spindle types", diagnostics.buildInfo.spindleTypesVersion)}
-              ${renderRow("Storage schema", diagnostics.buildInfo.storageSchemaVersion)}
-              ${renderRow("Settings schema", diagnostics.buildInfo.settingsSchemaVersion)}
+              ${renderRow("Settings saved", settingsSaveStatusLabel())}
             </div>
           </details>
-
-          <details class="ltracker-details">
-            <summary>Generation Jobs</summary>
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Last error</summary>
+            <pre class="ltracker-text ltracker-error">${escapeHtml(renderError(error))}</pre>
+          </details>
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Generation jobs</summary>
             <div class="ltracker-grid">
               ${renderRow("Active tracker jobs", diagnostics.activeTrackerJobs.map((job) => `${job.messageId}/${job.swipeKey}`).join(", "))}
-              ${renderRow("Active widget regenerations", diagnostics.activeWidgetRegenerationCount)}
               ${renderRow("Last job id", diagnostics.lastJobId)}
-              ${renderRow("Last request id", diagnostics.lastRequestId)}
-              ${renderRow("Last duration ms", diagnostics.lastGenerationDurationMs)}
               ${renderRow("Last generation source", diagnostics.lastGenerationSource)}
-              ${renderRow("Last generation started", diagnostics.lastGenerationStartedAt)}
-              ${renderRow("Last generation completed", diagnostics.lastGenerationCompletedAt)}
+              ${renderRow("Last duration ms", diagnostics.lastGenerationDurationMs)}
               ${renderRow("Last cancellation", diagnostics.lastCancellation ? `${diagnostics.lastCancellation.jobId}: ${diagnostics.lastCancellation.reason}` : null)}
-              ${renderRow("Last widget regenerate message", diagnostics.lastWidgetRegenerateMessageId)}
-              ${renderRow("Last widget regenerate started", diagnostics.lastWidgetRegenerateStartedAt)}
-              ${renderRow("Last widget regenerate completed", diagnostics.lastWidgetRegenerateCompletedAt)}
-              ${renderRow("Last widget regenerate duration", diagnostics.lastWidgetRegenerateDurationMs)}
-              ${renderRow("Last widget regenerate cancelled", diagnostics.lastWidgetRegenerateCancelledAt)}
-              ${renderRow("Last widget regenerate error", diagnostics.lastWidgetRegenerateError)}
-              ${renderRow("Last job timeout at", diagnostics.lastJobTimeoutAt)}
-              ${renderRow("Last job timeout job id", diagnostics.lastJobTimeoutJobId)}
-              ${renderRow("Last job timeout message id", diagnostics.lastJobTimeoutMessageId)}
-              ${renderRow("Last job timeout swipe key", diagnostics.lastJobTimeoutSwipeKey)}
-              ${renderRow("Stale jobs evicted count", diagnostics.staleJobsEvictedCount)}
+              ${renderRow("Stale jobs evicted", diagnostics.staleJobsEvictedCount)}
             </div>
           </details>
-
-          <details class="ltracker-details">
-            <summary>Auto Timing</summary>
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Auto timing</summary>
             <div class="ltracker-grid">
               ${renderRow("Last auto event", diagnostics.lastAutoEventAt)}
-              ${renderRow("Last auto event type", diagnostics.lastAutoEventType)}
-              ${renderRow("Last auto scheduled", diagnostics.lastAutoScheduledAt)}
               ${renderRow("Last auto triggered", diagnostics.lastAutoTriggeredAt)}
               ${renderRow("Last auto skipped", diagnostics.lastAutoSkippedReason)}
-              ${renderRow("Last auto source message", diagnostics.lastAutoSourceMessageId)}
-              ${renderRow("Last auto source index", diagnostics.lastAutoSourceMessageIndex)}
-              ${renderRow("Last auto generation id", diagnostics.lastAutoGenerationId)}
               ${renderRow("Auto finalization state", diagnostics.lastAutoFinalizationState)}
-              ${renderRow("Auto waiting message", diagnostics.lastAutoWaitingMessageId)}
-              ${renderRow("Auto waiting swipe", diagnostics.lastAutoWaitingSwipeKey)}
-              ${renderRow("Auto finalized at", diagnostics.lastAutoFinalizedAt)}
-              ${renderRow("Auto stable check at", diagnostics.lastAutoStableCheckAt)}
               ${renderRow("Auto stable passed", diagnostics.lastAutoStableCheckPassed === null ? null : diagnostics.lastAutoStableCheckPassed ? "yes" : "no")}
-              ${renderRow("Auto stable hash", diagnostics.lastAutoContentStableHash)}
-              ${renderRow("Auto finalization skipped", diagnostics.lastAutoFinalizationSkippedReason)}
-              ${renderRow("Pending auto finalizations", diagnostics.pendingAutoFinalizationCount)}
-              ${renderRow("Swipe change cancelled pending", diagnostics.lastSwipeChangeCancelledPendingJob ? "yes" : "no")}
+              ${renderRow("Pending finalizations", diagnostics.pendingAutoFinalizationCount)}
             </div>
           </details>
-
-          <details class="ltracker-details">
+          <details class="ltracker-details" data-diagnostics-group>
             <summary>Memory</summary>
             <div class="ltracker-grid">
               ${renderRow("Last memory index count", diagnostics.lastMemoryIndexCount)}
-              ${renderRow("Last memory candidate count", diagnostics.lastMemoryCandidateCount)}
-              ${renderRow("Last memory loaded snapshot count", diagnostics.lastMemoryLoadedSnapshotCount)}
-              ${renderRow("Last memory load duration ms", diagnostics.lastMemoryLoadDurationMs)}
-              ${renderRow("Last memory load skipped count", diagnostics.lastMemoryLoadSkippedCount)}
               ${renderRow("Last memory entry count", diagnostics.lastMemoryEntryCount)}
               ${renderRow("Last memory chars", diagnostics.lastMemoryChars)}
-              ${renderRow("Last memory truncated", diagnostics.lastMemoryTruncated ? "yes" : "no")}
               ${renderRow("Last memory sources", diagnostics.lastMemorySourceSummary)}
-              ${renderRow("Last memory skipped", diagnostics.lastMemorySkippedReason)}
-              ${renderRow("Last prompt included memory", diagnostics.lastPromptIncludedMemory ? "yes" : "no")}
               ${renderRow("Estimated memory tokens", diagnostics.estimatedMemoryTokensLastRun)}
             </div>
           </details>
-
-          <details class="ltracker-details">
-            <summary>Prompt Injection</summary>
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Prompt injection</summary>
             <div class="ltracker-grid">
               ${renderRow("Injection enabled", diagnostics.injectionEnabled ? "yes" : "no")}
               ${renderRow("Context handler registered", diagnostics.contextHandlerRegistered ? "yes" : "no")}
               ${renderRow("Context handler disabled reason", diagnostics.contextHandlerDisabledReason)}
-              ${renderRow("Last context handler error", diagnostics.lastContextHandlerError)}
               ${renderRow("Last injection at", diagnostics.lastInjectionAt)}
-              ${renderRow("Last injection mode", diagnostics.lastInjectionMode)}
-              ${renderRow("Last injection format", diagnostics.lastInjectionFormat)}
-              ${renderRow("Last injected chars", diagnostics.lastInjectedChars)}
               ${renderRow("Last injection skipped", diagnostics.lastInjectionSkippedReason)}
-              ${renderRow("Last injection snapshot", diagnostics.lastInjectionSnapshotCreatedAt)}
-              ${renderRow("Last injection source message", diagnostics.lastInjectionSourceMessageId)}
-              ${renderRow("Interceptor registered", diagnostics.interceptorRegistered ? "yes" : "no")}
-              ${renderRow("Last interceptor at", diagnostics.lastInterceptorAt)}
-              ${renderRow("Last interceptor injected count", diagnostics.lastInterceptorInjectedCount)}
-              ${renderRow("Last interceptor injected chars", diagnostics.lastInterceptorInjectedChars)}
-              ${renderRow("Last interceptor stripped count", diagnostics.lastInterceptorStrippedCount)}
-              ${renderRow("Last interceptor skipped", diagnostics.lastInterceptorSkippedReason)}
-              ${renderRow("Last interceptor error", diagnostics.lastInterceptorError)}
-              ${renderRow("Prompt trackers before", diagnostics.lastInterceptorPromptTrackerCountBefore)}
-              ${renderRow("Prompt trackers after", diagnostics.lastInterceptorPromptTrackerCountAfter)}
               ${renderRow("Estimated prompt tokens", diagnostics.estimatedPromptTokensLastRun)}
             </div>
           </details>
-
-          <details class="ltracker-details">
+          <details class="ltracker-details" data-diagnostics-group>
             <summary>Display / DOM</summary>
             <div class="ltracker-grid">
-              ${renderRow("Message display enabled", diagnostics.messageDisplayEnabled ? "yes" : "no")}
-              ${renderRow("Message display mode", diagnostics.messageDisplayMode)}
-              ${renderRow("Message display renderer", diagnostics.messageDisplayRenderer)}
-              ${renderRow("Message display placement", diagnostics.messageDisplayPlacement)}
-              ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
-              ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
-              ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
-              ${renderRow("Selected display surface", diagnostics.selectedDisplaySurface)}
-              ${renderRow("Resolved display surface", diagnostics.resolvedDisplaySurface)}
+              ${renderRow("Selected display surface", diagnostics.selectedDisplaySurface ?? state.settings.messageDisplay.displaySurface)}
+              ${renderRow("Resolved display surface", diagnostics.resolvedDisplaySurface ?? currentDisplaySurface)}
               ${renderRow("Display surface kind", diagnostics.displaySurfaceKind)}
               ${renderRow("Display surface mount", diagnostics.displaySurfaceMountStrategy)}
-              ${renderRow("Display surface constrained", diagnostics.displaySurfaceParentWidthConstrained === null ? null : diagnostics.displaySurfaceParentWidthConstrained ? "yes" : "no")}
-              ${renderRow("Display surface fallback", diagnostics.displaySurfaceFallbackReason)}
-              ${renderRow("Last surface rehydration", diagnostics.lastDisplaySurfaceRehydratedAt)}
-              ${renderRow("Last display preview action", diagnostics.lastDisplayPreviewAction)}
-              ${renderRow("Last display preview result", diagnostics.lastDisplayPreviewResult)}
-              ${renderRow("Last display preview reason", diagnostics.lastDisplayPreviewReason)}
-              ${renderRow("Last message control render", diagnostics.lastMessageControlRenderAt)}
-              ${renderRow("Last message control message", diagnostics.lastMessageControlMessageId)}
-              ${renderRow("Last message control swipe", diagnostics.lastMessageControlSwipeKey)}
-              ${renderRow("Last message control state", diagnostics.lastMessageControlState)}
-              ${renderRow("Last generate button message", diagnostics.lastGenerateButtonMessageId)}
-              ${renderRow("Last generate button click", diagnostics.lastGenerateButtonClickedAt)}
-              ${renderRow("Last inline action", diagnostics.lastInlineActionClicked)}
-              ${renderRow("Last inline action at", diagnostics.lastInlineActionAt)}
-              ${renderRow("Last inline action error", diagnostics.lastInlineActionError)}
-              ${renderRow("Message widget placement resolved", diagnostics.messageWidgetPlacementResolved)}
-              ${renderRow("Message widget placement reason", diagnostics.messageWidgetPlacementReason)}
-              ${renderRow("Expanded width mode", diagnostics.expandedWidthModeResolved)}
-              ${renderRow("Expanded width px", diagnostics.lastExpandedTrackerWidthPx)}
-              ${renderRow("Iframe fallback visible in main UI", diagnostics.iframeFallbackVisibleInMainUi ? "yes" : "no")}
-              ${renderRow("Latest attached message", diagnostics.latestAttachedMessageId)}
-              ${renderRow("Latest attached index", diagnostics.latestAttachedMessageIndex)}
-              ${renderRow("Latest attached at", diagnostics.latestAttachedSnapshotAt)}
-              ${renderRow("Latest attached storage key", diagnostics.latestAttachedSnapshotStorageKey)}
-              ${renderRow("Last DOM injection", diagnostics.lastDomInjectionAt)}
-              ${renderRow("Last DOM injection error", diagnostics.lastDomInjectionError)}
-              ${renderRow("Last uninject", diagnostics.lastUninjectAt)}
-              ${renderRow("Last embedded tag write", diagnostics.lastEmbeddedTagWriteAt)}
-              ${renderRow("Last embedded tag message", diagnostics.lastEmbeddedTagWriteMessageId)}
-              ${renderRow("Last embedded tag swipe", diagnostics.lastEmbeddedTagWriteSwipeKey)}
-              ${renderRow("Last embedded tag error", diagnostics.lastEmbeddedTagError)}
-              ${renderRow("Last tag intercept", diagnostics.lastTagInterceptAt)}
-              ${renderRow("Last tag intercept message", diagnostics.lastTagInterceptMessageId)}
-              ${renderRow("Last tag intercept swipe", diagnostics.lastTagInterceptSwipeKey)}
-              ${renderRow("Last tag intercept error", diagnostics.lastTagInterceptError)}
-              ${renderRow("Last display surface", diagnostics.lastDisplaySurface)}
-              ${renderRow("Last popover opened at", diagnostics.lastPopoverOpenedAt)}
-              ${renderRow("Last popover message", diagnostics.lastPopoverMessageId)}
-              ${renderRow("Last popover swipe", diagnostics.lastPopoverSwipeKey)}
-              ${renderRow("Last popover width px", diagnostics.lastPopoverWidthPx)}
-              ${renderRow("Last popover height px", diagnostics.lastPopoverHeightPx)}
-              ${renderRow("Last reader opened at", diagnostics.lastReaderOpenedAt)}
-              ${renderRow("Last reader message", diagnostics.lastReaderMessageId)}
-              ${renderRow("Last reader swipe", diagnostics.lastReaderSwipeKey)}
-              ${renderRow("Last resolved viewport width", diagnostics.lastResolvedViewportWidth)}
-              ${renderRow("Last resolved viewport height", diagnostics.lastResolvedViewportHeight)}
+              ${renderRow("Parent width constrained", diagnostics.displaySurfaceParentWidthConstrained === null ? null : diagnostics.displaySurfaceParentWidthConstrained ? "yes" : "no")}
+              ${renderRow("Display fallback", diagnostics.displaySurfaceFallbackReason)}
+              ${renderRow("Last popover opened", diagnostics.lastPopoverOpenedAt)}
+              ${renderRow("Last reader opened", diagnostics.lastReaderOpenedAt)}
             </div>
           </details>
-
-          <details class="ltracker-details">
-            <summary>Storage & History</summary>
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Renderer / sanitizer</summary>
             <div class="ltracker-grid">
-              ${renderRow("Message snapshot index count", diagnostics.messageSnapshotIndexCount)}
-              ${renderRow("Swipe tracker index count", diagnostics.swipeTrackerIndexCount)}
-              ${renderRow("History grouped count", diagnostics.lastHistoryGroupedCount)}
-              ${renderRow("History duplicate count", diagnostics.lastHistoryDuplicateCount)}
-              ${renderRow("History orphan count", diagnostics.lastHistoryOrphanCount)}
-              ${renderRow("History cleanup at", diagnostics.lastHistoryCleanupAt)}
-              ${renderRow("Storage key", diagnostics.storageKey)}
-              ${renderRow("Messages read", diagnostics.lastMessagesRead)}
-              ${renderRow("Source message range", diagnostics.lastSourceMessageRange)}
-              ${renderRow("Source message ids", diagnostics.lastSourceMessageIds.join(", "))}
-              ${renderRow("Last deleted tracker message", diagnostics.lastDeletedTrackerMessageId)}
-              ${renderRow("Last deleted tracker swipe", diagnostics.lastDeletedTrackerSwipeKey)}
-              ${renderRow("Last edited tracker message", diagnostics.lastEditedTrackerMessageId)}
-              ${renderRow("Last edited tracker swipe", diagnostics.lastEditedTrackerSwipeKey)}
-              ${renderRow("Last swipe detected message", diagnostics.lastSwipeDetectedMessageId)}
-              ${renderRow("Last swipe key", diagnostics.lastSwipeKey)}
-              ${renderRow("Last swipe key source", diagnostics.lastSwipeKeySource)}
+              ${renderRow("Template trust mode", diagnostics.templateTrustMode)}
+              ${renderRow("Last render preset source", diagnostics.lastRenderPresetSource)}
+              ${renderRow("Last render fallback", diagnostics.lastRenderPresetFallbackReason)}
+              ${renderRow("Last sanitized HTML chars", diagnostics.lastSanitizedHtmlChars)}
+              ${renderRow("Last render warnings", diagnostics.lastRenderWarnings.join(", "))}
+              ${renderRow("Render Lab result", diagnostics.lastPresetRenderLabResult)}
             </div>
           </details>
-
-          <details class="ltracker-details">
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Presets / import</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Selected preset id", diagnostics.selectedPresetId ?? activePreset.id)}
+              ${renderRow("Selected preset name", diagnostics.selectedPresetName ?? activePreset.name)}
+              ${renderRow("Last preset validation error", diagnostics.lastPresetValidationError)}
+              ${renderRow("Last preset lint warnings", diagnostics.lastPresetLintWarningCount)}
+              ${renderRow("Last preset mobile risks", diagnostics.lastPresetLintMobileRiskCount)}
+              ${renderRow("Last preset fallback", diagnostics.lastPresetFallbackReason)}
+            </div>
+          </details>
+          <details class="ltracker-details" data-diagnostics-group>
             <summary>Connections</summary>
             <div class="ltracker-grid">
               ${renderRow("Selected connection id", diagnostics.selectedConnectionId)}
               ${renderRow("Selected connection name", diagnostics.selectedConnectionName)}
               ${renderRow("Selected connection available", diagnostics.selectedConnectionAvailable ? "yes" : "no")}
               ${renderRow("Connection list count", diagnostics.connectionListCount)}
-              ${renderRow("Last connection refresh", diagnostics.lastConnectionRefreshAt)}
-              ${renderRow("Last connection refresh error", diagnostics.lastConnectionRefreshError)}
               ${renderRow("Last generation connection mode", diagnostics.lastGenerationConnectionModeUsed)}
-              ${renderRow("Last generation connection id", diagnostics.lastGenerationConnectionIdUsed)}
-              ${renderRow("Last generation connection name", diagnostics.lastGenerationConnectionNameUsed)}
               ${renderRow("Last generation connection fallback", diagnostics.lastGenerationConnectionFallbackReason)}
-              ${renderRow("Last generation parameters", compactRecord(diagnostics.lastGenerationParametersUsed))}
-              ${renderRow("Last reasoning override", compactRecord(diagnostics.lastReasoningOverrideUsed))}
-              ${renderRow("Last connection test at", diagnostics.lastConnectionTestAt)}
               ${renderRow("Last connection test status", diagnostics.lastConnectionTestStatus)}
-              ${renderRow("Last connection test duration", diagnostics.lastConnectionTestDurationMs)}
-              ${renderRow("Last connection test error", diagnostics.lastConnectionTestError)}
-              ${renderRow("Last connection test finish", diagnostics.lastConnectionTestFinishReason)}
-              ${renderRow("Last connection test usage", compactRecord(diagnostics.lastConnectionTestUsage))}
-              ${renderRow("Connection profile selected", diagnostics.connectionProfileSelected ? "yes" : "no")}
-              ${renderRow("Effective connection mode", diagnostics.effectiveTrackerConnectionMode)}
-              ${renderRow("Effective connection reason", diagnostics.effectiveTrackerConnectionReason)}
-              ${renderRow("Last connection fallback reason", diagnostics.lastSelectedConnectionFallbackReason)}
-              ${renderRow("Last profile missing at", diagnostics.lastTrackerProfileMissingAt)}
             </div>
           </details>
-
-          <details class="ltracker-details">
-            <summary>Renderer & Presets</summary>
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Storage / history</summary>
             <div class="ltracker-grid">
-              ${renderRow("Selected preset id", diagnostics.selectedPresetId ?? activePreset.id)}
-              ${renderRow("Selected preset name", diagnostics.selectedPresetName ?? activePreset.name)}
-              ${renderRow("Last preset fallback", diagnostics.lastPresetFallbackReason)}
-              ${renderRow("Last preset validation error", diagnostics.lastPresetValidationError)}
-              ${renderRow("Last prompt preset id", diagnostics.lastPromptUsedPresetId)}
-              ${renderRow("Last prompt preset name", diagnostics.lastPromptUsedPresetName)}
-              ${renderRow("Last render at", diagnostics.lastRenderAt)}
-              ${renderRow("Last render preset id", diagnostics.lastRenderPresetId)}
-              ${renderRow("Last render preset name", diagnostics.lastRenderPresetName)}
-              ${renderRow("Last render preset source", diagnostics.lastRenderPresetSource)}
-              ${renderRow("Last render locked preset id", diagnostics.lastRenderLockedPresetId)}
-              ${renderRow("Last render locked preset name", diagnostics.lastRenderLockedPresetName)}
-              ${renderRow("Last render locked preset version", diagnostics.lastRenderLockedPresetVersion)}
-              ${renderRow("Last render preset mismatch", diagnostics.lastRenderPresetMismatchDetected === null ? null : diagnostics.lastRenderPresetMismatchDetected ? "yes" : "no")}
-              ${renderRow("Last render fallback reason", diagnostics.lastRenderPresetFallbackReason)}
-              ${renderRow("Last render snapshot", diagnostics.lastRenderSnapshotCreatedAt)}
-              ${renderRow("Last render source", diagnostics.lastRenderSource)}
-              ${renderRow("Last render status", diagnostics.lastRenderStatus)}
-              ${renderRow("Last sanitized HTML chars", diagnostics.lastSanitizedHtmlChars)}
-              ${renderRow("Last fallback text chars", diagnostics.lastFallbackTextChars)}
-              ${renderRow("Last render warnings", diagnostics.lastRenderWarnings.join(", "))}
-              ${renderRow("Last render errors", diagnostics.lastRenderErrors.join(", "))}
-              ${renderRow("Template trust mode", diagnostics.templateTrustMode)}
-              ${renderRow("Ultra mode", diagnostics.ultraModeEnabled ? "yes" : "no")}
-              ${renderRow("Last preset estimated tokens", diagnostics.lastPresetEstimatedTokens)}
-              ${renderRow("Last preset estimated chars", diagnostics.lastPresetEstimatedRenderedChars)}
-              ${renderRow("Last preset lint at", diagnostics.lastPresetLintAt)}
-              ${renderRow("Last preset lint warnings", diagnostics.lastPresetLintWarningCount)}
-              ${renderRow("Last preset lint errors", diagnostics.lastPresetLintErrorCount)}
-              ${renderRow("Last preset lint raw paths", diagnostics.lastPresetLintRawObjectPaths.join(", "))}
-              ${renderRow("Last preset mobile risks", diagnostics.lastPresetLintMobileRiskCount)}
-              ${renderRow("Render Lab viewport", diagnostics.lastPresetRenderLabViewport)}
-              ${renderRow("Render Lab surface", diagnostics.lastPresetRenderLabSurface)}
-              ${renderRow("Render Lab result", diagnostics.lastPresetRenderLabResult)}
-              ${renderRow("Render Lab rendered chars", diagnostics.lastPresetRenderLabRenderedChars)}
-              ${renderRow("Render Lab warnings", diagnostics.lastPresetRenderLabWarnings.join(", "))}
+              ${renderRow("Message snapshot index count", diagnostics.messageSnapshotIndexCount)}
+              ${renderRow("Swipe tracker index count", diagnostics.swipeTrackerIndexCount)}
+              ${renderRow("History grouped count", diagnostics.lastHistoryGroupedCount)}
+              ${renderRow("History duplicate count", diagnostics.lastHistoryDuplicateCount)}
+              ${renderRow("History orphan count", diagnostics.lastHistoryOrphanCount)}
+              ${renderRow("Storage key", diagnostics.storageKey)}
             </div>
           </details>
           <details class="ltracker-details">
@@ -5042,73 +5067,175 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             <summary>Last prompt preview</summary>
             <pre class="ltracker-text">${escapeHtml(prompt ?? "None")}</pre>
           </details>
-          <div class="ltracker-details">
-            <span class="ltracker-label">Last parsed tracker JSON</span>
-            <pre class="ltracker-json">${escapeHtml(renderJson(parsedTracker, "None"))}</pre>
-          </div>
-          <div class="ltracker-details">
-            <span class="ltracker-label">Last parse/generation/storage error</span>
-            <pre class="ltracker-text ltracker-error">${escapeHtml(renderError(error))}</pre>
-          </div>
         </section>
 
         <section class="ltracker-panel ltracker-section" id="ltracker-section-advanced">
-          <span class="ltracker-label">Advanced</span>
-          <div class="ltracker-settings">
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="fallbackToIframeWidget"${checked(state.settings.messageDisplay.fallbackToIframeWidget)}>
-              Iframe fallback / legacy backup
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-renderer-setting="allowInlineStyles"${checked(state.settings.renderer.allowInlineStyles)} disabled>
-              Trusted inline styles active
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showDebugSwipeKey"${checked(state.settings.messageDisplay.showDebugSwipeKey)}>
-              Debug swipe key
-            </label>
-            <label class="ltracker-field">
-              Dev Mode Templates
-              <input type="text" value="Future" disabled>
-            </label>
+          <div class="ltracker-section-title">
+            <span class="ltracker-label">Advanced</span>
+            ${statusTone("warning", "Sharp tools")}
           </div>
-          <div class="ltracker-grid ltracker-details">
-            ${renderRow("Context handler", diagnostics.contextHandlerDisabledReason)}
-            ${renderRow("Message widget fallback", diagnostics.messageWidgetPlacementReason)}
-            ${renderRow("DOM injection error", diagnostics.lastDomInjectionError)}
-          </div>
-        </section>
-
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Copy</span>
-          <div class="ltracker-copy-actions">
-            <button class="ltracker-button" type="button" data-action="copy-snapshot" ${disabled(!state.snapshot)}>
-              Copy Latest Tracker JSON
-            </button>
-            <button class="ltracker-button" type="button" data-action="copy-prompt" ${disabled(!prompt)}>
-              Copy Last Prompt
-            </button>
-            <button class="ltracker-button" type="button" data-action="copy-raw" ${disabled(!rawOutput)}>
-              Copy Last Raw Output
-            </button>
-            <button class="ltracker-button" type="button" data-action="copy-message-snapshot" ${disabled(!state.latestMessageSnapshot)}>
-              Copy Message Snapshot
-            </button>
-          </div>
-        </section>
-
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Latest message-attached snapshot</span>
-          <pre class="ltracker-json">${escapeHtml(latestMessageSnapshotText)}</pre>
-        </section>
-
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Latest tracker snapshot</span>
-          <pre class="ltracker-json">${escapeHtml(snapshotText)}</pre>
+          <details class="ltracker-details" open>
+            <summary>Quick setup profiles</summary>
+            <div class="ltracker-card-grid">${quickSetupHtml}</div>
+          </details>
+          <details class="ltracker-details">
+            <summary>Budget limits</summary>
+            <div class="ltracker-settings">
+              <label class="ltracker-check">
+                <input type="checkbox" data-budget-setting="ultraModeEnabled"${checked(state.settings.budget.ultraModeEnabled)}>
+                Ultra Tracker Mode
+              </label>
+              <label class="ltracker-field">
+                Budget mode
+                <select data-budget-setting="mode">
+                  <option value="estimated_tokens"${selected(state.settings.budget.mode === "estimated_tokens")}>Estimated tokens</option>
+                  <option value="characters"${selected(state.settings.budget.mode === "characters")}>Characters</option>
+                </select>
+              </label>
+              <label class="ltracker-field">
+                Recent message token budget
+                <input type="number" min="256" max="128000" step="256" data-budget-setting="recentMessageBudgetTokens" value="${escapeHtml(String(state.settings.budget.recentMessageBudgetTokens))}">
+              </label>
+              <label class="ltracker-field">
+                Per-message token budget
+                <input type="number" min="256" max="128000" step="256" data-budget-setting="perMessageBudgetTokens" value="${escapeHtml(String(state.settings.budget.perMessageBudgetTokens))}">
+              </label>
+              <label class="ltracker-field">
+                Tracker memory token budget
+                <input type="number" min="256" max="128000" step="256" data-budget-setting="trackerMemoryBudgetTokens" value="${escapeHtml(String(state.settings.budget.trackerMemoryBudgetTokens))}">
+              </label>
+              <label class="ltracker-field">
+                Max tracker output tokens
+                <input type="number" min="256" max="64000" step="256" data-budget-setting="maxTrackerOutputTokens" value="${escapeHtml(String(state.settings.budget.maxTrackerOutputTokens))}">
+              </label>
+              <label class="ltracker-field">
+                Prompt preview tokens
+                <input type="number" min="256" max="128000" step="256" data-budget-setting="promptPreviewBudgetTokens" value="${escapeHtml(String(state.settings.budget.promptPreviewBudgetTokens))}">
+              </label>
+              <label class="ltracker-field">
+                Rendered HTML chars
+                <input type="number" min="1000" max="2000000" step="1000" data-budget-setting="renderedHtmlMaxChars" value="${escapeHtml(String(state.settings.budget.renderedHtmlMaxChars))}">
+              </label>
+              <label class="ltracker-field">
+                Raw output chars
+                <input type="number" min="1000" max="2000000" step="1000" data-budget-setting="rawOutputMaxChars" value="${escapeHtml(String(state.settings.budget.rawOutputMaxChars))}">
+              </label>
+              <label class="ltracker-field">
+                Import size cap
+                <input type="number" min="10000" max="100000000" step="1000" data-budget-setting="presetImportMaxChars" value="${escapeHtml(String(state.settings.budget.presetImportMaxChars))}">
+              </label>
+            </div>
+          </details>
+          <details class="ltracker-details">
+            <summary>Renderer and legacy compatibility</summary>
+            <div class="ltracker-settings">
+              <label class="ltracker-check">
+                <input type="checkbox" data-renderer-setting="enabled"${checked(state.settings.renderer.enabled)}>
+                Drawer renderer enabled
+              </label>
+              <label class="ltracker-field">
+                Renderer preview source
+                <select data-renderer-setting="previewSource">
+                  <option value="latest_chat_snapshot"${selected(state.settings.renderer.previewSource === "latest_chat_snapshot")}>Latest chat snapshot</option>
+                  <option value="latest_message_snapshot"${selected(state.settings.renderer.previewSource === "latest_message_snapshot")}>Latest message snapshot</option>
+                </select>
+              </label>
+              <label class="ltracker-field">
+                Missing value placeholder
+                <input type="text" data-renderer-setting="missingValuePlaceholder" value="${escapeHtml(state.settings.renderer.missingValuePlaceholder)}">
+              </label>
+              <label class="ltracker-field">
+                Template trust mode
+                <select data-renderer-setting="templateTrustMode">
+                  <option value="trusted"${selected(state.settings.renderer.templateTrustMode === "trusted")}>Trusted</option>
+                  <option value="safe"${selected(state.settings.renderer.templateTrustMode === "safe")}>Safe</option>
+                  <option value="dev"${selected(state.settings.renderer.templateTrustMode === "dev")}>Dev future</option>
+                </select>
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-message-display-setting="fallbackToIframeWidget"${checked(state.settings.messageDisplay.fallbackToIframeWidget)}>
+                Legacy iframe fallback
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-message-display-setting="showDebugSwipeKey"${checked(state.settings.messageDisplay.showDebugSwipeKey)}>
+                Show debug swipe key
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-message-display-setting="showDebugCopyButtonsInHistory"${checked(state.settings.messageDisplay.showDebugCopyButtonsInHistory)}>
+                Show debug copy buttons in history
+              </label>
+              <label class="ltracker-field">
+                How trackers attach to messages
+                <select data-message-display-setting="attachmentMode">
+                  <option value="sidecar_snapshot"${selected(state.settings.messageDisplay.attachmentMode === "sidecar_snapshot")}>Sidecar snapshot</option>
+                  <option value="embedded_tracker_tag"${selected(state.settings.messageDisplay.attachmentMode === "embedded_tracker_tag")}>Embedded tracker tag</option>
+                  <option value="both"${selected(state.settings.messageDisplay.attachmentMode === "both")}>Both</option>
+                </select>
+              </label>
+              <label class="ltracker-field">
+                Legacy minimized height
+                <input type="number" min="0" max="400" step="10" data-message-display-setting="minimizedMaxHeightPx" value="${escapeHtml(String(state.settings.messageDisplay.minimizedMaxHeightPx))}">
+              </label>
+              <label class="ltracker-field">
+                Dev Mode Templates
+                <input type="text" value="Future sandbox experiment" disabled>
+              </label>
+            </div>
+          </details>
+          <details class="ltracker-details">
+            <summary>Storage maintenance and history</summary>
+            <div class="ltracker-toolbar">
+              <button class="ltracker-button" type="button" data-action="cleanup-duplicates" ${disabled(diagnostics.lastHistoryDuplicateCount <= 0)}>Duplicate cleanup</button>
+              <button class="ltracker-button" type="button" data-action="run-storage-maintenance-scan">Scan history index</button>
+              <button class="ltracker-button" type="button" data-action="cleanup-missing-index">Orphan cleanup</button>
+              <button class="ltracker-button" type="button" data-action="copy-storage-report">Copy storage report</button>
+              <button class="ltracker-button" type="button" data-action="clear-snapshot" ${disabled(!state.chatId)}>Clear current chat snapshot</button>
+              <button class="ltracker-button" type="button" data-action="reset-settings">Reset settings</button>
+            </div>
+            <div class="ltracker-settings" style="margin-top: 10px;">
+              <label class="ltracker-field ltracker-field-wide">
+                Search history
+                <input type="search" data-history-filter="text" value="${escapeHtml(historyFilterText)}">
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-history-filter="showDuplicates"${checked(historyShowDuplicates)}>
+                Show duplicates
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-history-filter="currentMessageOnly"${checked(historyCurrentMessageOnly)}>
+                Current message only
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-history-filter="selectedSwipeOnly"${checked(historySelectedSwipeOnly)}>
+                Selected swipe only
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-history-filter="currentPresetOnly"${checked(historyCurrentPresetOnly)}>
+                Current preset only
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-history-filter="errorsOnly"${checked(historyErrorsOnly)}>
+                Errors only
+              </label>
+            </div>
+            ${messageHistoryHtml}
+          </details>
+          <details class="ltracker-details">
+            <summary>Latest snapshots</summary>
+            <div class="ltracker-toolbar">
+              <button class="ltracker-button" type="button" data-action="copy-snapshot" ${disabled(!state.snapshot)}>Copy latest tracker JSON</button>
+              <button class="ltracker-button" type="button" data-action="copy-message-snapshot" ${disabled(!state.latestMessageSnapshot)}>Copy message snapshot</button>
+            </div>
+            <pre class="ltracker-json">${escapeHtml(latestMessageSnapshotText)}</pre>
+            <pre class="ltracker-json" style="margin-top: 10px;">${escapeHtml(snapshotText)}</pre>
+          </details>
         </section>
       </section>
     `;
+    tab.root.innerHTML = commandCenterHtml;
     hydrateMessageWidgets();
+    filterDiagnosticsSearch();
+    return;
   }
 
   const onClick = (event: Event): void => {
@@ -5124,6 +5251,21 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const action = target?.dataset.action;
     const historyEntry = findHistoryEntry(target?.dataset.messageId, target?.dataset.swipeKey ?? null);
     if (action === "generate") generateTracker();
+    if (action === "regenerate-latest") {
+      const entry = latestPreviewEntry();
+      if (entry) {
+        toggleMessageRegeneration(entry.indexEntry.messageId, entry.indexEntry.swipeKey, entry.rendered.activeJobId);
+      } else {
+        setLocalError("No message tracker is available to regenerate yet. Generate a tracker first.");
+      }
+    }
+    if (action === "apply-display-surface") {
+      const surface = target?.dataset.surface;
+      if (surface === "inline_contained" || surface === "inline_wide" || surface === "anchored_popover" || surface === "fullscreen_reader" || surface === "drawer_only") {
+        applyDisplaySurface(surface);
+      }
+    }
+    if (action === "apply-quick-setup") applyQuickSetupProfile(target?.dataset.profile);
     if (action === "refresh") requestState();
     if (action === "cleanup-duplicates") {
       send({
@@ -5321,6 +5463,25 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   tab.root.addEventListener("click", onClick);
   cleanups.push(() => tab.root.removeEventListener("click", onClick));
 
+  function filterDiagnosticsSearch(): void {
+    const diagnosticsRoot = tab.root.querySelector<HTMLElement>("#ltracker-section-diagnostics");
+    if (!diagnosticsRoot) return;
+    const query = diagnosticsSearchText.trim().toLowerCase();
+    const groups = Array.from(diagnosticsRoot.querySelectorAll<HTMLDetailsElement>("details[data-diagnostics-group]"));
+    for (const group of groups) {
+      const rows = Array.from(group.querySelectorAll<HTMLElement>("[data-ltracker-row]"));
+      let matched = !query;
+      for (const row of rows) {
+        const rowText = row.dataset.ltrackerRow?.toLowerCase() ?? row.textContent?.toLowerCase() ?? "";
+        const rowMatched = !query || rowText.includes(query);
+        row.hidden = !rowMatched;
+        if (rowMatched) matched = true;
+      }
+      group.hidden = !matched;
+      if (query && matched) group.open = true;
+    }
+  }
+
   const updateHistoryFilter = (input: HTMLInputElement): boolean => {
     const filter = input.dataset.historyFilter;
     if (!filter) return false;
@@ -5362,6 +5523,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   };
 
   const onInput = (event: Event): void => {
+    const diagnosticsInput = event.target instanceof HTMLElement
+      ? event.target.closest<HTMLInputElement>("[data-diagnostics-search]")
+      : null;
+    if (diagnosticsInput) {
+      diagnosticsSearchText = diagnosticsInput.value;
+      filterDiagnosticsSearch();
+      return;
+    }
     const historyInput = event.target instanceof HTMLElement
       ? event.target.closest<HTMLInputElement>("[data-history-filter]")
       : null;
