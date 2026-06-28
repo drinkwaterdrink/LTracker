@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16 - Stabilization, performance, and safety hardening
+- Bounded tracker memory snapshot loading so long chats do not trigger unbounded sequential storage reads.
+- Added candidate selection, deduplication, concurrency limiting, and diagnostics for tracker memory loads.
+- Added hard timeout and stale-job eviction for tracker generation jobs.
+- Moved static DOM tracker CSS toward a single global stylesheet injection to avoid duplicate style blocks per message.
+- Added delete confirmation for inline and drawer tracker deletion.
+- Added optional undo restore buffer.
+- Hardened sanitizer and embedded LTracker tag parsing without disabling Trusted Preset Mode.
+- Added preset/import size guards with Ultra Mode-aware warnings.
+- Added history paging and storage maintenance scans.
+- Grouped diagnostics into readable collapsible details accordions.
+- Preserved 0.15 Trusted Preset, DOM injection, Ultra Mode, connection, memory, and prompt injection behavior.
+
 ## 0.15 - Auto timing, drawer UX, and power defaults
 - Added assistant finalization gating so auto tracker generation waits until swipe/regenerate output is complete.
 - Added stable-content checks and settle delay before tracker extraction.

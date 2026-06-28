@@ -2308,7 +2308,6 @@ test("README settings reference covers the major setting groups", () => {
     "Safe Mode",
     "Dev Mode",
     "0.16 Production Readiness + Performance & Hardening Overhaul",
-    "0.16 Preset Pack Import/Export + Better Validation",
     "0.17 Power Template Engine",
     "0.18 Dev Mode Templates",
     "0.19 Sequential + Partial Regeneration",

@@ -72,7 +72,7 @@ Auto mode now treats assistant generation and swipe/regenerate updates as a two-
 
 ## Power Defaults
 
-LTracker defaults to Trusted Preset Mode because it is designed for user-authored tracker presets. Sanitization still runs as a guardrail, but sanitized inline styles are enabled by default for richer zTracker-like layouts. Safe Mode is available for imported/shared presets. Dev Mode is a future placeholder and does not enable template JavaScript in `0.15`.
+LTracker defaults to Trusted Preset Mode because it is designed for user-authored tracker presets. Sanitization still runs as a guardrail, but sanitized inline styles are enabled by default for richer zTracker-like layouts. Safe Mode is available for imported/shared presets. Dev Mode is a future placeholder and does not enable template JavaScript in `0.16`.
 
 Older `renderer.allowInlineStyles` and `messageDisplay.allowInlineStyles` settings migrate into `renderer.templateTrustMode`. Trusted mode enables both internal inline-style flags; Safe mode disables them.
 
@@ -146,7 +146,7 @@ Tracker generation now uses prior tracker snapshots as baseline memory. By defau
 
 The tracker prompt tells the model to mutate from the most recent prior tracker state while preserving stable unchanged fields. The current transcript still wins over prior memory when they conflict.
 
-The sunset policy is simple in `0.15`: `retainCount` controls how many prior snapshots are considered, `fullSnapshotCount` controls how many most-recent snapshots are included in full, and older snapshots are omitted unless compact older snapshots is enabled.
+The sunset policy is simple in `0.16`: `retainCount` controls how many prior snapshots are considered, `fullSnapshotCount` controls how many most-recent snapshots are included in full, and older snapshots are omitted unless compact older snapshots is enabled.
 
 Recommended start: Tracker Memory on, include last 3, full snapshot count 3, normal Prompt Injection off until tested.
 
@@ -158,6 +158,18 @@ Normal prompt injection is separate from Tracker Memory:
 - Prompt Injection affects normal roleplay generation.
 
 Prompt Injection uses the Lumiverse interceptor path, not `context_handler`. The `context_handler` permission remains absent from `spindle.json`, and LTracker does not call `spindle.registerContextHandler()`.
+
+## Stabilization and Safety Hardening
+
+LTracker `0.16` focuses on stabilization, efficiency, and safety updates:
+
+- **Bounded Memory Loading**: Implements bounded candidate selection using a formula tied to memory settings to prevent unbounded reads for long chats.
+- **Job Timeout Eviction**: Automatically evicts stale generation jobs after 2 minutes or the custom `generationTimeoutMs` to avoid locking the queue.
+- **Global DOM Tracker Stylesheet**: Injects CSS styles once globally at startup on the main page head to eliminate duplicate style blocks per message bubble.
+- **Delete Confirmation**: Prompts users before deleting any message or drawer snapshot, with a 30-second temporary undo buffer in the drawer.
+- **Storage Maintenance Tools**: Adds manual scans to discover and clean up orphaned snapshot files or duplicate index entries.
+- **Import Size Guards**: Validates preset JSON file sizes, rejecting imports larger than 250,000 characters before parsing.
+- **Grouped Diagnostics**: Groups technical logs, diagnostics, and version information into collapsible accordions to keep the workspace clean.
 
 The interceptor treats host messages as readonly, clones message objects before editing, strips older `<ltracker>` blocks when configured, and returns the original prompt unchanged on errors or timeout. It never runs LLM generation inside the interceptor.
 
@@ -312,7 +324,7 @@ The drawer renderer is separate from message display.
 | `messageDisplay.placement` | `top` | Desired top vs bottom placement. DOM injection uses `afterbegin` for top. | Use `top` for zTracker-like placement. | Use `bottom` if top feels visually noisy. | Top vs bottom changes where the compact control pill attaches in the message. |
 | `messageDisplay.source` | `message_attached_snapshot` | Chooses exact message/swipe snapshot or latest chat snapshot for display. | Use message-attached snapshot for scrollback accuracy. | Use latest chat snapshot only when all displays should mirror current state. | Exact history is more faithful; latest state is easier to compare. |
 | `messageDisplay.renderMode` | `html_template` | Chooses template HTML, compact text, or pretty JSON. | Use template HTML for rich zTracker-like display. | Use compact text or `pretty_json` for debugging. | Rich HTML is readable but template-dependent. |
-| `renderer.templateTrustMode` | `trusted` | Selects Safe, Trusted, or future Dev template behavior. | Keep Trusted for user-authored presets. | Use Safe for imported/shared presets. | Trusted enables sanitized inline styles; Dev is a placeholder in `0.15`. |
+| `renderer.templateTrustMode` | `trusted` | Selects Safe, Trusted, or future Dev template behavior. | Keep Trusted for user-authored presets. | Use Safe for imported/shared presets. | Trusted enables sanitized inline styles; Dev is a placeholder in `0.16`. |
 | `messageDisplay.deduplicateRenderWarnings` | `true` | Collapses repeated sanitizer/render warnings. | Keep enabled for noisy templates. | Disable only when every repeated warning matters during debugging. | Diagnostics stay readable but repeated details are summarized. |
 | `messageDisplay.showRenderWarningsInDiagnosticsOnly` | `true` | Keeps capped render warning detail in diagnostics instead of making message UI noisy. | Keep enabled for normal chat use. | Disable when actively debugging a template from the message display. | Cleaner chat UI means warnings are easier to miss unless diagnostics are open. |
 | `messageDisplay.showDebugSwipeKey` | `false` | Shows swipe key/index text in message controls. | Enable when testing selected-swipe storage and render routing. | Keep disabled for normal chat use. | Debug clarity adds technical text to message bubbles. |
@@ -337,7 +349,7 @@ The drawer renderer is separate from message display.
 
 ## Diagnostics
 
-v0.15 keeps connection diagnostics for profile refresh, selected connection availability, generation mode used, fallback reason, tracker parameters, reasoning override, and connection test status. It also adds tracker memory, auto finalization, history grouping, budget, trust-mode, and expanded-width diagnostics.
+v0.16 keeps connection diagnostics for profile refresh, selected connection availability, generation mode used, fallback reason, tracker parameters, reasoning override, and connection test status. It also adds tracker memory, auto finalization, history grouping, budget, trust-mode, and expanded-width diagnostics.
 
 Interceptor diagnostics track registration state, last interceptor time, injected count/chars, stripped count, skipped reason, error, and tracker block counts before/after prompt injection. Message-control diagnostics still track the last compact-control render, exact message/swipe key, control state, generate-button click, inline action, native toolbar support, and native toolbar fallback reason.
 
@@ -363,7 +375,7 @@ Drawer tabs, input-bar actions, message-targeted DOM injection, message widgets,
 
 ## Known Limitations
 
-- Context-handler prompt injection remains disabled in `0.15`; safe prompt injection uses the interceptor path instead.
+- Context-handler prompt injection remains disabled in `0.16`; safe prompt injection uses the interceptor path instead.
 - Sequential generation, partial regeneration, cleanup/repair mode, World Books, Memory Cortex, character-card context, and TOON/XML/native transform modes are future phases.
 - DOM injection only attaches immediately to mounted message bubbles; iframe fallback and drawer history cover unavailable bubbles.
 - There is no official per-message toolbar slot in the inspected docs/types, so LTracker uses the safe in-message control pill fallback.
@@ -372,14 +384,13 @@ Drawer tabs, input-bar actions, message-targeted DOM injection, message widgets,
 
 ## Roadmap
 
-1. `0.16 Preset Pack Import/Export + Better Validation`
-2. `0.17 Power Template Engine`
-3. `0.18 Dev Mode Templates`
-4. `0.19 Sequential + Partial Regeneration`
-5. `0.20 Cleanup / Repair / Pending Fields`
-6. `0.21 World Books, Character Exclusions, Import/Export Polish`
-7. `0.22 YAML / Macro Support / Advanced Compatibility`
+1. `0.17 Power Template Engine`
+2. `0.18 Dev Mode Templates`
+3. `0.19 Sequential + Partial Regeneration`
+4. `0.20 Cleanup / Repair / Pending Fields`
+5. `0.21 World Books, Character Exclusions, Import/Export Polish`
+6. `0.22 YAML / Macro Support / Advanced Compatibility`
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.15`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.16`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
