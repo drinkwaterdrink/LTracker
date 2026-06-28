@@ -559,6 +559,7 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
       missingValuePlaceholder: "",
       maxRenderedChars: input.settings.maxRenderedChars,
       allowInlineStyles: input.settings.allowInlineStyles,
+      templateTrustMode: input.settings.allowInlineStyles ? "trusted" : "safe",
       deduplicateWarnings: input.settings.deduplicateRenderWarnings,
       maxWarnings: input.settings.showRenderWarningsInDiagnosticsOnly ? 8 : 20,
     });

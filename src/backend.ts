@@ -3845,6 +3845,7 @@ async function renderTemplatePreview(
         missingValuePlaceholder: settings.renderer.missingValuePlaceholder,
         maxRenderedChars: settings.renderer.maxRenderedChars,
         allowInlineStyles: settings.renderer.allowInlineStyles,
+        templateTrustMode: settings.renderer.templateTrustMode,
       });
       const status: LTrackerRenderStatus = !template.trim()
         ? "no_template"
@@ -4262,6 +4263,7 @@ async function importPresetPackHandler(
       if (typeof disp.enabled === "boolean") settings.messageDisplay.enabled = disp.enabled;
       if (typeof disp.useDomInjection === "boolean") settings.messageDisplay.useDomInjection = disp.useDomInjection;
       if (disp.displayMode) settings.messageDisplay.displayMode = disp.displayMode;
+      if (disp.displaySurface) settings.messageDisplay.displaySurface = disp.displaySurface;
       if (disp.placement) settings.messageDisplay.placement = disp.placement;
       if (disp.renderMode) settings.messageDisplay.renderMode = disp.renderMode;
       if (typeof disp.showTimestamp === "boolean") settings.messageDisplay.showTimestamp = disp.showTimestamp;
@@ -4363,6 +4365,7 @@ async function generateSampleSnapshotHandler(
       },
       {
         allowInlineStyles: settings.renderer.allowInlineStyles,
+        templateTrustMode: settings.renderer.templateTrustMode,
         maxRenderedChars: settings.renderer.maxRenderedChars,
         deduplicateWarnings: true,
       },

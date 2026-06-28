@@ -12,6 +12,7 @@ import {
   runContextHandlerFailSafe,
 } from "../src/shared/contextHandlerRuntime";
 import {
+  detectTemplateRendererRequirements,
   formatTemplateTextFallback,
   renderHtmlTemplate,
   sanitizeHtml,
@@ -283,6 +284,7 @@ test("repairSettings adds v0.15 timing, trust, budget, and width defaults", () =
   assert.equal(migrated.messageDisplay.allowInlineStyles, true);
   assert.equal(migrated.messageDisplay.useDomInjection, true);
   assert.equal(migrated.messageDisplay.fallbackToIframeWidget, false);
+  assert.equal(migrated.messageDisplay.displaySurface, "inline_wide");
   assert.deepEqual(migrated.budget, {
     mode: "estimated_tokens",
     ultraModeEnabled: false,
@@ -1411,6 +1413,82 @@ test("sanitizeHtml only allows open on details", () => {
   assert.ok(sanitized.warnings.some((warning) => warning.includes("open")));
 });
 
+test("safe mode removes full style blocks without visible CSS leakage", () => {
+  const sanitized = sanitizeHtml("<style>.card{color:red}</style><section>Safe</section>", {
+    templateTrustMode: "safe",
+  });
+  assert.equal(sanitized.html, "<section>Safe</section>");
+  assert.doesNotMatch(sanitized.html, /\.card/);
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("<style>")));
+});
+
+test("trusted mode preserves scoped style blocks and prevents host escape", () => {
+  const result = renderHtmlTemplate({
+    template: "<style>.card{color:red} body{color:blue}</style><section class=\"card\">{{scene.location}}</section>",
+    snapshotData: sampleSnapshot.data,
+    presetId: "custom",
+    presetName: "Custom",
+  }, {
+    allowInlineStyles: true,
+    templateTrustMode: "trusted",
+  });
+  assert.match(result.html, /<style>\.ltracker-preset-scope-[a-z0-9]+ \.card\{color: red\}<\/style>/);
+  assert.doesNotMatch(result.html, /body\{color: blue\}/);
+  assert.match(result.html, /Grand Meridian Court/);
+});
+
+test("safe and trusted SVG modes use the trusted allowlist", () => {
+  const safe = sanitizeHtml("<svg viewBox=\"0 0 10 10\"><circle cx=\"5\" cy=\"5\" r=\"4\"></circle></svg>", {
+    templateTrustMode: "safe",
+  });
+  assert.doesNotMatch(safe.html, /<svg/);
+
+  const trusted = sanitizeHtml("<svg viewBox=\"0 0 10 10\" onclick=\"bad()\"><circle cx=\"5\" cy=\"5\" r=\"4\" fill=\"currentColor\"></circle><script>bad()</script><foreignObject>bad</foreignObject></svg>", {
+    allowInlineStyles: true,
+    templateTrustMode: "trusted",
+  });
+  assert.match(trusted.html, /<svg viewBox="0 0 10 10">/);
+  assert.match(trusted.html, /<circle cx="5" cy="5" r="4" fill="currentColor"><\/circle>/);
+  assert.doesNotMatch(trusted.html, /onclick|foreignObject|<script>|bad\(\)/);
+});
+
+test("trusted sanitizer strips event handlers and external URLs", () => {
+  const sanitized = sanitizeHtml("<section onclick=\"bad()\" style=\"background-image: url(https://evil.test/a.png); color: red\">Safe</section><svg><use href=\"https://evil.test/icon.svg#x\"></use></svg>", {
+    allowInlineStyles: true,
+    templateTrustMode: "trusted",
+  });
+  assert.equal(sanitized.html, "<section style=\"color: red\">Safe</section><svg></svg>");
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("event attribute")));
+  assert.ok(sanitized.warnings.some((warning) => warning.includes("background-image") || warning.includes("URL-bearing") || warning.includes("<use>")));
+});
+
+test("renderHtmlTemplate supports conditionals, with, this, and helpers", () => {
+  const result = renderHtmlTemplate({
+    template: "{{#if scene.location}}<b>{{scene.location}}</b>{{else}}missing{{/if}}{{#unless empty}} ready{{/unless}}{{#with scene}}{{time}}{{/with}}<ul>{{#each active_threads}}<li>{{this}}</li>{{/each}}</ul>{{default missing \"fallback\"}} {{percent progress}} {{#if characters_present}}{{#each characters_present}}<i>{{name}}</i>{{/each}}{{/if}} {{eq count 2}} {{gt score 7}} {{lt score 9}} {{and ok scene.location}} {{or missing ok}} {{not missing}} {{lower Shout}} {{upper whisper}} {{truncate long 4}} {{class \"Hero Mode\"}}",
+    snapshotData: {
+      ...sampleSnapshot.data,
+      empty: false,
+      progress: 0.42,
+      count: 2,
+      score: 8,
+      ok: true,
+      long: "abcdef",
+      Shout: "LOUD",
+      whisper: "soft",
+    },
+    presetId: "custom",
+    presetName: "Custom",
+  });
+  assert.match(result.html, /<b>Grand Meridian Court<\/b>/);
+  assert.match(result.html, / ready/);
+  assert.match(result.html, /late afternoon/);
+  assert.match(result.html, /<li>Scholarship packet<\/li>/);
+  assert.match(result.html, /fallback 42%/);
+  assert.match(result.html, /<i>Aleister Crowley<\/i>/);
+  assert.match(result.html, /true true true true true true/);
+  assert.match(result.html, /loud SOFT abcd hero-mode/);
+});
+
 test("summarizeWarnings deduplicates and caps render warnings", () => {
   const warnings = [
     "Removed unsupported style property position.",
@@ -1909,6 +1987,7 @@ test("repairSettings repairs message display settings with defaults and clamping
       fallbackToIframeWidget: false,
       attachmentMode: "both",
       displayMode: "inline_button_popover",
+      displaySurface: "fullscreen_reader",
       placement: "bottom",
       source: "latest_chat_snapshot",
       renderMode: "pretty_json",
@@ -1940,6 +2019,7 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(settings.messageDisplay.fallbackToIframeWidget, false);
   assert.equal(settings.messageDisplay.attachmentMode, "both");
   assert.equal(settings.messageDisplay.displayMode, "inline_button_popover");
+  assert.equal(settings.messageDisplay.displaySurface, "fullscreen_reader");
   assert.equal(settings.messageDisplay.placement, "bottom");
   assert.equal(settings.messageDisplay.source, "latest_chat_snapshot");
   assert.equal(settings.messageDisplay.renderMode, "pretty_json");
@@ -1979,6 +2059,7 @@ test("repairSettings repairs message display settings with defaults and clamping
   });
   assert.equal(repaired.messageDisplay.attachmentMode, DEFAULT_SETTINGS.messageDisplay.attachmentMode);
   assert.equal(repaired.messageDisplay.displayMode, DEFAULT_SETTINGS.messageDisplay.displayMode);
+  assert.equal(repaired.messageDisplay.displaySurface, DEFAULT_SETTINGS.messageDisplay.displaySurface);
   assert.equal(repaired.messageDisplay.placement, DEFAULT_SETTINGS.messageDisplay.placement);
   assert.equal(repaired.messageDisplay.source, DEFAULT_SETTINGS.messageDisplay.source);
   assert.equal(repaired.messageDisplay.renderMode, DEFAULT_SETTINGS.messageDisplay.renderMode);
@@ -1990,6 +2071,23 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(repaired.messageDisplay.showBottomActionsInInlineTracker, DEFAULT_SETTINGS.messageDisplay.showBottomActionsInInlineTracker);
   assert.equal(repaired.messageDisplay.minimizedMaxHeightPx, 0);
   assert.equal(repaired.messageDisplay.maxRenderedChars, 1_000);
+});
+
+test("repairSettings migrates legacy display modes into displaySurface", () => {
+  assert.equal(repairSettings({
+    messageDisplay: { displayMode: "inline_full" },
+    expandedWidth: { expandedWidthMode: "contained" },
+  }).messageDisplay.displaySurface, "inline_contained");
+  assert.equal(repairSettings({
+    messageDisplay: { displayMode: "inline_full" },
+    expandedWidth: { expandedWidthMode: "wide" },
+  }).messageDisplay.displaySurface, "inline_wide");
+  assert.equal(repairSettings({
+    messageDisplay: { displayMode: "inline_button_popover" },
+  }).messageDisplay.displaySurface, "anchored_popover");
+  assert.equal(repairSettings({
+    messageDisplay: { displayMode: "drawer_history_only" },
+  }).messageDisplay.displaySurface, "drawer_only");
 });
 
 test("repairSettings migrates old showCopyButton into drawer history debug copies", () => {
@@ -2159,7 +2257,7 @@ test("backend tracker generation uses tracker memory before prompt building", ()
 
 test("connection test path does not mutate tracker snapshots or chat tags", () => {
   const backend = readFileSync("src/backend.ts", "utf8");
-  const match = /async function testTrackerConnection[\s\S]*?\n}\n\nasync function cancelConnectionTest/.exec(backend);
+  const match = /async function testTrackerConnection[\s\S]*?\r?\n}\r?\n\r?\nasync function cancelConnectionTest/.exec(backend);
   assert.ok(match, "testTrackerConnection function should be present");
   const body = match[0];
   for (const forbidden of [
@@ -2176,10 +2274,93 @@ test("connection test path does not mutate tracker snapshots or chat tags", () =
   assert.match(body, /lastConnectionTestOutputPreview/);
 });
 
+test("validatePresetReport understands data-prefixed paths, loops, conditionals, and this", () => {
+  const preset: TrackerSchemaPreset = {
+    id: "validation-power",
+    name: "Validation Power",
+    description: "Validation test",
+    version: "1.0",
+    createdAt: "2026-06-28",
+    updatedAt: "2026-06-28",
+    jsonSchema: {
+      type: "object",
+      properties: {
+        time: {
+          type: "object",
+          properties: {
+            clock: { type: "string" },
+          },
+        },
+        cast: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              idn: {
+                type: "object",
+                properties: {
+                  desc: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+        },
+      },
+    },
+    htmlTemplate: "{{data.time.clock}}{{#if data.cast}}{{#each data.cast}}{{name}}{{idn.desc}}{{/each}}{{/if}}{{#each data.tags}}{{this}}{{/each}}",
+    promptInstructions: "Respond only with JSON.",
+    origin: "user_created",
+  };
+  const report = validatePresetReport(preset);
+  assert.equal(report.missingPlaceholders.length, 0);
+  assert.equal(report.unusedSchemaFields.length, 0);
+});
+
+test("renderer requirement detection recommends Trusted and flags JavaScript-like content", () => {
+  const requirements = detectTemplateRendererRequirements("<style>.hud{display:grid}</style><svg viewBox=\"0 0 1 1\"></svg>{{#if data.ok}}ok{{/if}}");
+  assert.equal(requirements.usesScopedCss, true);
+  assert.equal(requirements.usesInlineSvg, true);
+  assert.equal(requirements.usesConditionals, true);
+  assert.equal(requirements.recommendedMode, "trusted");
+
+  const scriptRequirements = detectTemplateRendererRequirements("<section onclick=\"bad()\"><script>bad()</script></section>");
+  assert.equal(scriptRequirements.hasJavaScriptLikeContent, true);
+  assert.equal(scriptRequirements.recommendedMode, "dev");
+  assert.ok(scriptRequirements.warnings.some((warning) => warning.includes("JavaScript-like")));
+});
+
+test("import review surfaces renderer requirements and never offers Dev Mode auto-enable", () => {
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  assert.match(frontend, /detectTemplateRendererRequirements/);
+  assert.match(frontend, /This preset uses:/);
+  assert.match(frontend, /Recommended mode:/);
+  const importReviewTrustSelect = /<select data-import-review-trust-mode>[\s\S]*?<\/select>/.exec(frontend)?.[0] ?? "";
+  assert.match(importReviewTrustSelect, /<option value="trusted"/);
+  assert.match(importReviewTrustSelect, /<option value="safe"/);
+  assert.doesNotMatch(importReviewTrustSelect, /<option value="dev"/);
+
+  const backend = readFileSync("src/backend.ts", "utf8");
+  assert.match(backend, /options\.trustMode === "trusted" \|\| options\.trustMode === "safe"/);
+  assert.doesNotMatch(backend, /options\.trustMode === "dev"/);
+});
+
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
+    "Version: `0.19`",
+    "Current release: `0.19 Trusted Renderer Freedom / Power Template Compatibility`",
     "Settings Reference",
+    "Tracker Connection Settings",
+    "Recommended setup",
+    "connection.mode",
+    "selected_connection_raw",
+    "API keys are never exposed",
+    "Test Tracker Connection",
     "recentMessageLimit",
     "maxMessageChars",
     "generationTimeoutMs",
@@ -2192,14 +2373,11 @@ test("README settings reference covers the major setting groups", () => {
     "auto.triggerAfterUserMessages",
     "auto.attachSnapshotToMessage",
     "auto.onlyWhenChatActive",
-    "Auto Timing and Finalization",
     "autoTiming.waitForAssistantFinalization",
     "autoTiming.postCompletionSettleMs",
     "autoTiming.stableContentCheckMs",
     "autoTiming.requireStableSwipeContent",
     "autoTiming.cancelPendingOnSwipeChange",
-    "Power Defaults",
-    "Budgets and Ultra Tracker Mode",
     "budget.mode",
     "budget.ultraModeEnabled",
     "budget.recentMessageBudgetTokens",
@@ -2211,51 +2389,23 @@ test("README settings reference covers the major setting groups", () => {
     "budget.renderedHtmlMaxChars",
     "budget.rawOutputMaxChars",
     "budget.presetImportMaxChars",
-    "Drawer Layout",
-    "Tracker Connection Settings",
-    "active_quiet",
-    "selected_connection_quiet",
-    "selected_connection_raw",
-    "API keys are never exposed",
-    "Test Tracker Connection",
-    "connection.mode",
-    "connection.selectedConnectionId",
-    "connection.refreshConnectionsOnDrawerOpen",
-    "connection.parameters.temperature",
-    "connection.parameters.max_tokens",
-    "connection.parameters.top_p",
-    "connection.parameters.frequency_penalty",
-    "connection.parameters.presence_penalty",
-    "connection.reasoning.source",
-    "connection.reasoning.apiReasoning",
-    "connection.reasoning.effort",
-    "connection.reasoning.thinkingDisplay",
-    "connection.testPrompt",
-    "Tracker Memory",
-    "memory.enabled",
-    "memory.includeInTrackerGeneration",
-    "memory.retainCount",
-    "memory.fullSnapshotCount",
-    "memory.compactOlderSnapshots",
-    "memory.maxMemoryChars",
-    "memory.source",
-    "memory.excludeTargetMessage",
-    "memory.order",
-    "memory.requireSamePreset",
-    "memory.requireSameSwipeWhenAvailable",
-    "Safe Prompt Injection",
+    "Trusted Renderer Freedom",
+    "Safe Mode",
+    "Trusted Mode",
+    "Dev Mode",
+    "JavaScript requires Dev Mode and was not executed",
+    "{{#if field}}",
+    "{{else}}",
+    "{{#unless field}}",
+    "{{#with object}}",
+    "{{this}}",
+    "{{default value \"fallback\"}}",
+    "Trusted SVG allowlist",
+    "Preset Import Review And Validation",
+    "This preset uses:",
+    "Recommended mode: Trusted",
     "spindle.registerInterceptor",
     "context_handler",
-    "injection.enabled",
-    "injection.retainCount",
-    "injection.format",
-    "injection.injectionPlacement",
-    "injection.includeOnlyIfMissingFromPrompt",
-    "injection.stripOlderTrackerBlocks",
-    "injection.maxInjectedChars",
-    "injection.roleFallback",
-    "injection.includeHeader",
-    "injection.header",
     "renderer.enabled",
     "renderer.previewSource",
     "renderer.missingValuePlaceholder",
@@ -2267,6 +2417,7 @@ test("README settings reference covers the major setting groups", () => {
     "messageDisplay.fallbackToIframeWidget",
     "messageDisplay.attachmentMode",
     "messageDisplay.displayMode",
+    "messageDisplay.displaySurface",
     "messageDisplay.placement",
     "messageDisplay.source",
     "messageDisplay.renderMode",
@@ -2292,36 +2443,11 @@ test("README settings reference covers the major setting groups", () => {
     "messageDisplay.minimizedMaxHeightPx",
     "messageDisplay.maxRenderedChars",
     "expandedWidth.expandedWidthMode",
-    "debounce",
-    "missing value placeholder",
-    "includeHeader",
-    "compact",
-    "minimal",
-    "pretty_json",
-    "drawer renderer",
-    "message display",
-    "message-attached snapshot",
-    "embedded tracker tag",
-    "button popover",
-    "latest chat snapshot",
-    "collapsed by default",
-    "sanitized inline styles",
-    "copy buttons",
-    "top vs bottom",
-    "compact message control pill",
-    "Generate tracker",
-    "stop/cancel",
-    "native toolbar fallback",
-    "Default: Trusted Preset Mode",
-    "Safe Mode",
-    "Dev Mode",
-    "0.17 Preset Pack Import/Export + Better Validation",
-    "0.18 Power Template Engine",
-    "0.19 Dev Mode Templates",
-    "0.20 Sequential + Partial Regeneration",
-    "0.21 Cleanup / Repair / Pending Fields",
-    "0.22 World Books, Character Exclusions, Import/Export Polish",
-    "0.23 YAML / Macro Support / Advanced Compatibility",
+    "0.20 Dev Mode Templates / Sandbox Experiments",
+    "0.21 Sequential + Partial Regeneration",
+    "0.22 Cleanup / Repair / Pending Fields",
+    "0.23 World Books, Character Exclusions, Import/Export Polish",
+    "0.24 YAML / Macro Support / Advanced Compatibility",
   ]) {
     assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
@@ -2386,6 +2512,22 @@ test("frontend message controls send exact message and swipe actions", () => {
   assert.match(frontend, /type: "cancel_tracker_generation"[\s\S]{0,240}messageId[\s\S]{0,80}swipeKey/);
   assert.match(frontend, /noteInlineAction\("generate", messageId, swipeKey\)/);
   assert.match(frontend, /noteInlineAction\("cancel", messageId, swipeKey\)/);
+});
+
+test("popover summary handler is scoped to LTracker shell summaries", () => {
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  assert.match(frontend, /querySelector<HTMLElement>\(":scope > details > summary"\)/);
+  assert.doesNotMatch(frontend, /details\.querySelector\("summary"\)/);
+  const rendered = renderHtmlTemplate({
+    template: "<details><summary>User template drawer</summary><div>Still opens normally</div></details>",
+    snapshotData: {},
+    presetId: "drawer",
+    presetName: "Drawer",
+  }, {
+    allowInlineStyles: true,
+    templateTrustMode: "trusted",
+  });
+  assert.match(rendered.html, /<details><summary>User template drawer<\/summary><div>Still opens normally<\/div><\/details>/);
 });
 
 test("0.16 performance, sanitation, nesting, and memory selection features", () => {
@@ -2523,21 +2665,23 @@ test("v0.17 Preset Pack Import/Export + Validation + Snapshot tests", () => {
   assert.equal((snapshot.list as unknown[]).length, 2); // array size constraint
 });
 
-test("v0.17 Release Completion Verification", () => {
+test("v0.19 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.17");
-  assert.equal(spindleJson.version, "0.17");
+  assert.equal(packageJson.version, "0.19");
+  assert.equal(spindleJson.version, "0.19");
+  assert.equal(EXTENSION_VERSION, "0.19");
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
-  assert.match(changelog, /## 0\.17 - Preset Pack Import\/Export \+ Better Validation/);
+  assert.match(changelog, /## 0\.19 - Trusted Renderer Freedom \/ Power Template Compatibility/);
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.17`/);
-  assert.match(readme, /Current release: `0\.17/);
+  assert.match(readme, /Version: `0\.19`/);
+  assert.match(readme, /Current release: `0\.19 Trusted Renderer Freedom \/ Power Template Compatibility`/);
+  assert.doesNotMatch(readme, /Current release: `0\.17/);
 
   // 4. Global stylesheet element presence check in frontend
   const frontendSource = readFileSync("src/frontend.ts", "utf8");

@@ -228,7 +228,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.18";
+var EXTENSION_VERSION = "0.19";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -313,10 +313,7 @@ function removeLTrackerTag(content, swipeKey) {
 }
 
 // src/shared/htmlTemplateRenderer.ts
-var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
-var EACH_BLOCK_PATTERN = new RegExp(`{{#each\\s+(${TEMPLATE_PATH})\\s*}}([\\s\\S]*?){{/each}}`, "g");
-var JSON_HELPER_PATTERN = new RegExp(`{{\\s*json\\s+(${TEMPLATE_PATH})\\s*}}`, "g");
-var VALUE_PATTERN = new RegExp(`{{\\s*(${TEMPLATE_PATH})\\s*}}`, "g");
+var TEMPLATE_TOKEN_PATTERN = /\{\{\s*([\s\S]*?)\s*\}\}/g;
 var ALLOWED_TAGS = /* @__PURE__ */ new Set([
   "div",
   "section",
@@ -351,9 +348,51 @@ var ALLOWED_TAGS = /* @__PURE__ */ new Set([
   "code",
   "pre"
 ]);
+var SVG_DEFS_TAG = String.fromCharCode(100, 101, 102, 115);
+var SVG_OFFSET_ATTRIBUTE = String.fromCharCode(111, 102, 102, 115, 101, 116);
+var ALLOWED_SVG_TAGS = /* @__PURE__ */ new Set([
+  "svg",
+  "path",
+  "circle",
+  "rect",
+  "line",
+  "polyline",
+  "polygon",
+  "g",
+  SVG_DEFS_TAG,
+  "lineargradient",
+  "radialgradient",
+  "stop"
+]);
 var VOID_TAGS = /* @__PURE__ */ new Set(["br", "hr"]);
-var ALLOWED_ATTRIBUTES = /* @__PURE__ */ new Set(["class", "title", "aria-label", "data-ltracker-section"]);
-var DANGEROUS_TAGS = [
+var ALLOWED_ATTRIBUTES = /* @__PURE__ */ new Set(["class", "title", "aria-label", "data-ltracker-section", "role", "aria-hidden"]);
+var SVG_ATTRIBUTES = /* @__PURE__ */ new Set([
+  "viewbox",
+  "fill",
+  "stroke",
+  "stroke-width",
+  "d",
+  "cx",
+  "cy",
+  "r",
+  "x",
+  "y",
+  "width",
+  "height",
+  "points",
+  "x1",
+  "x2",
+  "y1",
+  "y2",
+  SVG_OFFSET_ATTRIBUTE,
+  "stop-color",
+  "stop-opacity",
+  "opacity",
+  "class",
+  "aria-hidden",
+  "role"
+]);
+var DANGEROUS_CONTAINER_TAGS = [
   "script",
   "iframe",
   "object",
@@ -365,13 +404,15 @@ var DANGEROUS_TAGS = [
   "button",
   "textarea",
   "select",
-  "svg",
+  "foreignobject",
+  "image",
   "math"
 ];
 var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "color",
   "background",
   "background-color",
+  "background-image",
   "border",
   "border-top",
   "border-bottom",
@@ -379,7 +420,9 @@ var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "border-right",
   "border-color",
   "border-radius",
+  "border-width",
   "box-shadow",
+  "box-sizing",
   "padding",
   "padding-top",
   "padding-bottom",
@@ -393,6 +436,7 @@ var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "font-size",
   "font-weight",
   "font-style",
+  "font-family",
   "line-height",
   "letter-spacing",
   "text-align",
@@ -403,9 +447,15 @@ var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "column-gap",
   "grid-template-columns",
   "grid-template-rows",
+  "grid-template-areas",
+  "grid-auto-flow",
+  "flex",
+  "flex-wrap",
   "flex-direction",
   "align-items",
+  "align-content",
   "justify-content",
+  "justify-items",
   "width",
   "max-width",
   "min-width",
@@ -413,10 +463,39 @@ var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "max-height",
   "min-height",
   "overflow",
+  "overflow-x",
+  "overflow-y",
   "overflow-wrap",
   "word-break",
   "white-space",
-  "opacity"
+  "opacity",
+  "transform",
+  "transform-origin",
+  "transition",
+  "transition-property",
+  "transition-duration",
+  "transition-timing-function",
+  "animation",
+  "animation-name",
+  "animation-duration",
+  "animation-timing-function",
+  "animation-iteration-count",
+  "filter"
+]);
+var INLINE_HELPERS = /* @__PURE__ */ new Set([
+  "default",
+  "percent",
+  "json",
+  "eq",
+  "gt",
+  "lt",
+  "and",
+  "or",
+  "not",
+  "class",
+  "lower",
+  "upper",
+  "truncate"
 ]);
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -437,8 +516,10 @@ function truncateSafe2(value, maxChars) {
   return { value: `${chars.slice(0, keep).join("")}${suffix}`, truncated: true };
 }
 function valueAtPath(source, path) {
+  if (!path) return source;
   let current = source;
   for (const segment of path.split(".")) {
+    if (!segment) continue;
     if (Array.isArray(current) && /^\d+$/.test(segment)) {
       current = current[Number(segment)];
     } else if (isRecord2(current)) {
@@ -449,6 +530,15 @@ function valueAtPath(source, path) {
   }
   return current;
 }
+function resolvePath(ctx, path) {
+  const trimmed = path.trim();
+  if (!trimmed || trimmed === "." || trimmed === "this") return ctx.current;
+  if (trimmed.startsWith("this.")) return valueAtPath(ctx.current, trimmed.slice(5));
+  if (trimmed.startsWith("data.")) return valueAtPath(ctx.root, trimmed.slice(5));
+  const currentValue = valueAtPath(ctx.current, trimmed);
+  if (currentValue !== void 0) return currentValue;
+  return valueAtPath(ctx.root, trimmed);
+}
 function valueToText(value, placeholder) {
   if (value === void 0 || value === null) return placeholder;
   if (typeof value === "string") return value;
@@ -456,24 +546,165 @@ function valueToText(value, placeholder) {
   if (typeof value === "boolean") return value ? "true" : "false";
   return JSON.stringify(value, null, 2) ?? placeholder;
 }
-function renderTemplateFragment(template, root, current, placeholder) {
-  const withJson = template.replace(JSON_HELPER_PATTERN, (_match, path) => {
-    const value = valueAtPath(current, path) ?? valueAtPath(root, path);
-    const text = value === void 0 ? placeholder : JSON.stringify(value, null, 2) ?? placeholder;
-    return escapeHtml(text);
-  });
-  return withJson.replace(VALUE_PATTERN, (_match, path) => {
-    const value = valueAtPath(current, path) ?? valueAtPath(root, path);
-    return escapeHtml(valueToText(value, placeholder));
-  });
+function truthy(value) {
+  if (value === false || value === null || value === void 0 || value === "" || value === 0) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+function tokenizeExpression(expression) {
+  const tokens = [];
+  const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|[^\s]+/g;
+  let match;
+  while ((match = pattern.exec(expression)) !== null) {
+    if (match[1] !== void 0) tokens.push(`"${match[1].replace(/\\"/g, '"')}"`);
+    else if (match[2] !== void 0) tokens.push(`'${match[2].replace(/\\'/g, "'")}'`);
+    else tokens.push(match[0] ?? "");
+  }
+  return tokens.filter(Boolean);
+}
+function literalOrPath(ctx, token) {
+  if (token === "true") return true;
+  if (token === "false") return false;
+  if (token === "null") return null;
+  if (token.startsWith('"') && token.endsWith('"') || token.startsWith("'") && token.endsWith("'")) {
+    return token.slice(1, -1);
+  }
+  if (/^-?\d+(?:\.\d+)?$/.test(token)) return Number(token);
+  return resolvePath(ctx, token);
+}
+function compareNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+function sanitizeClass(value) {
+  return valueToText(value, "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+}
+function evalExpression(ctx, expression, placeholder) {
+  const tokens = tokenizeExpression(expression);
+  if (tokens.length === 0) return void 0;
+  const helper = tokens[0] ?? "";
+  if (!INLINE_HELPERS.has(helper) || tokens.length === 1) return literalOrPath(ctx, tokens[0] ?? "");
+  const args = tokens.slice(1).map((token) => literalOrPath(ctx, token));
+  if (helper === "default") return truthy(args[0]) ? args[0] : args[1] ?? placeholder;
+  if (helper === "percent") {
+    const numeric = compareNumber(args[0]);
+    if (numeric === null) return placeholder;
+    const percent = Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+    return `${Math.round(percent)}%`;
+  }
+  if (helper === "json") return args[0] === void 0 ? placeholder : JSON.stringify(args[0], null, 2) ?? placeholder;
+  if (helper === "eq") return args[0] === args[1];
+  if (helper === "gt") {
+    const left = compareNumber(args[0]);
+    const right = compareNumber(args[1]);
+    return left !== null && right !== null && left > right;
+  }
+  if (helper === "lt") {
+    const left = compareNumber(args[0]);
+    const right = compareNumber(args[1]);
+    return left !== null && right !== null && left < right;
+  }
+  if (helper === "and") return args.every(truthy);
+  if (helper === "or") return args.some(truthy);
+  if (helper === "not") return !truthy(args[0]);
+  if (helper === "class") return sanitizeClass(args[0]);
+  if (helper === "lower") return valueToText(args[0], placeholder).toLowerCase();
+  if (helper === "upper") return valueToText(args[0], placeholder).toUpperCase();
+  if (helper === "truncate") {
+    const text = valueToText(args[0], placeholder);
+    const limit = compareNumber(args[1]) ?? 80;
+    return Array.from(text).slice(0, Math.max(0, Math.round(limit))).join("");
+  }
+  return void 0;
+}
+function activeNodes(frame) {
+  return frame.target === "inverse" ? frame.inverse : frame.body;
+}
+function parseTemplate(template) {
+  const root = { kind: "root", expression: "", body: [], inverse: [], target: "body" };
+  const stack = [root];
+  const currentFrame = () => stack[stack.length - 1] ?? root;
+  TEMPLATE_TOKEN_PATTERN.lastIndex = 0;
+  let lastIndex = 0;
+  let match;
+  while ((match = TEMPLATE_TOKEN_PATTERN.exec(template)) !== null) {
+    const before = template.slice(lastIndex, match.index);
+    if (before) activeNodes(currentFrame()).push({ type: "text", value: before });
+    const expression = (match[1] ?? "").trim();
+    if (expression.startsWith("#")) {
+      const [kindToken, ...rest] = tokenizeExpression(expression.slice(1));
+      if (kindToken === "each" || kindToken === "if" || kindToken === "unless" || kindToken === "with") {
+        stack.push({ kind: kindToken, expression: rest.join(" "), body: [], inverse: [], target: "body" });
+      } else {
+        activeNodes(currentFrame()).push({ type: "mustache", expression });
+      }
+    } else if (expression === "else") {
+      if (stack.length > 1) currentFrame().target = "inverse";
+    } else if (expression.startsWith("/")) {
+      const closing = expression.slice(1).trim();
+      const frame = stack.length > 1 ? stack.pop() : null;
+      if (frame && frame.kind !== "root" && frame.kind === closing) {
+        activeNodes(currentFrame()).push({
+          type: "block",
+          kind: frame.kind,
+          expression: frame.expression,
+          body: frame.body,
+          inverse: frame.inverse
+        });
+      }
+    } else {
+      activeNodes(currentFrame()).push({ type: "mustache", expression });
+    }
+    lastIndex = TEMPLATE_TOKEN_PATTERN.lastIndex;
+  }
+  const after = template.slice(lastIndex);
+  if (after) activeNodes(currentFrame()).push({ type: "text", value: after });
+  while (stack.length > 1) {
+    const frame = stack.pop();
+    if (!frame || frame.kind === "root") break;
+    activeNodes(currentFrame()).push({
+      type: "block",
+      kind: frame.kind,
+      expression: frame.expression,
+      body: frame.body,
+      inverse: frame.inverse
+    });
+  }
+  return root.body;
+}
+function renderNodes(nodes, ctx, placeholder) {
+  let output = "";
+  for (const node of nodes) {
+    if (node.type === "text") {
+      output += node.value;
+      continue;
+    }
+    if (node.type === "mustache") {
+      output += escapeHtml(valueToText(evalExpression(ctx, node.expression, placeholder), placeholder));
+      continue;
+    }
+    const value = evalExpression(ctx, node.expression, placeholder);
+    if (node.kind === "each") {
+      if (Array.isArray(value) && value.length > 0) {
+        output += value.map((item) => renderNodes(node.body, { root: ctx.root, current: item }, placeholder)).join("");
+      } else {
+        output += renderNodes(node.inverse, ctx, placeholder);
+      }
+      continue;
+    }
+    if (node.kind === "with") {
+      output += truthy(value) ? renderNodes(node.body, { root: ctx.root, current: value }, placeholder) : renderNodes(node.inverse, ctx, placeholder);
+      continue;
+    }
+    const condition = truthy(value);
+    if (node.kind === "if") output += renderNodes(condition ? node.body : node.inverse, ctx, placeholder);
+    if (node.kind === "unless") output += renderNodes(condition ? node.inverse : node.body, ctx, placeholder);
+  }
+  return output;
 }
 function renderTemplate(template, snapshotData, placeholder) {
-  const expandedLoops = template.replace(EACH_BLOCK_PATTERN, (_match, path, body) => {
-    const value = valueAtPath(snapshotData, path);
-    if (!Array.isArray(value)) return "";
-    return value.map((item) => renderTemplateFragment(body, snapshotData, item, placeholder)).join("");
-  });
-  return renderTemplateFragment(expandedLoops, snapshotData, snapshotData, placeholder);
+  return renderNodes(parseTemplate(template), { root: snapshotData, current: snapshotData }, placeholder);
 }
 function primitiveToString2(value) {
   if (typeof value === "string" && value.trim()) return value.trim();
@@ -552,12 +783,43 @@ function formatTemplateTextFallback(data) {
   }).filter((item) => Boolean(item));
   return fragments.length > 0 ? fragments.slice(0, 8).join("\n") : "No tracker fields are available.";
 }
-function stripDangerousContainers(html, warnings) {
+function hashString(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function detectJavaScriptLike(value) {
+  return /<\s*script\b|on[a-z]+\s*=|javascript:|<\s*(?:iframe|object|embed|form|input|button|textarea|select)\b/i.test(value);
+}
+function stripStyleBlocks(html, warnings) {
+  return html.replace(/<\s*style\b[^>]*>[\s\S]*?<\s*\/\s*style\s*>/gi, () => {
+    warnings.push("Removed unsafe <style> element.");
+    return "";
+  });
+}
+function extractStyleBlocks(html) {
+  const styles = [];
+  const withoutStyles = html.replace(/<\s*style\b[^>]*>([\s\S]*?)<\s*\/\s*style\s*>/gi, (_match, css) => {
+    styles.push(css);
+    return "";
+  });
+  return { html: withoutStyles, styles };
+}
+function stripDangerousContainers(html, warnings, trustMode) {
   let result = html;
-  for (const tag of DANGEROUS_TAGS) {
+  const tags = trustMode === "safe" ? [...DANGEROUS_CONTAINER_TAGS, "svg"] : DANGEROUS_CONTAINER_TAGS;
+  for (const tag of tags) {
     const paired = new RegExp(`<\\s*${tag}\\b[^>]*>[\\s\\S]*?<\\s*/\\s*${tag}\\s*>`, "gi");
     result = result.replace(paired, () => {
-      warnings.push(`Removed unsafe <${tag}> element.`);
+      if (tag === "script") {
+        warnings.push("Removed unsafe <script> element.");
+        warnings.push("JavaScript requires Dev Mode and was not executed.");
+      } else {
+        warnings.push(`Removed unsafe <${tag}> element.`);
+      }
       return "";
     });
     const single = new RegExp(`<\\s*/?\\s*${tag}\\b[^>]*>`, "gi");
@@ -573,11 +835,16 @@ function attributePairs(raw) {
   const pattern = /([^\s=/"'<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
   let match;
   while ((match = pattern.exec(raw)) !== null) {
-    const name = (match[1] ?? "").toLowerCase();
-    if (!name) continue;
-    result.push({ name, value: match[2] ?? match[3] ?? match[4] ?? "" });
+    const name = match[1] ?? "";
+    const lowerName = name.toLowerCase();
+    if (!lowerName) continue;
+    result.push({ name, lowerName, value: match[2] ?? match[3] ?? match[4] ?? "" });
   }
   return result;
+}
+function unsafeStyleValue(value) {
+  const lowerValue = value.toLowerCase();
+  return value.includes("\\") || lowerValue.includes("url(") || lowerValue.includes("expression") || lowerValue.includes("@import") || lowerValue.includes("javascript:") || lowerValue.includes("data:") || lowerValue.includes("behavior:") || lowerValue.includes("-moz-binding") || /[<>{}]/.test(value);
 }
 function sanitizeStyle(value, warnings) {
   const declarations = [];
@@ -586,26 +853,147 @@ function sanitizeStyle(value, warnings) {
     if (separator <= 0) continue;
     const property = part.slice(0, separator).trim().toLowerCase();
     const rawValue = part.slice(separator + 1).trim();
-    const lowerValue = rawValue.toLowerCase();
-    if (!SAFE_STYLE_PROPERTIES.has(property)) {
+    if (!property || !rawValue) continue;
+    if (!property.startsWith("--") && !SAFE_STYLE_PROPERTIES.has(property)) {
       warnings.push(`Removed unsupported style property ${property}.`);
       continue;
     }
-    if (rawValue.includes("\\")) {
-      warnings.push(`Removed unsafe style value containing escape character.`);
-      continue;
-    }
-    if (lowerValue.includes("url(") || lowerValue.includes("expression") || lowerValue.includes("@import") || lowerValue.includes("javascript:") || lowerValue.includes("data:") || lowerValue.includes("behavior:") || lowerValue.includes("-moz-binding") || /[<>{}]/.test(rawValue)) {
+    if (unsafeStyleValue(rawValue)) {
       warnings.push(`Removed unsafe style value for ${property}.`);
       continue;
     }
-    if (!/^[\w\s#.,%()+\-/*:'"]+$/.test(rawValue)) {
+    if (!/^[\w\s#.,%()+\-/*:'"!]+$/.test(rawValue)) {
       warnings.push(`Removed unsupported style value for ${property}.`);
       continue;
     }
     declarations.push(`${property}: ${rawValue}`);
   }
   return declarations.length > 0 ? declarations.join("; ") : null;
+}
+function matchingBrace(source, openIndex) {
+  let depth = 0;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+function collectKeyframeNames(css) {
+  const names = /* @__PURE__ */ new Map();
+  const pattern = /@keyframes\s+([A-Za-z_][\w-]*)/gi;
+  let match;
+  while ((match = pattern.exec(css)) !== null) {
+    const name = match[1] ?? "";
+    if (name) names.set(name, "");
+  }
+  return names;
+}
+function rewriteAnimationNames(value, keyframes) {
+  let rewritten = value;
+  for (const [name, scoped] of keyframes) {
+    if (!scoped) continue;
+    rewritten = rewritten.replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"), scoped);
+  }
+  return rewritten;
+}
+function sanitizeCssDeclarations(body, warnings, keyframes) {
+  const rewritten = rewriteAnimationNames(body, keyframes);
+  return sanitizeStyle(rewritten, warnings) ?? "";
+}
+function selectorCanBeScoped(selector) {
+  if (!selector.trim()) return false;
+  if (/(^|[\s>+~,(])(?:html|body|:root)\b/i.test(selector)) return false;
+  if (/<|>|@|javascript:/i.test(selector)) return false;
+  return true;
+}
+function scopeSelectorList(selector, scopeClass, warnings) {
+  const scoped = selector.split(",").map((part) => {
+    const trimmed = part.trim();
+    if (!selectorCanBeScoped(trimmed)) {
+      warnings.push(`Removed stylesheet selector that could target the host: ${trimmed}.`);
+      return null;
+    }
+    if (trimmed === ":host") return `.${scopeClass}`;
+    if (trimmed.startsWith(`.${scopeClass}`)) return trimmed;
+    return `.${scopeClass} ${trimmed}`;
+  }).filter((item) => Boolean(item));
+  return scoped.length > 0 ? scoped.join(", ") : null;
+}
+function sanitizeKeyframes(name, body, warnings, keyframes, scopeClass) {
+  const scopedName = `${scopeClass}-${name}`;
+  keyframes.set(name, scopedName);
+  const frames = [];
+  let cursor = 0;
+  while (cursor < body.length) {
+    const open = body.indexOf("{", cursor);
+    if (open < 0) break;
+    const selector = body.slice(cursor, open).trim();
+    const close = matchingBrace(body, open);
+    if (close < 0) break;
+    const declarations = body.slice(open + 1, close);
+    if (/^(from|to|\d+(?:\.\d+)?%)$/i.test(selector)) {
+      const safe = sanitizeCssDeclarations(declarations, warnings, keyframes);
+      if (safe) frames.push(`${selector}{${safe}}`);
+    } else {
+      warnings.push(`Removed unsafe keyframe selector ${selector}.`);
+    }
+    cursor = close + 1;
+  }
+  return frames.length > 0 ? `@keyframes ${scopedName}{${frames.join("")}}` : null;
+}
+function sanitizeCssBlocks(css, scopeClass, warnings, keyframes) {
+  const output = [];
+  let cursor = 0;
+  while (cursor < css.length) {
+    const open = css.indexOf("{", cursor);
+    if (open < 0) break;
+    const selector = css.slice(cursor, open).trim();
+    const close = matchingBrace(css, open);
+    if (close < 0) break;
+    const body = css.slice(open + 1, close);
+    const lowerSelector = selector.toLowerCase();
+    if (lowerSelector.startsWith("@media")) {
+      if (/url\s*\(|javascript:|@import/i.test(selector)) {
+        warnings.push("Removed unsafe @media rule.");
+      } else {
+        const inner = sanitizeCssBlocks(body, scopeClass, warnings, keyframes);
+        if (inner) output.push(`${selector}{${inner}}`);
+      }
+    } else if (lowerSelector.startsWith("@keyframes")) {
+      const name = selector.match(/@keyframes\s+([A-Za-z_][\w-]*)/i)?.[1];
+      if (name) {
+        const safe = sanitizeKeyframes(name, body, warnings, keyframes, scopeClass);
+        if (safe) output.push(safe);
+      }
+    } else if (lowerSelector.startsWith("@font-face") || lowerSelector.startsWith("@")) {
+      warnings.push(`Removed unsupported stylesheet rule ${selector}.`);
+    } else {
+      const safeSelector = scopeSelectorList(selector, scopeClass, warnings);
+      const safeBody = sanitizeCssDeclarations(body, warnings, keyframes);
+      if (safeSelector && safeBody) output.push(`${safeSelector}{${safeBody}}`);
+    }
+    cursor = close + 1;
+  }
+  return output.join("\n");
+}
+function sanitizeCss(css, scopeClass, warnings) {
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/@import[^;]+;/gi, () => {
+    warnings.push("Removed unsafe @import rule.");
+    return "";
+  }).replace(/@font-face\s*{[\s\S]*?}/gi, () => {
+    warnings.push("Removed remote font rule.");
+    return "";
+  });
+  if (/url\s*\(|javascript:|data:|behavior:|-moz-binding/i.test(stripped)) {
+    warnings.push("Removed unsafe stylesheet URL or script-like content.");
+  }
+  const keyframes = collectKeyframeNames(stripped);
+  for (const name of keyframes.keys()) keyframes.set(name, `${scopeClass}-${name}`);
+  return sanitizeCssBlocks(stripped, scopeClass, warnings, keyframes);
 }
 function summarizeWarnings(warnings, maxWarnings = 20) {
   const counts = /* @__PURE__ */ new Map();
@@ -619,19 +1007,27 @@ function summarizeWarnings(warnings, maxWarnings = 20) {
     `${summarized.length - maxWarnings} more render warnings hidden.`
   ];
 }
-function sanitizeAttributes(raw, tag, allowInlineStyles, warnings) {
+function svgAttributeName(name) {
+  if (name === "viewbox") return "viewBox";
+  return name;
+}
+function safeSvgUrlReference(value) {
+  return /^url\(#[-_A-Za-z0-9]+\)$/.test(value.trim());
+}
+function sanitizeAttributes(raw, tag, options, warnings) {
   const attributes = [];
+  const isSvg = ALLOWED_SVG_TAGS.has(tag);
   for (const attribute of attributePairs(raw)) {
-    if (attribute.name.startsWith("on")) {
-      warnings.push(`Removed event attribute ${attribute.name}.`);
+    if (attribute.lowerName.startsWith("on")) {
+      warnings.push(`Removed event attribute ${attribute.lowerName}.`);
       continue;
     }
-    if (attribute.name === "href" || attribute.name === "src" || attribute.name === "srcdoc") {
-      warnings.push(`Removed URL-bearing attribute ${attribute.name}.`);
+    if (attribute.lowerName === "href" || attribute.lowerName === "src" || attribute.lowerName === "srcdoc" || attribute.lowerName === "xlink:href") {
+      warnings.push(`Removed URL-bearing attribute ${attribute.lowerName}.`);
       continue;
     }
-    if (attribute.name === "style") {
-      if (!allowInlineStyles) {
+    if (attribute.lowerName === "style") {
+      if (!options.allowInlineStyles || isSvg) {
         warnings.push("Removed inline style attribute.");
         continue;
       }
@@ -639,7 +1035,7 @@ function sanitizeAttributes(raw, tag, allowInlineStyles, warnings) {
       if (style) attributes.push(`style="${escapeHtml(style)}"`);
       continue;
     }
-    if (attribute.name === "open") {
+    if (attribute.lowerName === "open") {
       if (tag === "details") {
         attributes.push("open");
       } else {
@@ -647,33 +1043,89 @@ function sanitizeAttributes(raw, tag, allowInlineStyles, warnings) {
       }
       continue;
     }
-    if (!ALLOWED_ATTRIBUTES.has(attribute.name)) {
-      warnings.push(`Removed unsupported attribute ${attribute.name}.`);
+    if (isSvg) {
+      if (!options.allowSvg || !SVG_ATTRIBUTES.has(attribute.lowerName)) {
+        warnings.push(`Removed unsupported SVG attribute ${attribute.lowerName}.`);
+        continue;
+      }
+      if (/url\s*\(/i.test(attribute.value) && !safeSvgUrlReference(attribute.value)) {
+        warnings.push(`Removed unsafe SVG reference in ${attribute.lowerName}.`);
+        continue;
+      }
+      if (/javascript:|data:|<|>/i.test(attribute.value)) {
+        warnings.push(`Removed unsafe SVG attribute ${attribute.lowerName}.`);
+        continue;
+      }
+      attributes.push(`${svgAttributeName(attribute.lowerName)}="${escapeHtml(attribute.value)}"`);
       continue;
     }
-    attributes.push(`${attribute.name}="${escapeHtml(attribute.value)}"`);
+    if (!ALLOWED_ATTRIBUTES.has(attribute.lowerName)) {
+      warnings.push(`Removed unsupported attribute ${attribute.lowerName}.`);
+      continue;
+    }
+    attributes.push(`${attribute.lowerName}="${escapeHtml(attribute.value)}"`);
   }
   return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
 }
 function sanitizeHtml(html, options = {}) {
   const warnings = [];
-  const withoutDangerousContainers = stripDangerousContainers(html, warnings);
+  const trustMode = options.templateTrustMode ?? (options.allowInlineStyles === true ? "trusted" : "safe");
+  const trusted = trustMode === "trusted" || trustMode === "dev";
+  const allowInlineStyles = trusted && options.allowInlineStyles === true;
+  if (detectJavaScriptLike(html)) {
+    warnings.push("JavaScript requires Dev Mode and was not executed.");
+  }
+  const extracted = trusted ? extractStyleBlocks(html) : { html: stripStyleBlocks(html, warnings), styles: [] };
+  const scopeClass = `ltracker-preset-scope-${hashString(extracted.html + extracted.styles.join("\n"))}`;
+  const scopedStyles = trusted ? extracted.styles.map((css) => sanitizeCss(css, scopeClass, warnings)).filter(Boolean).join("\n") : "";
+  const withoutDangerousContainers = stripDangerousContainers(extracted.html, warnings, trustMode);
   const sanitized = withoutDangerousContainers.replace(
     /<\s*(\/?)\s*([A-Za-z][A-Za-z0-9-]*)([^>]*)>/g,
     (_match, closing, rawTag, rawAttributes) => {
       const tag = rawTag.toLowerCase();
-      if (!ALLOWED_TAGS.has(tag)) {
+      const allowedHtml = ALLOWED_TAGS.has(tag);
+      const allowedSvg = trusted && ALLOWED_SVG_TAGS.has(tag);
+      if (!allowedHtml && !allowedSvg) {
         warnings.push(`Removed unsupported <${tag}> tag.`);
         return "";
       }
       if (closing) return `</${tag}>`;
       if (VOID_TAGS.has(tag)) return `<${tag}>`;
-      return `<${tag}${sanitizeAttributes(rawAttributes, tag, options.allowInlineStyles === true, warnings)}>`;
+      return `<${tag}${sanitizeAttributes(rawAttributes, tag, { allowInlineStyles, allowSvg: allowedSvg }, warnings)}>`;
     }
   );
+  const htmlWithScopedCss = scopedStyles ? `<div class="${scopeClass}" data-ltracker-template-root><style>${scopedStyles}</style>${sanitized}</div>` : sanitized;
   return {
-    html: sanitized,
+    html: htmlWithScopedCss,
     warnings: options.deduplicateWarnings === true ? summarizeWarnings(warnings, options.maxWarnings) : warnings
+  };
+}
+function detectTemplateRendererRequirements(template) {
+  const usesScopedCss = /<\s*style\b/i.test(template);
+  const usesInlineStyles = /\sstyle\s*=/i.test(template);
+  const usesInlineSvg = /<\s*svg\b/i.test(template);
+  const usesConditionals = /\{\{\s*#(?:if|unless|with)\b|\{\{\s*else\s*\}\}/i.test(template);
+  const usesHelpers = /\{\{\s*(?:default|percent|json|eq|gt|lt|and|or|not|class|lower|upper|truncate)\b/i.test(template);
+  const hasJavaScriptLikeContent = detectJavaScriptLike(template);
+  const features = [
+    usesScopedCss ? "Scoped CSS" : null,
+    usesInlineStyles ? "Inline styles" : null,
+    usesInlineSvg ? "Inline SVG" : null,
+    usesConditionals ? "Conditionals" : null,
+    usesHelpers ? "Template helpers" : null
+  ].filter((item) => Boolean(item));
+  const warnings = hasJavaScriptLikeContent ? ["This preset contains JavaScript-like content. JavaScript will be stripped unless Dev Mode is explicitly enabled in a future phase."] : [];
+  const recommendedMode2 = hasJavaScriptLikeContent ? "dev" : usesScopedCss || usesInlineStyles || usesInlineSvg || usesConditionals || usesHelpers ? "trusted" : "safe";
+  return {
+    usesScopedCss,
+    usesInlineStyles,
+    usesInlineSvg,
+    usesConditionals,
+    usesHelpers,
+    hasJavaScriptLikeContent,
+    recommendedMode: recommendedMode2,
+    features,
+    warnings
   };
 }
 function renderHtmlTemplate(input, options = {}) {
@@ -694,8 +1146,10 @@ function renderHtmlTemplate(input, options = {}) {
       };
     }
     const rendered = renderTemplate(input.template, input.snapshotData, placeholder);
+    const trustMode = options.templateTrustMode ?? (options.allowInlineStyles === true ? "trusted" : "safe");
     const sanitizeOptions = {
       allowInlineStyles: options.allowInlineStyles === true,
+      templateTrustMode: trustMode === "dev" ? "trusted" : trustMode,
       deduplicateWarnings: options.deduplicateWarnings === true
     };
     if (typeof options.maxWarnings === "number") sanitizeOptions.maxWarnings = options.maxWarnings;
@@ -1191,6 +1645,7 @@ function renderMessageTracker(input) {
       missingValuePlaceholder: "",
       maxRenderedChars: input.settings.maxRenderedChars,
       allowInlineStyles: input.settings.allowInlineStyles,
+      templateTrustMode: input.settings.allowInlineStyles ? "trusted" : "safe",
       deduplicateWarnings: input.settings.deduplicateRenderWarnings,
       maxWarnings: input.settings.showRenderWarningsInDiagnosticsOnly ? 8 : 20
     });
@@ -1967,6 +2422,7 @@ function exportPresetPack(preset, options) {
       enabled: settings.messageDisplay.enabled,
       useDomInjection: settings.messageDisplay.useDomInjection,
       displayMode: settings.messageDisplay.displayMode,
+      displaySurface: settings.messageDisplay.displaySurface,
       placement: settings.messageDisplay.placement,
       renderMode: settings.messageDisplay.renderMode,
       allowInlineStyles: settings.messageDisplay.allowInlineStyles,
@@ -2232,6 +2688,8 @@ function generateSampleSnapshot(jsonSchema) {
   const result = generateSampleFromSchema(jsonSchema, 0);
   return isRecord6(result) ? result : { data: result };
 }
+var SCHEMA_META_KEYS = /* @__PURE__ */ new Set(["type", "properties", "required", "description", "items", "default", "enum"]);
+var TEMPLATE_HELPERS = /* @__PURE__ */ new Set(["default", "percent", "json", "eq", "gt", "lt", "and", "or", "not", "class", "lower", "upper", "truncate"]);
 function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
   if (depth > 5) return [];
   if (isRecord6(schema.properties)) {
@@ -2239,32 +2697,92 @@ function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
   }
   const fields = [];
   for (const key of Object.keys(schema)) {
-    if (key === "type" || key === "properties" || key === "required" || key === "description" || key === "items" || key === "default" || key === "enum") continue;
+    if (SCHEMA_META_KEYS.has(key)) continue;
     const fullKey = prefix ? `${prefix}.${key}` : key;
     fields.push(fullKey);
     const val = schema[key];
     if (isRecord6(val)) {
       if (isRecord6(val.properties)) {
         fields.push(...collectSchemaFieldNames(val.properties, fullKey, depth + 1));
+      } else if (val.type === "array" && isRecord6(val.items)) {
+        const item = val.items;
+        if (isRecord6(item.properties)) {
+          fields.push(...collectSchemaFieldNames(item.properties, fullKey, depth + 1));
+        } else if (isRecord6(item)) {
+          fields.push(...collectSchemaFieldNames(item, fullKey, depth + 1));
+        }
       } else if (val.type !== "string" && val.type !== "number" && val.type !== "boolean" && val.type !== "integer" && val.type !== "array") {
         fields.push(...collectSchemaFieldNames(val, fullKey, depth + 1));
       }
     }
   }
-  return fields;
+  return [...new Set(fields)];
+}
+function expressionTokens(expression) {
+  const tokens = [];
+  const pattern = /"[^"]*"|'[^']*'|[^\s]+/g;
+  let match;
+  while ((match = pattern.exec(expression)) !== null) tokens.push(match[0] ?? "");
+  return tokens;
+}
+function isLiteralToken(token) {
+  return token === "true" || token === "false" || token === "null" || /^-?\d+(?:\.\d+)?$/.test(token) || /^".*"$/.test(token) || /^'.*'$/.test(token);
+}
+function normalizeTemplatePath(path, contextStack) {
+  const trimmed = path.trim();
+  if (!trimmed || isLiteralToken(trimmed)) return null;
+  if (TEMPLATE_HELPERS.has(trimmed)) return null;
+  if (trimmed.startsWith("data.")) return trimmed.slice(5);
+  const withoutData = trimmed;
+  const currentContext = contextStack[contextStack.length - 1] ?? "";
+  if (withoutData === "this" || withoutData === ".") return currentContext || null;
+  if (withoutData.startsWith("this.")) {
+    return currentContext ? `${currentContext}.${withoutData.slice(5)}` : withoutData.slice(5);
+  }
+  const root = withoutData.split(".")[0] ?? "";
+  if (currentContext && root && !withoutData.includes(".") && root !== currentContext.split(".")[0]) {
+    return `${currentContext}.${withoutData}`;
+  }
+  if (currentContext && root && !withoutData.startsWith(`${currentContext}.`) && root !== currentContext.split(".")[0]) {
+    return `${currentContext}.${withoutData}`;
+  }
+  return withoutData;
+}
+function addTemplateExpressionPaths(expression, contextStack, placeholders) {
+  const tokens = expressionTokens(expression);
+  if (tokens.length === 0) return;
+  const relevant = TEMPLATE_HELPERS.has(tokens[0] ?? "") ? tokens.slice(1) : tokens;
+  for (const token of relevant) {
+    const normalized = normalizeTemplatePath(token, contextStack);
+    if (normalized) placeholders.add(normalized);
+  }
 }
 function findTemplatePlaceholders(template) {
-  const placeholders = [];
-  const pattern = /\{\{\s*(?:#each\s+)?([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*\}\}/g;
-  let match = pattern.exec(template);
-  while (match) {
-    const val = match[1];
-    if (val && !placeholders.includes(val)) {
-      placeholders.push(val);
+  const placeholders = /* @__PURE__ */ new Set();
+  const contextStack = [];
+  const pattern = /\{\{\s*([\s\S]*?)\s*\}\}/g;
+  let match;
+  while ((match = pattern.exec(template)) !== null) {
+    const expression = (match[1] ?? "").trim();
+    if (!expression || expression === "else") continue;
+    if (expression.startsWith("/")) {
+      const closing = expression.slice(1).trim();
+      if (closing === "each" || closing === "with") contextStack.pop();
+      continue;
     }
-    match = pattern.exec(template);
+    if (expression.startsWith("#")) {
+      const [block, ...rest] = expressionTokens(expression.slice(1));
+      const blockExpression = rest.join(" ");
+      if (blockExpression) addTemplateExpressionPaths(blockExpression, contextStack, placeholders);
+      if (block === "each" || block === "with") {
+        const normalized = normalizeTemplatePath(blockExpression, contextStack);
+        if (normalized) contextStack.push(normalized);
+      }
+      continue;
+    }
+    addTemplateExpressionPaths(expression, contextStack, placeholders);
   }
-  return placeholders;
+  return [...placeholders];
 }
 function presetName(preset) {
   return preset.name ?? "";
@@ -2277,6 +2795,7 @@ function validatePresetReport(preset, options) {
   const missingPlaceholders = [];
   const unusedSchemaFields = [];
   const sanitizerWarningGroups = [];
+  const rendererRequirements = detectTemplateRendererRequirements(preset.htmlTemplate ?? "");
   let sampleRenderResult = null;
   if (preset.name?.trim()) {
     entries.push({ severity: "pass", category: "Metadata", message: "Preset name exists." });
@@ -2332,6 +2851,16 @@ function validatePresetReport(preset, options) {
   if (template.trim()) {
     entries.push({ severity: "pass", category: "Template", message: "HTML template exists." });
     entries.push({ severity: "info", category: "Template", message: `Template size: ${template.length.toLocaleString()} chars.` });
+    if (rendererRequirements.features.length > 0) {
+      entries.push({
+        severity: rendererRequirements.recommendedMode === "dev" ? "warning" : "info",
+        category: "Renderer",
+        message: `Template uses ${rendererRequirements.features.join(", ")}. Recommended mode: ${rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : "Trusted"}.`
+      });
+    }
+    for (const warning of rendererRequirements.warnings) {
+      entries.push({ severity: "warning", category: "Renderer", message: warning });
+    }
     if (isRecord6(preset.jsonSchema)) {
       const schemaFields = collectSchemaFieldNames(preset.jsonSchema);
       const templatePlaceholders = findTemplatePlaceholders(template);
@@ -2346,7 +2875,7 @@ function validatePresetReport(preset, options) {
       }
       for (const field of schemaFields) {
         const rootField = field.split(".")[0];
-        if (!templatePlaceholders.some((p) => p === field || p === rootField || field.startsWith(p + "."))) {
+        if (!templatePlaceholders.some((p) => p === field || p === rootField || field.startsWith(p + ".") || p.startsWith(field + "."))) {
           unusedSchemaFields.push(field);
         }
       }
@@ -2359,6 +2888,7 @@ function validatePresetReport(preset, options) {
       { template, snapshotData: sampleData, presetId: presetId(preset), presetName: presetName(preset) },
       {
         allowInlineStyles: options?.allowInlineStyles ?? true,
+        templateTrustMode: options?.allowInlineStyles === false ? "safe" : "trusted",
         maxRenderedChars: options?.maxRenderedChars ?? 5e5,
         deduplicateWarnings: true,
         maxWarnings: 50
@@ -2421,6 +2951,7 @@ function validatePresetReport(preset, options) {
     missingPlaceholders,
     unusedSchemaFields,
     sanitizerWarningGroups,
+    rendererRequirements,
     sampleRenderResult
   };
 }
@@ -2659,6 +3190,7 @@ var DEFAULT_SETTINGS = {
     fallbackToIframeWidget: false,
     attachmentMode: "sidecar_snapshot",
     displayMode: "inline_full",
+    displaySurface: "inline_wide",
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
@@ -2745,6 +3277,27 @@ function templateTrustMode(value) {
 function expandedWidthMode(value) {
   return value === "contained" || value === "wide" || value === "full_mobile" || value === "popover" ? value : DEFAULT_SETTINGS.expandedWidth.expandedWidthMode;
 }
+function displaySurface(value) {
+  return value === "inline_contained" || value === "inline_wide" || value === "anchored_popover" || value === "fullscreen_reader" || value === "drawer_only" ? value : null;
+}
+function migrateDisplaySurface(displayMode, widthMode) {
+  if (displayMode === "drawer_history_only") return "drawer_only";
+  if (displayMode === "inline_button_popover") return "anchored_popover";
+  if (displayMode === "inline_full") {
+    if (widthMode === "contained") return "inline_contained";
+    if (widthMode === "popover") return "anchored_popover";
+    return "inline_wide";
+  }
+  return DEFAULT_SETTINGS.messageDisplay.displaySurface;
+}
+function displayModeForSurface(surface, fallback) {
+  if (fallback === "inline_button_popover" || fallback === "drawer_history_only" || fallback === "inline_full") {
+    return fallback;
+  }
+  if (surface === "drawer_only") return "drawer_history_only";
+  if (surface === "anchored_popover") return "inline_button_popover";
+  return "inline_full";
+}
 function injectionFormat(value) {
   if (value === "compact") return "compact_text";
   return value === "embedded_tag" || value === "compact_text" || value === "pretty_json" || value === "minimal" ? value : DEFAULT_SETTINGS.injection.format;
@@ -2806,6 +3359,8 @@ function repairSettings(value) {
   const messageDisplayRenderMode = messageDisplaySource.renderMode === "compact_text" || messageDisplaySource.renderMode === "pretty_json" || messageDisplaySource.renderMode === "html_template" ? messageDisplaySource.renderMode : DEFAULT_SETTINGS.messageDisplay.renderMode;
   const messageDisplayAttachmentMode = messageDisplaySource.attachmentMode === "embedded_tracker_tag" || messageDisplaySource.attachmentMode === "both" || messageDisplaySource.attachmentMode === "sidecar_snapshot" ? messageDisplaySource.attachmentMode : DEFAULT_SETTINGS.messageDisplay.attachmentMode;
   const messageDisplayDisplayMode = messageDisplaySource.displayMode === "inline_button_popover" || messageDisplaySource.displayMode === "drawer_history_only" || messageDisplaySource.displayMode === "inline_full" ? messageDisplaySource.displayMode : DEFAULT_SETTINGS.messageDisplay.displayMode;
+  const messageDisplaySurface = displaySurface(messageDisplaySource.displaySurface) ?? migrateDisplaySurface(messageDisplaySource.displayMode, expandedWidthSource.expandedWidthMode);
+  const repairedMessageDisplayDisplayMode = displayModeForSurface(messageDisplaySurface, messageDisplaySource.displayMode ?? messageDisplayDisplayMode);
   const messageDisplayControlDensity = messageDisplaySource.controlDensity === "comfortable" || messageDisplaySource.controlDensity === "compact" ? messageDisplaySource.controlDensity : DEFAULT_SETTINGS.messageDisplay.controlDensity;
   const messageDisplayControlPlacement = messageDisplaySource.controlPlacement === "inside_tracker_header" || messageDisplaySource.controlPlacement === "message_header" ? messageDisplaySource.controlPlacement : DEFAULT_SETTINGS.messageDisplay.controlPlacement;
   const repairedBudgetUltra = typeof budgetSource.ultraModeEnabled === "boolean" ? budgetSource.ultraModeEnabled : DEFAULT_SETTINGS.budget.ultraModeEnabled;
@@ -2987,7 +3542,8 @@ function repairSettings(value) {
       useDomInjection: typeof messageDisplaySource.useDomInjection === "boolean" ? messageDisplaySource.useDomInjection : DEFAULT_SETTINGS.messageDisplay.useDomInjection,
       fallbackToIframeWidget: typeof messageDisplaySource.fallbackToIframeWidget === "boolean" ? messageDisplaySource.fallbackToIframeWidget : DEFAULT_SETTINGS.messageDisplay.fallbackToIframeWidget,
       attachmentMode: messageDisplayAttachmentMode,
-      displayMode: messageDisplayDisplayMode,
+      displayMode: repairedMessageDisplayDisplayMode,
+      displaySurface: messageDisplaySurface,
       placement: messageDisplayPlacement,
       source: messageDisplaySourceSetting,
       renderMode: messageDisplayRenderMode,
@@ -6598,7 +7154,8 @@ async function renderTemplatePreview(chatId, userId, requestId, requestedSource)
       }, {
         missingValuePlaceholder: settings.renderer.missingValuePlaceholder,
         maxRenderedChars: settings.renderer.maxRenderedChars,
-        allowInlineStyles: settings.renderer.allowInlineStyles
+        allowInlineStyles: settings.renderer.allowInlineStyles,
+        templateTrustMode: settings.renderer.templateTrustMode
       });
       const status = !template.trim() ? "no_template" : result.ok ? "rendered" : "error";
       preview = {
@@ -6952,6 +7509,7 @@ async function importPresetPackHandler(chatId, userId, importText, options, requ
       if (typeof disp.enabled === "boolean") settings.messageDisplay.enabled = disp.enabled;
       if (typeof disp.useDomInjection === "boolean") settings.messageDisplay.useDomInjection = disp.useDomInjection;
       if (disp.displayMode) settings.messageDisplay.displayMode = disp.displayMode;
+      if (disp.displaySurface) settings.messageDisplay.displaySurface = disp.displaySurface;
       if (disp.placement) settings.messageDisplay.placement = disp.placement;
       if (disp.renderMode) settings.messageDisplay.renderMode = disp.renderMode;
       if (typeof disp.showTimestamp === "boolean") settings.messageDisplay.showTimestamp = disp.showTimestamp;
@@ -7034,6 +7592,7 @@ async function generateSampleSnapshotHandler(chatId, userId, requestId) {
       },
       {
         allowInlineStyles: settings.renderer.allowInlineStyles,
+        templateTrustMode: settings.renderer.templateTrustMode,
         maxRenderedChars: settings.renderer.maxRenderedChars,
         deduplicateWarnings: true
       }

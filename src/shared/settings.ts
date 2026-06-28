@@ -1,11 +1,13 @@
 import {
   SETTINGS_SCHEMA_VERSION,
   type LTrackerBudgetMode,
+  type LTrackerDisplaySurface,
   type LTrackerExpandedWidthMode,
   type LTrackerInjectionFormat,
   type LTrackerInjectionPlacement,
   type LTrackerInjectionRoleFallback,
   type LTrackerConnectionMode,
+  type LTrackerMessageDisplayDisplayMode,
   type LTrackerMemoryOrder,
   type LTrackerMemorySource,
   type LTrackerReasoningEffort,
@@ -119,6 +121,7 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     fallbackToIframeWidget: false,
     attachmentMode: "sidecar_snapshot",
     displayMode: "inline_full",
+    displaySurface: "inline_wide",
     placement: "top",
     source: "message_attached_snapshot",
     renderMode: "html_template",
@@ -230,6 +233,36 @@ function expandedWidthMode(value: unknown): LTrackerExpandedWidthMode {
   return value === "contained" || value === "wide" || value === "full_mobile" || value === "popover"
     ? value
     : DEFAULT_SETTINGS.expandedWidth.expandedWidthMode;
+}
+
+function displaySurface(value: unknown): LTrackerDisplaySurface | null {
+  return value === "inline_contained"
+    || value === "inline_wide"
+    || value === "anchored_popover"
+    || value === "fullscreen_reader"
+    || value === "drawer_only"
+    ? value
+    : null;
+}
+
+function migrateDisplaySurface(displayMode: unknown, widthMode: unknown): LTrackerDisplaySurface {
+  if (displayMode === "drawer_history_only") return "drawer_only";
+  if (displayMode === "inline_button_popover") return "anchored_popover";
+  if (displayMode === "inline_full") {
+    if (widthMode === "contained") return "inline_contained";
+    if (widthMode === "popover") return "anchored_popover";
+    return "inline_wide";
+  }
+  return DEFAULT_SETTINGS.messageDisplay.displaySurface;
+}
+
+function displayModeForSurface(surface: LTrackerDisplaySurface, fallback: unknown): LTrackerMessageDisplayDisplayMode {
+  if (fallback === "inline_button_popover" || fallback === "drawer_history_only" || fallback === "inline_full") {
+    return fallback;
+  }
+  if (surface === "drawer_only") return "drawer_history_only";
+  if (surface === "anchored_popover") return "inline_button_popover";
+  return "inline_full";
 }
 
 function injectionFormat(value: unknown): LTrackerInjectionFormat {
@@ -359,6 +392,9 @@ export function repairSettings(value: unknown): LTrackerSettings {
     || messageDisplaySource.displayMode === "inline_full"
     ? messageDisplaySource.displayMode
     : DEFAULT_SETTINGS.messageDisplay.displayMode;
+  const messageDisplaySurface = displaySurface(messageDisplaySource.displaySurface)
+    ?? migrateDisplaySurface(messageDisplaySource.displayMode, expandedWidthSource.expandedWidthMode);
+  const repairedMessageDisplayDisplayMode = displayModeForSurface(messageDisplaySurface, messageDisplaySource.displayMode ?? messageDisplayDisplayMode);
   const messageDisplayControlDensity = messageDisplaySource.controlDensity === "comfortable"
     || messageDisplaySource.controlDensity === "compact"
     ? messageDisplaySource.controlDensity
@@ -603,7 +639,8 @@ export function repairSettings(value: unknown): LTrackerSettings {
         ? messageDisplaySource.fallbackToIframeWidget
         : DEFAULT_SETTINGS.messageDisplay.fallbackToIframeWidget,
       attachmentMode: messageDisplayAttachmentMode,
-      displayMode: messageDisplayDisplayMode,
+      displayMode: repairedMessageDisplayDisplayMode,
+      displaySurface: messageDisplaySurface,
       placement: messageDisplayPlacement,
       source: messageDisplaySourceSetting,
       renderMode: messageDisplayRenderMode,

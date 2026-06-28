@@ -16,8 +16,9 @@ import {
   estimatePresetStats,
 } from "./presets";
 import {
+  detectTemplateRendererRequirements,
   renderHtmlTemplate,
-  sanitizeHtml,
+  type TemplateRendererRequirements,
   type HtmlTemplateRenderResult,
 } from "./htmlTemplateRenderer";
 
@@ -98,6 +99,7 @@ export interface PresetValidationReport {
   missingPlaceholders: string[];
   unusedSchemaFields: string[];
   sanitizerWarningGroups: string[];
+  rendererRequirements: TemplateRendererRequirements;
   sampleRenderResult: HtmlTemplateRenderResult | null;
 }
 
@@ -261,6 +263,7 @@ export function exportPresetPack(
       enabled: settings.messageDisplay.enabled,
       useDomInjection: settings.messageDisplay.useDomInjection,
       displayMode: settings.messageDisplay.displayMode,
+      displaySurface: settings.messageDisplay.displaySurface,
       placement: settings.messageDisplay.placement,
       renderMode: settings.messageDisplay.renderMode,
       allowInlineStyles: settings.messageDisplay.allowInlineStyles,
@@ -596,6 +599,9 @@ export function generateSampleSnapshot(jsonSchema: Record<string, unknown>): Rec
 // Validation Report
 // ---------------------------------------------------------------------------
 
+const SCHEMA_META_KEYS = new Set(["type", "properties", "required", "description", "items", "default", "enum"]);
+const TEMPLATE_HELPERS = new Set(["default", "percent", "json", "eq", "gt", "lt", "and", "or", "not", "class", "lower", "upper", "truncate"]);
+
 function collectSchemaFieldNames(schema: Record<string, unknown>, prefix = "", depth = 0): string[] {
   if (depth > 5) return [];
   if (isRecord(schema.properties)) {
@@ -603,34 +609,103 @@ function collectSchemaFieldNames(schema: Record<string, unknown>, prefix = "", d
   }
   const fields: string[] = [];
   for (const key of Object.keys(schema)) {
-    if (key === "type" || key === "properties" || key === "required" || key === "description" || key === "items" || key === "default" || key === "enum") continue;
+    if (SCHEMA_META_KEYS.has(key)) continue;
     const fullKey = prefix ? `${prefix}.${key}` : key;
     fields.push(fullKey);
     const val = schema[key];
     if (isRecord(val)) {
       if (isRecord(val.properties)) {
         fields.push(...collectSchemaFieldNames(val.properties as Record<string, unknown>, fullKey, depth + 1));
+      } else if (val.type === "array" && isRecord(val.items)) {
+        const item = val.items as Record<string, unknown>;
+        if (isRecord(item.properties)) {
+          fields.push(...collectSchemaFieldNames(item.properties as Record<string, unknown>, fullKey, depth + 1));
+        } else if (isRecord(item)) {
+          fields.push(...collectSchemaFieldNames(item, fullKey, depth + 1));
+        }
       } else if (val.type !== "string" && val.type !== "number" && val.type !== "boolean" && val.type !== "integer" && val.type !== "array") {
         // Could be a nested object schema without explicit type
         fields.push(...collectSchemaFieldNames(val, fullKey, depth + 1));
       }
     }
   }
-  return fields;
+  return [...new Set(fields)];
+}
+
+function expressionTokens(expression: string): string[] {
+  const tokens: string[] = [];
+  const pattern = /"[^"]*"|'[^']*'|[^\s]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(expression)) !== null) tokens.push(match[0] ?? "");
+  return tokens;
+}
+
+function isLiteralToken(token: string): boolean {
+  return token === "true"
+    || token === "false"
+    || token === "null"
+    || /^-?\d+(?:\.\d+)?$/.test(token)
+    || /^".*"$/.test(token)
+    || /^'.*'$/.test(token);
+}
+
+function normalizeTemplatePath(path: string, contextStack: string[]): string | null {
+  const trimmed = path.trim();
+  if (!trimmed || isLiteralToken(trimmed)) return null;
+  if (TEMPLATE_HELPERS.has(trimmed)) return null;
+  if (trimmed.startsWith("data.")) return trimmed.slice(5);
+  const withoutData = trimmed;
+  const currentContext = contextStack[contextStack.length - 1] ?? "";
+  if (withoutData === "this" || withoutData === ".") return currentContext || null;
+  if (withoutData.startsWith("this.")) {
+    return currentContext ? `${currentContext}.${withoutData.slice(5)}` : withoutData.slice(5);
+  }
+  const root = withoutData.split(".")[0] ?? "";
+  if (currentContext && root && !withoutData.includes(".") && root !== currentContext.split(".")[0]) {
+    return `${currentContext}.${withoutData}`;
+  }
+  if (currentContext && root && !withoutData.startsWith(`${currentContext}.`) && root !== currentContext.split(".")[0]) {
+    return `${currentContext}.${withoutData}`;
+  }
+  return withoutData;
+}
+
+function addTemplateExpressionPaths(expression: string, contextStack: string[], placeholders: Set<string>): void {
+  const tokens = expressionTokens(expression);
+  if (tokens.length === 0) return;
+  const relevant = TEMPLATE_HELPERS.has(tokens[0] ?? "") ? tokens.slice(1) : tokens;
+  for (const token of relevant) {
+    const normalized = normalizeTemplatePath(token, contextStack);
+    if (normalized) placeholders.add(normalized);
+  }
 }
 
 function findTemplatePlaceholders(template: string): string[] {
-  const placeholders: string[] = [];
-  const pattern = /\{\{\s*(?:#each\s+)?([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*\}\}/g;
-  let match: RegExpExecArray | null = pattern.exec(template);
-  while (match) {
-    const val = match[1];
-    if (val && !placeholders.includes(val)) {
-      placeholders.push(val);
+  const placeholders = new Set<string>();
+  const contextStack: string[] = [];
+  const pattern = /\{\{\s*([\s\S]*?)\s*\}\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(template)) !== null) {
+    const expression = (match[1] ?? "").trim();
+    if (!expression || expression === "else") continue;
+    if (expression.startsWith("/")) {
+      const closing = expression.slice(1).trim();
+      if (closing === "each" || closing === "with") contextStack.pop();
+      continue;
     }
-    match = pattern.exec(template);
+    if (expression.startsWith("#")) {
+      const [block, ...rest] = expressionTokens(expression.slice(1));
+      const blockExpression = rest.join(" ");
+      if (blockExpression) addTemplateExpressionPaths(blockExpression, contextStack, placeholders);
+      if (block === "each" || block === "with") {
+        const normalized = normalizeTemplatePath(blockExpression, contextStack);
+        if (normalized) contextStack.push(normalized);
+      }
+      continue;
+    }
+    addTemplateExpressionPaths(expression, contextStack, placeholders);
   }
-  return placeholders;
+  return [...placeholders];
 }
 
 function presetName(preset: TrackerPresetDraft | TrackerSchemaPreset): string {
@@ -652,6 +727,7 @@ export function validatePresetReport(
   const missingPlaceholders: string[] = [];
   const unusedSchemaFields: string[] = [];
   const sanitizerWarningGroups: string[] = [];
+  const rendererRequirements = detectTemplateRendererRequirements(preset.htmlTemplate ?? "");
   let sampleRenderResult: HtmlTemplateRenderResult | null = null;
 
   // ---- Pack / metadata ----
@@ -719,6 +795,16 @@ export function validatePresetReport(
   if (template.trim()) {
     entries.push({ severity: "pass", category: "Template", message: "HTML template exists." });
     entries.push({ severity: "info", category: "Template", message: `Template size: ${template.length.toLocaleString()} chars.` });
+    if (rendererRequirements.features.length > 0) {
+      entries.push({
+        severity: rendererRequirements.recommendedMode === "dev" ? "warning" : "info",
+        category: "Renderer",
+        message: `Template uses ${rendererRequirements.features.join(", ")}. Recommended mode: ${rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : "Trusted"}.`,
+      });
+    }
+    for (const warning of rendererRequirements.warnings) {
+      entries.push({ severity: "warning", category: "Renderer", message: warning });
+    }
 
     // Check for missing/unused placeholders
     if (isRecord(preset.jsonSchema)) {
@@ -737,7 +823,7 @@ export function validatePresetReport(
 
       for (const field of schemaFields) {
         const rootField = field.split(".")[0];
-        if (!templatePlaceholders.some((p) => p === field || p === rootField || field.startsWith(p + "."))) {
+        if (!templatePlaceholders.some((p) => p === field || p === rootField || field.startsWith(p + ".") || p.startsWith(field + "."))) {
           unusedSchemaFields.push(field);
         }
       }
@@ -752,6 +838,7 @@ export function validatePresetReport(
       { template, snapshotData: sampleData, presetId: presetId(preset), presetName: presetName(preset) },
       {
         allowInlineStyles: options?.allowInlineStyles ?? true,
+        templateTrustMode: options?.allowInlineStyles === false ? "safe" : "trusted",
         maxRenderedChars: options?.maxRenderedChars ?? 500_000,
         deduplicateWarnings: true,
         maxWarnings: 50,
@@ -821,6 +908,7 @@ export function validatePresetReport(
     missingPlaceholders,
     unusedSchemaFields,
     sanitizerWarningGroups,
+    rendererRequirements,
     sampleRenderResult,
   };
 }

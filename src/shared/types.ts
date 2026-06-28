@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.18";
+export const EXTENSION_VERSION = "0.19";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -293,6 +293,7 @@ export interface LTrackerMessageDisplaySettings {
   fallbackToIframeWidget: boolean;
   attachmentMode: LTrackerMessageAttachmentMode;
   displayMode: LTrackerMessageDisplayDisplayMode;
+  displaySurface: LTrackerDisplaySurface;
   placement: LTrackerMessageDisplayPlacement;
   source: LTrackerMessageDisplaySource;
   renderMode: LTrackerMessageDisplayRenderMode;

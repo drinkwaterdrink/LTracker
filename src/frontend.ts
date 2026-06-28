@@ -16,6 +16,7 @@ import {
   type PresetValidationReport,
   type PresetPackImportResult,
 } from "./shared/presetPack";
+import { detectTemplateRendererRequirements } from "./shared/htmlTemplateRenderer";
 import {
   groupMessageTrackerHistory,
   MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
@@ -1224,6 +1225,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   function resolveDisplaySurface(settings: LTrackerSettings): LTrackerDisplaySurface {
+    if (settings.messageDisplay.displaySurface) return settings.messageDisplay.displaySurface;
     const displayMode = settings.messageDisplay.displayMode;
     const widthMode = settings.expandedWidth.expandedWidthMode;
     if (displayMode === "drawer_history_only") return "drawer_only";
@@ -1234,6 +1236,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       if (widthMode === "popover") return "anchored_popover";
     }
     return "inline_contained";
+  }
+
+  function displayModeForSurface(surface: LTrackerDisplaySurface): LTrackerSettings["messageDisplay"]["displayMode"] {
+    if (surface === "drawer_only") return "drawer_history_only";
+    if (surface === "anchored_popover") return "inline_button_popover";
+    return "inline_full";
   }
 
   function togglePopover(entry: MessageTrackerHistoryEntry, anchorElement: HTMLElement): void {
@@ -1544,33 +1552,37 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   function applyExpandedWidthMode(element: Element): void {
     if (!(element instanceof HTMLElement)) return;
     const width = state.settings.expandedWidth;
+    const surface = resolveDisplaySurface(state.settings);
     const maxWidth = `${width.maxExpandedWidthPx}px`;
-    element.style.maxWidth = width.expandedWidthMode === "contained" ? "100%" : maxWidth;
-    element.style.width = width.expandedWidthMode === "full_mobile"
+    const contained = surface === "inline_contained" || width.expandedWidthMode === "contained";
+    const compactShell = surface === "anchored_popover" || surface === "fullscreen_reader";
+    element.style.maxWidth = contained || compactShell ? "100%" : maxWidth;
+    element.style.width = compactShell
+      ? "auto"
+      : width.expandedWidthMode === "full_mobile"
       ? `calc(100vw - ${width.mobileHorizontalMarginPx * 2}px)`
-      : width.expandedWidthMode === "popover" ? "auto" : "100%";
-    element.style.marginLeft = width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
-    element.style.marginRight = width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
+      : "100%";
+    element.style.marginLeft = !compactShell && width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
+    element.style.marginRight = !compactShell && width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
     element.style.setProperty("--ltracker-expanded-max-height", `${width.expandedContentMaxHeightVh}vh`);
 
-    const details = element.querySelector("details");
-    if (details) {
-      const summary = details.querySelector("summary");
-      if (summary) {
-        summary.addEventListener("click", (e) => {
-          if (state.settings.expandedWidth.expandedWidthMode === "popover") {
-            e.preventDefault();
-            const messageId = element.dataset.ltrackerMessageId;
-            const swipeKey = element.dataset.ltrackerSwipeKey;
-            if (messageId && swipeKey) {
-              const entry = findHistoryEntry(messageId, swipeKey);
-              if (entry) {
-                togglePopover(entry, summary);
-              }
-            }
-          }
-        });
-      }
+    const summary = element.querySelector<HTMLElement>(":scope > details > summary");
+    if (summary) {
+      summary.addEventListener("click", (e) => {
+        const currentSurface = resolveDisplaySurface(state.settings);
+        if (currentSurface !== "anchored_popover" && currentSurface !== "fullscreen_reader") return;
+        e.preventDefault();
+        const messageId = element.dataset.ltrackerMessageId;
+        const swipeKey = element.dataset.ltrackerSwipeKey;
+        if (!messageId || !swipeKey) return;
+        const entry = findHistoryEntry(messageId, swipeKey);
+        if (!entry) return;
+        if (currentSurface === "fullscreen_reader") {
+          openFullscreenReader(entry);
+        } else {
+          togglePopover(entry, summary);
+        }
+      });
     }
 
     localDiagnostics({
@@ -1583,7 +1595,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (
       !state.settings.messageDisplay.enabled
       || !state.settings.messageDisplay.useDomInjection
-      || state.settings.messageDisplay.displayMode === "drawer_history_only"
+      || resolveDisplaySurface(state.settings) === "drawer_only"
     ) {
       cleanupDomInjections();
       return false;
@@ -1615,6 +1627,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         entry.rendered.generationStartedAt,
         entry.rendered.activeJobId,
         entry.rendered.controlState.generationStatus,
+        state.settings.messageDisplay.displaySurface,
         state.settings.messageDisplay.displayMode,
         state.settings.expandedWidth.expandedWidthMode,
         state.settings.expandedWidth.maxExpandedWidthPx,
@@ -1684,7 +1697,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (
       !state.settings.messageDisplay.enabled
-      || state.settings.messageDisplay.displayMode === "drawer_history_only"
+      || resolveDisplaySurface(state.settings) === "drawer_only"
       || !renderWidget
       || !state.settings.messageDisplay.fallbackToIframeWidget
     ) {
@@ -2089,7 +2102,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       return input ? input.value as TemplateTrustMode : state.settings.renderer.templateTrustMode;
     };
     const messageDisplaySelectValue = <T extends string>(
-      name: keyof Pick<LTrackerSettings["messageDisplay"], "attachmentMode" | "displayMode" | "placement" | "source" | "renderMode" | "controlDensity" | "controlPlacement">,
+      name: keyof Pick<LTrackerSettings["messageDisplay"], "attachmentMode" | "displayMode" | "displaySurface" | "placement" | "source" | "renderMode" | "controlDensity" | "controlPlacement">,
       fallback: T,
     ): T => {
       const input = tab.root.querySelector<HTMLSelectElement>(`[data-message-display-setting="${name}"]`);
@@ -2141,6 +2154,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const selectedConnection = selectedConnectionId
       ? state.connectionProfiles.find((profile) => profile.id === selectedConnectionId) ?? null
       : null;
+    const displaySurface = messageDisplaySelectValue<LTrackerDisplaySurface>("displaySurface", state.settings.messageDisplay.displaySurface);
     return {
       schemaVersion: SETTINGS_SCHEMA_VERSION,
       recentMessageLimit: numberValue("recentMessageLimit"),
@@ -2215,7 +2229,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         useDomInjection: messageDisplayBooleanValue("useDomInjection"),
         fallbackToIframeWidget: messageDisplayBooleanValue("fallbackToIframeWidget"),
         attachmentMode: messageDisplaySelectValue("attachmentMode", state.settings.messageDisplay.attachmentMode),
-        displayMode: messageDisplaySelectValue("displayMode", state.settings.messageDisplay.displayMode),
+        displayMode: displayModeForSurface(displaySurface),
+        displaySurface,
         placement: messageDisplaySelectValue("placement", state.settings.messageDisplay.placement),
         source: messageDisplaySelectValue("source", state.settings.messageDisplay.source),
         renderMode: messageDisplaySelectValue("renderMode", state.settings.messageDisplay.renderMode),
@@ -3041,7 +3056,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           recDetailsList.push(`Injection settings (format: ${rec.injection.format ?? "inherit"})`);
         }
         if (rec.messageDisplay) {
-          recDetailsList.push(`Display settings (mode: ${rec.messageDisplay.displayMode ?? "inherit"})`);
+          recDetailsList.push(`Display settings (surface: ${rec.messageDisplay.displaySurface ?? rec.messageDisplay.displayMode ?? "inherit"})`);
         }
         if (rec.expandedWidth) {
           recDetailsList.push(`Expanded width settings (mode: ${rec.expandedWidth.expandedWidthMode ?? "inherit"})`);
@@ -3053,6 +3068,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
       const recDetailsHtml = recDetailsList.length > 0
         ? `<div class="ltracker-rec-details" style="font-size: 10px; color: #aaa; margin-top: 4px; padding-left: 10px;">Applying recommendations will update:<ul>${recDetailsList.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
+        : "";
+      const rendererRequirements = detectTemplateRendererRequirements(preset?.htmlTemplate ?? "");
+      const rendererRequirementsHtml = rendererRequirements.features.length > 0 || rendererRequirements.warnings.length > 0
+        ? `
+          <div class="ltracker-rec-details" style="font-size: 11px; color: #ddd; margin-bottom: 12px; border: 1px solid rgba(155,92,255,.35); padding: 8px; border-radius: 6px;">
+            <strong>This preset uses:</strong>
+            <ul style="margin: 6px 0 6px 18px; padding: 0;">
+              ${rendererRequirements.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("") || "<li>Basic HTML template features</li>"}
+            </ul>
+            <div>Recommended mode: ${escapeHtml(rendererRequirements.recommendedMode === "dev" ? "Trusted; JavaScript remains stripped until future Dev Mode" : rendererRequirements.recommendedMode === "trusted" ? "Trusted" : "Safe")}</div>
+            ${rendererRequirements.warnings.map((warning) => `<div style="color: #fbbc05; margin-top: 4px;">${escapeHtml(warning)}</div>`).join("")}
+          </div>
+        `
         : "";
 
       importReviewHtml = `
@@ -3066,6 +3094,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Description", preset?.description ?? "None")}
             ${renderRow("Min. LTracker version", meta?.minVersion ?? "None")}
           </div>
+          ${rendererRequirementsHtml}
 
           <div class="ltracker-settings" style="margin-bottom: 12px;">
             <label class="ltracker-field">
@@ -3090,8 +3119,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             <label class="ltracker-field">
               Template trust mode
               <select data-import-review-trust-mode>
-                <option value="safe">Safe (Sanitizes inline styles and links)</option>
-                <option value="trusted">Trusted (Allows inline styles and custom rendering)</option>
+                <option value="trusted"${selected(rendererRequirements.recommendedMode !== "safe")}>Trusted</option>
+                <option value="safe"${selected(rendererRequirements.recommendedMode === "safe")}>Safe</option>
               </select>
             </label>
             ${hasRec ? `
@@ -3156,6 +3185,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           </details>
         `
         : "";
+      const rendererReqHtml = rep.rendererRequirements.features.length > 0 || rep.rendererRequirements.warnings.length > 0
+        ? `
+          <div style="font-size: 11px; color: #ddd; margin-top: 8px; border: 1px solid rgba(155,92,255,.25); padding: 6px; border-radius: 4px;">
+            Renderer requirements: ${escapeHtml(rep.rendererRequirements.features.join(", ") || "Basic HTML")}
+            <br>Recommended mode: ${escapeHtml(rep.rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : rep.rendererRequirements.recommendedMode)}
+          </div>
+        `
+        : "";
 
       validationReportHtml = `
         <div class="ltracker-validation-report" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.01); margin-top: 15px;">
@@ -3175,6 +3212,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           ${placeholdersHtml}
           ${unusedHtml}
           ${warningGroupsHtml}
+          ${rendererReqHtml}
 
           <div class="ltracker-grid ltracker-details" style="margin-top: 8px; font-size: 11px;">
             ${renderRow("Est. Pack Size", `${rep.estimatedPackSizeChars.toLocaleString()} chars`)}
@@ -3719,11 +3757,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               </select>
             </label>
             <label class="ltracker-field">
-              Display mode
-              <select data-message-display-setting="displayMode">
-                <option value="inline_full"${selected(state.settings.messageDisplay.displayMode === "inline_full")}>Inline full</option>
-                <option value="inline_button_popover"${selected(state.settings.messageDisplay.displayMode === "inline_button_popover")}>Button popover</option>
-                <option value="drawer_history_only"${selected(state.settings.messageDisplay.displayMode === "drawer_history_only")}>Drawer history only</option>
+              Display surface
+              <select data-message-display-setting="displaySurface">
+                <option value="inline_contained"${selected(state.settings.messageDisplay.displaySurface === "inline_contained")}>Inline contained</option>
+                <option value="inline_wide"${selected(state.settings.messageDisplay.displaySurface === "inline_wide")}>Inline wide</option>
+                <option value="anchored_popover"${selected(state.settings.messageDisplay.displaySurface === "anchored_popover")}>Anchored popover</option>
+                <option value="fullscreen_reader"${selected(state.settings.messageDisplay.displaySurface === "fullscreen_reader")}>Fullscreen reader</option>
+                <option value="drawer_only"${selected(state.settings.messageDisplay.displaySurface === "drawer_only")}>Drawer history only</option>
               </select>
             </label>
             <label class="ltracker-field">
@@ -3828,7 +3868,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
                 <option value="contained"${selected(state.settings.expandedWidth.expandedWidthMode === "contained")}>Contained</option>
                 <option value="wide"${selected(state.settings.expandedWidth.expandedWidthMode === "wide")}>Wide</option>
                 <option value="full_mobile"${selected(state.settings.expandedWidth.expandedWidthMode === "full_mobile")}>Full mobile</option>
-                <option value="popover"${selected(state.settings.expandedWidth.expandedWidthMode === "popover")}>Popover</option>
               </select>
             </label>
             <label class="ltracker-field">

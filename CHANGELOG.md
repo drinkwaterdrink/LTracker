@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.19 - Trusted Renderer Freedom / Power Template Compatibility
+- Added Trusted Mode support for scoped style blocks.
+- Added Safe Mode behavior that removes full style blocks without leaking raw CSS text.
+- Added Trusted Mode support for safe inline SVG icons and ornaments.
+- Added Handlebars-style conditionals and basic helpers.
+- Improved template validation to understand data-prefixed paths, loop context, and `this`.
+- Added renderer requirement detection during preset import review.
+- Kept JavaScript disabled outside future explicit Dev Mode.
+- Fixed stale README 0.17 references and connection default documentation.
+- Preserved existing 0.18 popover, fullscreen reader, and selected tracker profile behavior.
+
 ## 0.18 - Display Width, Popover, Fullscreen Reader, and Connection UX Simplification
 - Simplified Tracker Connection UI, hiding raw technical modes behind an Advanced Parameters details panel and exposing human-readable Tracker Profile selection.
 - Configured default connection mode to use the selected profile with raw parameters (`selected_connection_raw`), with automatic fallback to active roleplay connection (`active_quiet`).
