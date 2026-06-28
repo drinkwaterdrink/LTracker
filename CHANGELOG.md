@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.2 - Preset-Locked Snapshot Rendering
+- Added preset render locks to generated tracker snapshots.
+- Captured preset identity, template hash, and template copy at generation time.
+- Updated message/history rendering to use each snapshot's original preset/template instead of the currently active preset.
+- Preserved old snapshot rendering through installed preset id/name-version fallback.
+- Added fallback warnings when the original preset is unavailable.
+- Preserved zTracker-like behavior: changing active preset affects future generations, not existing trackers.
+- Preserved 0.19.1 display surface behavior and 0.19 trusted renderer behavior.
+
 ## 0.19.1 - Display Surface Repair / Chat-Width Inline Fix
 - Made `messageDisplay.displaySurface` authoritative over legacy display mode during settings repair.
 - Added distinct DOM signatures and classes for inline contained, inline wide, popover shell, fullscreen shell, and drawer-only surfaces.

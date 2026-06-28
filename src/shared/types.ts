@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.19.1";
+export const EXTENSION_VERSION = "0.19.2";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -131,6 +131,27 @@ export interface TrackerPresetExportEnvelope {
   preset: TrackerSchemaPreset;
 }
 
+export interface TrackerPresetRenderLock {
+  presetId: string | null;
+  presetName: string | null;
+  presetVersion: string | null;
+  schemaTitle: string | null;
+  schemaHash: string | null;
+  htmlTemplateHash: string | null;
+  promptInstructionsHash: string | null;
+  htmlTemplate?: string | null;
+  jsonSchema?: Record<string, unknown> | null;
+  promptInstructions?: string | null;
+  capturedAt: string;
+}
+
+export type RenderPresetSource =
+  | "snapshot_render_lock"
+  | "installed_preset_id"
+  | "installed_preset_name_version"
+  | "active_preset_legacy_fallback"
+  | "json_fallback_original_preset_missing";
+
 export interface TrackerSnapshot {
   schemaVersion: typeof STORAGE_SCHEMA_VERSION;
   extensionVersion: string;
@@ -148,6 +169,7 @@ export interface TrackerSnapshot {
   generationStatus?: "completed" | "cancelled" | "failed" | null;
   editedAt?: string | null;
   editedByUser?: boolean;
+  presetRenderLock?: TrackerPresetRenderLock | null;
   data: Record<string, unknown>;
 }
 
@@ -506,6 +528,12 @@ export interface LTrackerDiagnostics {
   lastRenderAt: string | null;
   lastRenderPresetId: string | null;
   lastRenderPresetName: string | null;
+  lastRenderPresetSource: RenderPresetSource | null;
+  lastRenderLockedPresetId: string | null;
+  lastRenderLockedPresetName: string | null;
+  lastRenderLockedPresetVersion: string | null;
+  lastRenderPresetMismatchDetected: boolean | null;
+  lastRenderPresetFallbackReason: string | null;
   lastRenderSnapshotCreatedAt: string | null;
   lastRenderSource: LTrackerRenderSource | null;
   lastRenderStatus: LTrackerRenderStatus | null;
@@ -713,6 +741,13 @@ export interface RenderedMessageTracker {
   presetId: string | null;
   presetName: string | null;
   presetVersion: string | null;
+  renderPresetSource: RenderPresetSource | null;
+  renderPresetWarning: string | null;
+  renderPresetFallbackReason: string | null;
+  renderPresetMismatchDetected: boolean;
+  renderLockedPresetId: string | null;
+  renderLockedPresetName: string | null;
+  renderLockedPresetVersion: string | null;
   snapshotCreatedAt: string | null;
   attachedAt: string | null;
   generationStartedAt: string | null;

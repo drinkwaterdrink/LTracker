@@ -31,6 +31,10 @@ import {
   cleanTrackerGenerationParameters,
 } from "../src/shared/generationRequest";
 import {
+  capturePresetRenderLock,
+  resolvePresetForSnapshot,
+} from "../src/shared/presetRenderLock";
+import {
   applyPromptInjection,
   countTrackerBlocks,
   formatTrackerInjectionBlock,
@@ -1516,6 +1520,257 @@ test("renderHtmlTemplate returns fallback when no template exists", () => {
   assert.match(result.textFallback, /Scene:/);
 });
 
+function presetFixture(id: string, name: string, version: string, htmlTemplate: string): TrackerSchemaPreset {
+  return {
+    ...DEFAULT_TRACKER_PRESET,
+    id,
+    name,
+    version,
+    htmlTemplate,
+    jsonSchema: {
+      type: "object",
+      title: `${name} Schema`,
+      properties: {
+        field: { type: "string" },
+      },
+    },
+    promptInstructions: `Extract ${name}.`,
+    origin: "user_created",
+  };
+}
+
+function attachedSnapshotWithPreset(
+  preset: TrackerSchemaPreset,
+  data: Record<string, unknown>,
+  lock = true,
+): MessageAttachedSnapshot {
+  const createdAt = "2026-06-28T15:00:00.000Z";
+  const snapshot: TrackerSnapshot = {
+    schemaVersion: 1,
+    extensionVersion: EXTENSION_VERSION,
+    chatId: "chat-lock",
+    createdAt,
+    messageCount: 1,
+    sourceMessageIds: ["m-lock"],
+    presetId: preset.id,
+    presetName: preset.name,
+    presetVersion: preset.version,
+    generationStartedAt: createdAt,
+    generationCompletedAt: createdAt,
+    generationDurationMs: 10,
+    generationCancelledAt: null,
+    generationStatus: "completed",
+    presetRenderLock: lock ? capturePresetRenderLock(preset, createdAt) : null,
+    data,
+  };
+  return {
+    schemaVersion: 1,
+    extensionVersion: EXTENSION_VERSION,
+    chatId: "chat-lock",
+    messageId: "m-lock",
+    messageIndex: 1,
+    swipeKey: DEFAULT_SWIPE_KEY,
+    swipeIndex: null,
+    swipeId: null,
+    swipeContentHash: null,
+    swipeKeySource: "unknown",
+    presetId: preset.id,
+    presetName: preset.name,
+    presetVersion: preset.version,
+    trigger: {
+      kind: "widget",
+      requestId: "lock-test",
+      sourceMessageId: "m-lock",
+      sourceMessageIndex: 1,
+      swipeKey: DEFAULT_SWIPE_KEY,
+      swipeIndex: null,
+      swipeId: null,
+      swipeContentHash: null,
+      swipeKeySource: "unknown",
+    },
+    snapshot,
+    attachedAt: createdAt,
+  };
+}
+
+test("preset render locks capture identity hashes and template copies", () => {
+  const preset = presetFixture("preset-a", "Preset A", "1.0", "<section>LOCK {{field}}</section>");
+  const lock = capturePresetRenderLock(preset, "2026-06-28T15:00:00.000Z");
+  assert.equal(lock.presetId, "preset-a");
+  assert.equal(lock.presetName, "Preset A");
+  assert.equal(lock.presetVersion, "1.0");
+  assert.equal(lock.schemaTitle, "Preset A Schema");
+  assert.match(lock.schemaHash ?? "", /^fnv1a32-/);
+  assert.match(lock.htmlTemplateHash ?? "", /^fnv1a32-/);
+  assert.match(lock.promptInstructionsHash ?? "", /^fnv1a32-/);
+  assert.equal(lock.htmlTemplate, "<section>LOCK {{field}}</section>");
+  assert.deepEqual(lock.jsonSchema?.properties, { field: { type: "string" } });
+});
+
+test("existing snapshot renders with locked template after active preset changes", () => {
+  const presetA = presetFixture("preset-a", "Preset A", "1.0", "<section>LOCK {{field}}</section>");
+  const presetB = presetFixture("preset-b", "Preset B", "2.0", "<section>ACTIVE {{field}}</section>");
+  const attached = attachedSnapshotWithPreset(presetA, { field: "old" }, true);
+  const rendered = renderMessageTracker({
+    messageId: "m-lock",
+    messageIndex: 1,
+    attachedSnapshot: attached,
+    latestChatSnapshot: null,
+    preset: presetB,
+    presets: [presetB],
+    activePreset: presetB,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "html_template",
+    },
+  });
+  assert.match(rendered.html, /LOCK old/);
+  assert.doesNotMatch(rendered.html, /ACTIVE old/);
+  assert.equal(rendered.renderPresetSource, "snapshot_render_lock");
+  assert.equal(rendered.renderLockedPresetId, "preset-a");
+  assert.equal(rendered.renderPresetMismatchDetected, true);
+});
+
+test("legacy snapshot resolves by installed preset id then name/version before fallback", () => {
+  const presetA = presetFixture("preset-a", "Preset A", "1.0", "<section>ID {{field}}</section>");
+  const presetB = presetFixture("preset-b", "Preset B", "2.0", "<section>ACTIVE {{field}}</section>");
+  const byId = attachedSnapshotWithPreset(presetA, { field: "legacy" }, false);
+  const renderedById = renderMessageTracker({
+    messageId: "m-lock",
+    messageIndex: 1,
+    attachedSnapshot: byId,
+    latestChatSnapshot: null,
+    preset: presetB,
+    presets: [presetA, presetB],
+    activePreset: presetB,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "html_template",
+    },
+  });
+  assert.match(renderedById.html, /ID legacy/);
+  assert.equal(renderedById.renderPresetSource, "installed_preset_id");
+
+  const byName = attachedSnapshotWithPreset(presetA, { field: "named" }, false);
+  byName.presetId = "missing-id";
+  byName.snapshot.presetId = "missing-id";
+  const renderedByName = renderMessageTracker({
+    messageId: "m-lock",
+    messageIndex: 1,
+    attachedSnapshot: byName,
+    latestChatSnapshot: null,
+    preset: presetB,
+    presets: [presetA, presetB],
+    activePreset: presetB,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "html_template",
+    },
+  });
+  assert.match(renderedByName.html, /ID named/);
+  assert.equal(renderedByName.renderPresetSource, "installed_preset_name_version");
+});
+
+test("legacy snapshot with unavailable original preset uses JSON fallback warning", () => {
+  const presetA = presetFixture("preset-a", "Preset A", "1.0", "<section>ID {{field}}</section>");
+  const presetB = presetFixture("preset-b", "Preset B", "2.0", "<section>ACTIVE {{field}}</section>");
+  const attached = attachedSnapshotWithPreset(presetA, { field: "orphan" }, false);
+  const rendered = renderMessageTracker({
+    messageId: "m-lock",
+    messageIndex: 1,
+    attachedSnapshot: attached,
+    latestChatSnapshot: null,
+    preset: presetB,
+    presets: [presetB],
+    activePreset: presetB,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "html_template",
+    },
+  });
+  assert.doesNotMatch(rendered.html, /ACTIVE orphan/);
+  assert.match(rendered.textFallback, /"field": "orphan"/);
+  assert.equal(rendered.renderPresetSource, "json_fallback_original_preset_missing");
+  assert.match(rendered.warnings.join("\n"), /Original preset unavailable/);
+});
+
+test("legacy snapshot without preset identity can use active preset fallback", () => {
+  const presetB = presetFixture("preset-b", "Preset B", "2.0", "<section>ACTIVE {{field}}</section>");
+  const attached = attachedSnapshotWithPreset(presetB, { field: "legacy" }, false);
+  attached.presetId = null;
+  attached.presetName = null;
+  attached.presetVersion = null;
+  attached.snapshot.presetId = null;
+  attached.snapshot.presetName = null;
+  attached.snapshot.presetVersion = null;
+  const resolution = resolvePresetForSnapshot(attached, [presetB], presetB);
+  assert.equal(resolution.source, "active_preset_legacy_fallback");
+  const rendered = renderMessageTracker({
+    messageId: "m-lock",
+    messageIndex: 1,
+    attachedSnapshot: attached,
+    latestChatSnapshot: null,
+    preset: presetB,
+    presets: [presetB],
+    activePreset: presetB,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "html_template",
+    },
+  });
+  assert.match(rendered.html, /ACTIVE legacy/);
+  assert.match(rendered.warnings.join("\n"), /Legacy snapshot has no preset lock/);
+});
+
+test("drawer history renders each snapshot with its own preset lock", () => {
+  const presetA = presetFixture("preset-a", "Preset A", "1.0", "<section>A {{field}}</section>");
+  const presetB = presetFixture("preset-b", "Preset B", "2.0", "<section>B {{field}}</section>");
+  const snapA = attachedSnapshotWithPreset(presetA, { field: "one" }, true);
+  const snapB = attachedSnapshotWithPreset(presetB, { field: "two" }, true);
+  snapB.messageId = "m-lock-2";
+  snapB.snapshot.sourceMessageIds = ["m-lock-2"];
+  const history = buildMessageTrackerHistory({
+    index: [
+      {
+        messageId: "m-lock",
+        messageIndex: 1,
+        swipeKey: DEFAULT_SWIPE_KEY,
+        swipeIndex: null,
+        swipeId: null,
+        swipeContentHash: null,
+        swipeKeySource: "unknown",
+        createdAt: snapA.attachedAt,
+        presetId: presetA.id,
+        presetName: presetA.name,
+        storageKey: "a",
+      },
+      {
+        messageId: "m-lock-2",
+        messageIndex: 2,
+        swipeKey: DEFAULT_SWIPE_KEY,
+        swipeIndex: null,
+        swipeId: null,
+        swipeContentHash: null,
+        swipeKeySource: "unknown",
+        createdAt: snapB.attachedAt,
+        presetId: presetB.id,
+        presetName: presetB.name,
+        storageKey: "b",
+      },
+    ],
+    snapshots: [snapA, snapB],
+    latestChatSnapshot: null,
+    preset: presetB,
+    presets: [presetA, presetB],
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      renderMode: "html_template",
+    },
+  });
+  assert.match(history[0].rendered.html, /A one/);
+  assert.match(history[1].rendered.html, /B two/);
+});
+
 test("renderMessageTracker selects HTML template rendering when available", () => {
   const rendered = renderMessageTracker({
     messageId: "m2",
@@ -2406,8 +2661,9 @@ test("import review surfaces renderer requirements and never offers Dev Mode aut
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
-    "Version: `0.19.1`",
-    "Current release: `0.19.1 Display Surface Repair / Chat-Width Inline Fix`",
+    "Version: `0.19.2`",
+    "Current release: `0.19.2 Preset-Locked Snapshot Rendering`",
+    "Preset-Locked Snapshot Rendering",
     "Settings Reference",
     "Tracker Connection Settings",
     "Recommended setup",
@@ -2758,23 +3014,26 @@ test("v0.17 Preset Pack Import/Export + Validation + Snapshot tests", () => {
   assert.equal((snapshot.list as unknown[]).length, 2); // array size constraint
 });
 
-test("v0.19.1 Release Completion Verification", () => {
+test("v0.19.2 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.19.1");
-  assert.equal(spindleJson.version, "0.19.1");
-  assert.equal(EXTENSION_VERSION, "0.19.1");
+  assert.equal(packageJson.version, "0.19.2");
+  assert.equal(spindleJson.version, "0.19.2");
+  assert.equal(EXTENSION_VERSION, "0.19.2");
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.19\.2 - Preset-Locked Snapshot Rendering/);
   assert.match(changelog, /## 0\.19\.1 - Display Surface Repair \/ Chat-Width Inline Fix/);
   assert.match(changelog, /## 0\.19 - Trusted Renderer Freedom \/ Power Template Compatibility/);
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.19\.1`/);
-  assert.match(readme, /Current release: `0\.19\.1 Display Surface Repair \/ Chat-Width Inline Fix`/);
+  assert.match(readme, /Version: `0\.19\.2`/);
+  assert.match(readme, /Current release: `0\.19\.2 Preset-Locked Snapshot Rendering`/);
+  assert.match(readme, /Preset-Locked Snapshot Rendering/);
+  assert.match(readme, /Changing the active preset later does not repaint old trackers/);
   assert.match(readme, /Which display mode should I use\?/);
   assert.match(readme, /Display surface: Inline wide/);
   assert.doesNotMatch(readme, /Current release: `0\.17/);
@@ -2788,8 +3047,17 @@ test("v0.19.1 Release Completion Verification", () => {
   const backendSource = readFileSync("src/backend.ts", "utf8");
   assert.match(backendSource, /presetImportMaxChars/);
   assert.match(backendSource, /JSON\.parse\(importText\)/);
+  assert.match(backendSource, /capturePresetRenderLock\(presetState\.activePreset, completedAt\)/);
+  assert.match(backendSource, /\.\.\.existing\.snapshot[\s\S]*data: parsed[\s\S]*editedByUser: true/);
 
-  // 6. Malformed and nested tag parsing checks
+  // 6. Frontend/backend render paths resolve per snapshot instead of blindly using the active preset.
+  assert.match(frontendSource, /presets: state\.presets/);
+  assert.match(frontendSource, /renderPresetSourceLabel/);
+  assert.match(frontendSource, /Rebind to current preset \(future\)/);
+  assert.match(backendSource, /buildMessageTrackerHistory\(\{[\s\S]*presets: presetState\.presets/);
+  assert.match(backendSource, /resolvePresetForSnapshot\(snapshotSource, presetState\.presets, presetState\.activePreset\)/);
+
+  // 7. Malformed and nested tag parsing checks
   const normalTags = findLTrackerTags("<ltracker>content</ltracker>");
   assert.equal(normalTags.length, 1);
   assert.equal(normalTags[0].content, "content");

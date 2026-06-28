@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.19.1`
+Version: `0.19.2`
 
-Current release: `0.19.1 Display Surface Repair / Chat-Width Inline Fix`
+Current release: `0.19.2 Preset-Locked Snapshot Rendering`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -15,9 +15,18 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Optional normal prompt injection through `spindle.registerInterceptor()`, disabled by default.
 - Selected tracker profile workflow with tracker-specific advanced parameters.
 - Display surfaces for inline contained, inline wide, anchored popover, fullscreen reader, and drawer-only use.
+- Preset-locked snapshot rendering so existing trackers keep the preset/template they were generated with.
 - Trusted renderer support for scoped CSS, safe inline styles, safe inline SVG, details/summary drawers, conditionals, loops, and helpers.
 - Safe Mode for shared or unknown presets, with full style-block removal so raw CSS is not shown as text.
 - Preset pack import/export, import review, validation reports, sample snapshot rendering, and Ultra Tracker Mode budgets.
+
+## Preset-Locked Snapshot Rendering
+
+The active preset controls future tracker generations. Once a tracker snapshot is generated, LTracker stores a render lock with the preset identity, template hash, and template copy used for that snapshot. Changing the active preset later does not repaint old trackers through the new template.
+
+Regenerating a message/swipe tracker intentionally creates a new snapshot with the currently active preset and captures a new render lock. Edited tracker JSON preserves the original render lock.
+
+Legacy snapshots from before `0.19.2` resolve by installed preset id first, then installed preset name/version. If no original preset can be found, LTracker falls back safely and warns rather than silently pretending the active preset is the original. Preset packs remain separate: `.ltracker.json` files export presets, not generated tracker snapshots or render locks.
 
 ## Tracker Connection Settings
 

@@ -4,6 +4,10 @@ import {
   renderHtmlTemplate,
 } from "./htmlTemplateRenderer";
 import { formatSnapshotForInjection, truncateSafe } from "./snapshotFormat";
+import {
+  resolvePresetForSnapshot,
+  type SnapshotPresetResolution,
+} from "./presetRenderLock";
 import type {
   LTrackerInjectionSettings,
   LTrackerMessageDisplaySettings,
@@ -72,7 +76,10 @@ interface RenderMessageTrackerInput {
   messageIndex: number | null;
   attachedSnapshot: MessageAttachedSnapshot | null;
   latestChatSnapshot: TrackerSnapshot | null;
-  preset: TrackerSchemaPreset;
+  preset: TrackerSchemaPreset | null;
+  presets?: TrackerSchemaPreset[];
+  activePreset?: TrackerSchemaPreset;
+  presetResolution?: SnapshotPresetResolution | null;
   settings: LTrackerMessageDisplaySettings;
   swipeIdentity?: SwipeTrackerIdentity | null;
   isRegenerating?: boolean;
@@ -85,6 +92,7 @@ interface BuildMessageTrackerHistoryInput {
   snapshots: Array<MessageAttachedSnapshot | null>;
   latestChatSnapshot: TrackerSnapshot | null;
   preset: TrackerSchemaPreset;
+  presets?: TrackerSchemaPreset[];
   settings: LTrackerMessageDisplaySettings;
   activeWidgetJobs?: Record<string, { jobId: string; startedAt: string | null }>;
   selectedSwipeIdentities?: Record<string, SwipeTrackerIdentity>;
@@ -154,6 +162,18 @@ function generationMetadataFromSnapshot(
     isRegenerating: input.isRegenerating === true,
     activeJobId: input.activeJobId ?? null,
   };
+}
+
+function renderPresetResolution(input: RenderMessageTrackerInput, snapshot: TrackerSnapshot | null): SnapshotPresetResolution | null {
+  if (!snapshot) return null;
+  if (input.presetResolution) return input.presetResolution;
+  const activePreset = input.activePreset ?? input.preset ?? input.presets?.[0] ?? null;
+  if (!activePreset) return null;
+  const installedPresets = input.presets ?? (input.preset ? [input.preset] : [activePreset]);
+  const source = input.settings.source === "latest_chat_snapshot"
+    ? snapshot
+    : input.attachedSnapshot ?? snapshot;
+  return resolvePresetForSnapshot(source, installedPresets, activePreset);
 }
 
 function injectionSettings(settings: LTrackerMessageDisplaySettings): LTrackerInjectionSettings {
@@ -518,6 +538,17 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
   const metadata = metadataFromSnapshot(input.attachedSnapshot, snapshot);
   const generationMetadata = generationMetadataFromSnapshot(snapshot, input);
   const identity = identityFromInput(input);
+  const presetResolution = renderPresetResolution(input, snapshot);
+  const renderPreset = presetResolution?.preset ?? (snapshot ? null : input.preset);
+  const renderPresetFields = {
+    renderPresetSource: presetResolution?.source ?? null,
+    renderPresetWarning: presetResolution?.warning ?? null,
+    renderPresetFallbackReason: presetResolution?.fallbackReason ?? null,
+    renderPresetMismatchDetected: presetResolution?.mismatchDetected ?? false,
+    renderLockedPresetId: presetResolution?.lockedPresetId ?? null,
+    renderLockedPresetName: presetResolution?.lockedPresetName ?? null,
+    renderLockedPresetVersion: presetResolution?.lockedPresetVersion ?? null,
+  };
   if (!snapshot) {
     const textFallback = "No tracker snapshot is available for this message.";
     const base = {
@@ -529,6 +560,7 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
       swipeContentHash: identity.swipeContentHash,
       swipeKeySource: identity.swipeKeySource,
       ...metadata,
+      ...renderPresetFields,
       ...generationMetadata,
       renderMode: input.settings.renderMode,
       html: "",
@@ -548,7 +580,7 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
     };
   }
 
-  const warnings: string[] = [];
+  const warnings: string[] = presetResolution?.warning ? [presetResolution.warning] : [];
   const errors: string[] = [];
   const json = displayJson(input.messageId, input.messageIndex, input.attachedSnapshot, snapshot, input.settings);
   let html = "";
@@ -561,13 +593,16 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
     const source = input.attachedSnapshot ?? snapshot;
     textFallback = formatSnapshotForInjection(source, injectionSettings(input.settings));
     html = `<pre class="ltr-pre">${escapeHtml(textFallback)}</pre>`;
+  } else if (!renderPreset) {
+    textFallback = json;
+    html = `<pre class="ltr-pre">${escapeHtml(json)}</pre>`;
   } else {
-    const template = input.preset.htmlTemplate ?? "";
+    const template = renderPreset.htmlTemplate ?? "";
     const result = renderHtmlTemplate({
       template,
       snapshotData: snapshot.data,
-      presetId: input.preset.id,
-      presetName: input.preset.name,
+      presetId: renderPreset.id,
+      presetName: renderPreset.name,
     }, {
       missingValuePlaceholder: "",
       maxRenderedChars: input.settings.maxRenderedChars,
@@ -591,6 +626,7 @@ export function renderMessageTracker(input: RenderMessageTrackerInput): Rendered
     swipeContentHash: identity.swipeContentHash,
     swipeKeySource: identity.swipeKeySource,
     ...metadata,
+    ...renderPresetFields,
     ...generationMetadata,
     renderMode: input.settings.renderMode,
     html,
@@ -630,6 +666,8 @@ export function buildMessageTrackerHistory(input: BuildMessageTrackerHistoryInpu
         attachedSnapshot: snapshot,
         latestChatSnapshot: input.latestChatSnapshot,
         preset: input.preset,
+        presets: input.presets ?? [input.preset],
+        activePreset: input.preset,
         settings: input.settings,
         swipeIdentity: {
           chatId: snapshot?.chatId ?? input.latestChatSnapshot?.chatId ?? "",

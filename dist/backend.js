@@ -228,7 +228,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.19.1";
+var EXTENSION_VERSION = "0.19.2";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1183,9 +1183,181 @@ function renderHtmlTemplate(input, options = {}) {
   }
 }
 
+// src/shared/presetRenderLock.ts
+var MAX_LOCKED_SCHEMA_CHARS = 5e4;
+var MAX_LOCKED_PROMPT_CHARS = 4e4;
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringOrNull(value) {
+  return typeof value === "string" ? value : null;
+}
+function schemaTitle(schema) {
+  return typeof schema.title === "string" && schema.title.trim() ? schema.title : null;
+}
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  const record = value;
+  const parts = Object.keys(record).sort((left, right) => left.localeCompare(right)).filter((key) => record[key] !== void 0).map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`);
+  return `{${parts.join(",")}}`;
+}
+function hashText(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return `fnv1a32-${hash.toString(16).padStart(8, "0")}`;
+}
+function copyJsonSchema(schema) {
+  const text = stableStringify(schema);
+  if (text.length > MAX_LOCKED_SCHEMA_CHARS) return null;
+  try {
+    return JSON.parse(JSON.stringify(schema));
+  } catch {
+    return null;
+  }
+}
+function capturePresetRenderLock(preset, capturedAt) {
+  const schemaText = stableStringify(preset.jsonSchema);
+  const htmlTemplate = preset.htmlTemplate ?? "";
+  const promptInstructions = preset.promptInstructions ?? "";
+  return {
+    presetId: preset.id,
+    presetName: preset.name,
+    presetVersion: preset.version,
+    schemaTitle: schemaTitle(preset.jsonSchema),
+    schemaHash: hashText(schemaText),
+    htmlTemplateHash: hashText(htmlTemplate),
+    promptInstructionsHash: hashText(promptInstructions),
+    htmlTemplate,
+    jsonSchema: copyJsonSchema(preset.jsonSchema),
+    promptInstructions: promptInstructions.length <= MAX_LOCKED_PROMPT_CHARS ? promptInstructions : null,
+    capturedAt
+  };
+}
+function normalizePresetRenderLock(value) {
+  if (!isRecord3(value)) return null;
+  const schema = isRecord3(value.jsonSchema) ? value.jsonSchema : null;
+  return {
+    presetId: stringOrNull(value.presetId),
+    presetName: stringOrNull(value.presetName),
+    presetVersion: stringOrNull(value.presetVersion),
+    schemaTitle: stringOrNull(value.schemaTitle),
+    schemaHash: stringOrNull(value.schemaHash),
+    htmlTemplateHash: stringOrNull(value.htmlTemplateHash),
+    promptInstructionsHash: stringOrNull(value.promptInstructionsHash),
+    htmlTemplate: stringOrNull(value.htmlTemplate),
+    jsonSchema: schema,
+    promptInstructions: stringOrNull(value.promptInstructions),
+    capturedAt: typeof value.capturedAt === "string" ? value.capturedAt : (/* @__PURE__ */ new Date(0)).toISOString()
+  };
+}
+function snapshotFromSource(source) {
+  if (!source) return null;
+  if ("snapshot" in source) return source.snapshot;
+  return source;
+}
+function attachedMetadata(source) {
+  const snapshot = snapshotFromSource(source);
+  return {
+    presetId: ("snapshot" in (source ?? {}) ? source.presetId : null) ?? snapshot?.presetId ?? null,
+    presetName: ("snapshot" in (source ?? {}) ? source.presetName : null) ?? snapshot?.presetName ?? null,
+    presetVersion: ("snapshot" in (source ?? {}) ? source.presetVersion : null) ?? snapshot?.presetVersion ?? null
+  };
+}
+function renderOnlyPresetFromLock(lock) {
+  return {
+    id: lock.presetId ?? "snapshot-render-lock",
+    name: lock.presetName ?? "Snapshot locked preset",
+    description: "Render-only preset captured with a generated tracker snapshot.",
+    version: lock.presetVersion ?? "unknown",
+    createdAt: lock.capturedAt,
+    updatedAt: lock.capturedAt,
+    jsonSchema: lock.jsonSchema ?? {},
+    promptInstructions: lock.promptInstructions ?? "",
+    htmlTemplate: lock.htmlTemplate ?? "",
+    origin: "user_imported"
+  };
+}
+function findByNameVersion(presets, presetName2, presetVersion) {
+  if (!presetName2 || !presetVersion) return null;
+  return presets.find((preset) => preset.name === presetName2 && preset.version === presetVersion) ?? null;
+}
+function resolvePresetForSnapshot(source, installedPresets, activePreset) {
+  const snapshot = snapshotFromSource(source);
+  const metadata = attachedMetadata(source);
+  const lock = normalizePresetRenderLock(snapshot?.presetRenderLock);
+  const snapshotHasMetadata = Boolean(metadata.presetId || metadata.presetName || metadata.presetVersion);
+  const activeMismatch = (id) => Boolean(id && id !== activePreset.id);
+  if (lock?.htmlTemplate !== null && lock?.htmlTemplate !== void 0) {
+    return {
+      preset: renderOnlyPresetFromLock(lock),
+      source: "snapshot_render_lock",
+      warning: null,
+      fallbackReason: null,
+      mismatchDetected: activeMismatch(lock.presetId),
+      lockedPresetId: lock.presetId,
+      lockedPresetName: lock.presetName,
+      lockedPresetVersion: lock.presetVersion
+    };
+  }
+  if (metadata.presetId) {
+    const byId = installedPresets.find((preset) => preset.id === metadata.presetId) ?? null;
+    if (byId) {
+      return {
+        preset: byId,
+        source: "installed_preset_id",
+        warning: "Legacy snapshot rendered with installed preset id match.",
+        fallbackReason: null,
+        mismatchDetected: activeMismatch(byId.id),
+        lockedPresetId: metadata.presetId,
+        lockedPresetName: metadata.presetName,
+        lockedPresetVersion: metadata.presetVersion
+      };
+    }
+  }
+  const byNameVersion = findByNameVersion(installedPresets, metadata.presetName, metadata.presetVersion);
+  if (byNameVersion) {
+    return {
+      preset: byNameVersion,
+      source: "installed_preset_name_version",
+      warning: "Legacy snapshot rendered with installed preset name/version match.",
+      fallbackReason: null,
+      mismatchDetected: activeMismatch(byNameVersion.id),
+      lockedPresetId: metadata.presetId,
+      lockedPresetName: metadata.presetName,
+      lockedPresetVersion: metadata.presetVersion
+    };
+  }
+  if (!snapshotHasMetadata) {
+    return {
+      preset: activePreset,
+      source: "active_preset_legacy_fallback",
+      warning: "Legacy snapshot has no preset lock; rendered with active preset fallback.",
+      fallbackReason: "Legacy snapshot has no preset identity or render lock.",
+      mismatchDetected: false,
+      lockedPresetId: null,
+      lockedPresetName: null,
+      lockedPresetVersion: null
+    };
+  }
+  return {
+    preset: null,
+    source: "json_fallback_original_preset_missing",
+    warning: "Original preset unavailable. Showing JSON fallback.",
+    fallbackReason: "Original preset metadata did not match an installed preset and no snapshot render lock was present.",
+    mismatchDetected: true,
+    lockedPresetId: metadata.presetId,
+    lockedPresetName: metadata.presetName,
+    lockedPresetVersion: metadata.presetVersion
+  };
+}
+
 // src/shared/swipeIdentity.ts
 var DEFAULT_SWIPE_KEY = "default";
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null;
 }
 function normalizeKeyPart(value) {
@@ -1203,7 +1375,7 @@ function stringOrNumberAsString(value) {
 function officialSwipeId(message) {
   const direct = stringOrNumberAsString(message.swipeId) ?? stringOrNumberAsString(message.activeSwipeId) ?? stringOrNumberAsString(message.selectedSwipeId);
   if (direct) return direct;
-  if (!isRecord3(message.extra)) return null;
+  if (!isRecord4(message.extra)) return null;
   return stringOrNumberAsString(message.extra.swipeId) ?? stringOrNumberAsString(message.extra.activeSwipeId) ?? stringOrNumberAsString(message.extra.selectedSwipeId) ?? stringOrNumberAsString(message.extra.swipe_id);
 }
 function hashSwipeContent(value) {
@@ -1317,6 +1489,15 @@ function generationMetadataFromSnapshot(snapshot, input) {
     isRegenerating: input.isRegenerating === true,
     activeJobId: input.activeJobId ?? null
   };
+}
+function renderPresetResolution(input, snapshot) {
+  if (!snapshot) return null;
+  if (input.presetResolution) return input.presetResolution;
+  const activePreset = input.activePreset ?? input.preset ?? input.presets?.[0] ?? null;
+  if (!activePreset) return null;
+  const installedPresets = input.presets ?? (input.preset ? [input.preset] : [activePreset]);
+  const source = input.settings.source === "latest_chat_snapshot" ? snapshot : input.attachedSnapshot ?? snapshot;
+  return resolvePresetForSnapshot(source, installedPresets, activePreset);
 }
 function injectionSettings(settings) {
   return {
@@ -1594,6 +1775,17 @@ function renderMessageTracker(input) {
   const metadata = metadataFromSnapshot(input.attachedSnapshot, snapshot);
   const generationMetadata = generationMetadataFromSnapshot(snapshot, input);
   const identity = identityFromInput(input);
+  const presetResolution = renderPresetResolution(input, snapshot);
+  const renderPreset = presetResolution?.preset ?? (snapshot ? null : input.preset);
+  const renderPresetFields = {
+    renderPresetSource: presetResolution?.source ?? null,
+    renderPresetWarning: presetResolution?.warning ?? null,
+    renderPresetFallbackReason: presetResolution?.fallbackReason ?? null,
+    renderPresetMismatchDetected: presetResolution?.mismatchDetected ?? false,
+    renderLockedPresetId: presetResolution?.lockedPresetId ?? null,
+    renderLockedPresetName: presetResolution?.lockedPresetName ?? null,
+    renderLockedPresetVersion: presetResolution?.lockedPresetVersion ?? null
+  };
   if (!snapshot) {
     const textFallback2 = "No tracker snapshot is available for this message.";
     const base2 = {
@@ -1605,6 +1797,7 @@ function renderMessageTracker(input) {
       swipeContentHash: identity.swipeContentHash,
       swipeKeySource: identity.swipeKeySource,
       ...metadata,
+      ...renderPresetFields,
       ...generationMetadata,
       renderMode: input.settings.renderMode,
       html: "",
@@ -1623,7 +1816,7 @@ function renderMessageTracker(input) {
       domHtml: buildDomHtml(renderable2, input.settings)
     };
   }
-  const warnings = [];
+  const warnings = presetResolution?.warning ? [presetResolution.warning] : [];
   const errors = [];
   const json = displayJson(input.messageId, input.messageIndex, input.attachedSnapshot, snapshot, input.settings);
   let html = "";
@@ -1635,13 +1828,16 @@ function renderMessageTracker(input) {
     const source = input.attachedSnapshot ?? snapshot;
     textFallback = formatSnapshotForInjection(source, injectionSettings(input.settings));
     html = `<pre class="ltr-pre">${escapeHtml(textFallback)}</pre>`;
+  } else if (!renderPreset) {
+    textFallback = json;
+    html = `<pre class="ltr-pre">${escapeHtml(json)}</pre>`;
   } else {
-    const template = input.preset.htmlTemplate ?? "";
+    const template = renderPreset.htmlTemplate ?? "";
     const result = renderHtmlTemplate({
       template,
       snapshotData: snapshot.data,
-      presetId: input.preset.id,
-      presetName: input.preset.name
+      presetId: renderPreset.id,
+      presetName: renderPreset.name
     }, {
       missingValuePlaceholder: "",
       maxRenderedChars: input.settings.maxRenderedChars,
@@ -1664,6 +1860,7 @@ function renderMessageTracker(input) {
     swipeContentHash: identity.swipeContentHash,
     swipeKeySource: identity.swipeKeySource,
     ...metadata,
+    ...renderPresetFields,
     ...generationMetadata,
     renderMode: input.settings.renderMode,
     html,
@@ -1700,6 +1897,8 @@ function buildMessageTrackerHistory(input) {
         attachedSnapshot: snapshot,
         latestChatSnapshot: input.latestChatSnapshot,
         preset: input.preset,
+        presets: input.presets ?? [input.preset],
+        activePreset: input.preset,
         settings: input.settings,
         swipeIdentity: {
           chatId: snapshot?.chatId ?? input.latestChatSnapshot?.chatId ?? "",
@@ -1880,10 +2079,10 @@ function evaluateStableSwipeContent(first, second, settings) {
 }
 
 // src/shared/messageSnapshotIndex.ts
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function stringOrNull(value) {
+function stringOrNull2(value) {
   return typeof value === "string" ? value : null;
 }
 function messageIndexOrNull(value) {
@@ -1893,7 +2092,7 @@ function swipeKeyOrDefault(value) {
   return typeof value === "string" && value.trim() ? value : DEFAULT_SWIPE_KEY;
 }
 function repairIndexEntry(value) {
-  if (!isRecord4(value) || typeof value.messageId !== "string" || typeof value.storageKey !== "string") {
+  if (!isRecord5(value) || typeof value.messageId !== "string" || typeof value.storageKey !== "string") {
     return null;
   }
   return {
@@ -1901,12 +2100,12 @@ function repairIndexEntry(value) {
     messageIndex: messageIndexOrNull(value.messageIndex),
     swipeKey: swipeKeyOrDefault(value.swipeKey),
     swipeIndex: messageIndexOrNull(value.swipeIndex),
-    swipeId: stringOrNull(value.swipeId),
-    swipeContentHash: stringOrNull(value.swipeContentHash),
+    swipeId: stringOrNull2(value.swipeId),
+    swipeContentHash: stringOrNull2(value.swipeContentHash),
     swipeKeySource: swipeKeySourceOrUnknown(value.swipeKeySource),
     createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
-    presetId: stringOrNull(value.presetId),
-    presetName: stringOrNull(value.presetName),
+    presetId: stringOrNull2(value.presetId),
+    presetName: stringOrNull2(value.presetName),
     storageKey: value.storageKey
   };
 }
@@ -1961,7 +2160,8 @@ function normalizeTrackerSnapshotPresetMetadata(snapshot) {
     generationCancelledAt: snapshot.generationCancelledAt ?? null,
     generationStatus: snapshot.generationStatus === "completed" || snapshot.generationStatus === "cancelled" || snapshot.generationStatus === "failed" ? snapshot.generationStatus : null,
     editedAt: snapshot.editedAt ?? null,
-    editedByUser: snapshot.editedByUser === true
+    editedByUser: snapshot.editedByUser === true,
+    presetRenderLock: normalizePresetRenderLock(snapshot.presetRenderLock)
   };
 }
 function normalizeMessageAttachedSnapshotPresetMetadata(snapshot) {
@@ -2124,7 +2324,7 @@ var DEFAULT_TRACKER_PRESET = {
     notes: "Start with active quiet mode, low temperature, and inherited reasoning. Use a selected raw tracker profile after confirming it returns strict JSON."
   }
 };
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringValue(value, fallback = "") {
@@ -2147,7 +2347,7 @@ function boundedNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 function repairCapabilities(value) {
-  if (!isRecord5(value)) return void 0;
+  if (!isRecord6(value)) return void 0;
   const result = {};
   if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
   if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
@@ -2155,7 +2355,7 @@ function repairCapabilities(value) {
   return Object.keys(result).length > 0 ? result : void 0;
 }
 function repairRecommendedConnection(value) {
-  if (!isRecord5(value)) return void 0;
+  if (!isRecord6(value)) return void 0;
   const result = {};
   const mode = recommendedMode(value.mode);
   if (mode) result.mode = mode;
@@ -2163,7 +2363,7 @@ function repairRecommendedConnection(value) {
   if (temperature !== void 0) result.temperature = temperature;
   const maxTokens = boundedNumber(value.max_tokens, 256, 64e3);
   if (maxTokens !== void 0) result.max_tokens = Math.round(maxTokens);
-  const reasoning = isRecord5(value.reasoning) ? value.reasoning : null;
+  const reasoning = isRecord6(value.reasoning) ? value.reasoning : null;
   if (reasoning) {
     const source = recommendedReasoningSource(reasoning.source);
     const effort = typeof reasoning.effort === "string" ? reasoning.effort : void 0;
@@ -2192,13 +2392,13 @@ function createPresetId(name, existingIds) {
   return `${base}_${Date.now()}`;
 }
 function validateJsonSchema(value) {
-  if (!isRecord5(value)) {
+  if (!isRecord6(value)) {
     return { ok: false, error: "JSON Schema must be a JSON object." };
   }
   return { ok: true, error: null };
 }
 function validateTrackerPreset(value) {
-  if (!isRecord5(value)) return { ok: false, error: "Preset must be a JSON object." };
+  if (!isRecord6(value)) return { ok: false, error: "Preset must be a JSON object." };
   if (typeof value.id !== "string" || !sanitizePresetId(value.id)) {
     return { ok: false, error: "Preset id is required." };
   }
@@ -2219,13 +2419,13 @@ function validateTrackerPreset(value) {
   if ("htmlTemplate" in value && typeof value.htmlTemplate !== "string") {
     return { ok: false, error: "HTML template must be text." };
   }
-  if ("recommendedConnection" in value && value.recommendedConnection !== void 0 && !isRecord5(value.recommendedConnection)) {
+  if ("recommendedConnection" in value && value.recommendedConnection !== void 0 && !isRecord6(value.recommendedConnection)) {
     return { ok: false, error: "Recommended connection must be an object." };
   }
   return { ok: true, error: null };
 }
 function repairTrackerPreset(value) {
-  if (!isRecord5(value)) return null;
+  if (!isRecord6(value)) return null;
   const origin = validOrigin(value.origin) ? value.origin : null;
   if (!origin) return null;
   const preset = {
@@ -2235,7 +2435,7 @@ function repairTrackerPreset(value) {
     version: stringValue(value.version, "1.0"),
     createdAt: stringValue(value.createdAt, (/* @__PURE__ */ new Date()).toISOString()),
     updatedAt: stringValue(value.updatedAt, (/* @__PURE__ */ new Date()).toISOString()),
-    jsonSchema: isRecord5(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord6(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: stringValue(value.promptInstructions),
     origin
   };
@@ -2268,7 +2468,7 @@ function draftToPreset(draft, options) {
   return preset;
 }
 function importTrackerPresetEnvelope(value, existingIds, now) {
-  if (!isRecord5(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
+  if (!isRecord6(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
   if (value.kind !== PRESET_EXPORT_KIND) {
     return { ok: false, preset: null, error: "Import kind must be ltracker_schema_preset." };
   }
@@ -2316,7 +2516,7 @@ function estimatePresetStats(preset) {
 // src/shared/presetPack.ts
 var PRESET_PACK_KIND = "ltracker_preset_pack";
 var PRESET_PACK_FORMAT_VERSION = 1;
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringValue2(value, fallback = "") {
@@ -2333,10 +2533,10 @@ var SECRET_PATTERNS = [
   /credential/i
 ];
 function containsSecretKeys(obj, depth = 0) {
-  if (depth > 10 || !isRecord6(obj)) return false;
+  if (depth > 10 || !isRecord7(obj)) return false;
   for (const key of Object.keys(obj)) {
     if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) return true;
-    if (isRecord6(obj[key]) && containsSecretKeys(obj[key], depth + 1)) return true;
+    if (isRecord7(obj[key]) && containsSecretKeys(obj[key], depth + 1)) return true;
   }
   return false;
 }
@@ -2345,7 +2545,7 @@ function stripSecretKeys(obj, depth = 0) {
   const result = {};
   for (const [key, value] of Object.entries(obj)) {
     if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) continue;
-    if (isRecord6(value)) {
+    if (isRecord7(value)) {
       result[key] = stripSecretKeys(value, depth + 1);
     } else {
       result[key] = value;
@@ -2355,7 +2555,7 @@ function stripSecretKeys(obj, depth = 0) {
 }
 function exportPresetPack(preset, options) {
   const presetStats = estimatePresetStats(preset);
-  const schemaKeys = isRecord6(preset.jsonSchema) ? Object.keys(preset.jsonSchema) : [];
+  const schemaKeys = isRecord7(preset.jsonSchema) ? Object.keys(preset.jsonSchema) : [];
   const pack = {
     kind: PRESET_PACK_KIND,
     formatVersion: PRESET_PACK_FORMAT_VERSION,
@@ -2446,25 +2646,25 @@ function exportPresetPack(preset, options) {
     };
     pack.recommendedSettings = recommended;
   }
-  if (options?.exampleSnapshot && isRecord6(options.exampleSnapshot)) {
+  if (options?.exampleSnapshot && isRecord7(options.exampleSnapshot)) {
     pack.exampleSnapshot = options.exampleSnapshot;
   }
   return pack;
 }
 function validatePackRecommendedSettings(value) {
-  if (!isRecord6(value)) return null;
+  if (!isRecord7(value)) return null;
   const result = {};
-  if (isRecord6(value.connection)) result.connection = stripSecretKeys(value.connection);
-  if (isRecord6(value.memory)) result.memory = value.memory;
-  if (isRecord6(value.injection)) result.injection = value.injection;
-  if (isRecord6(value.renderer)) result.renderer = value.renderer;
-  if (isRecord6(value.messageDisplay)) result.messageDisplay = value.messageDisplay;
-  if (isRecord6(value.expandedWidth)) result.expandedWidth = value.expandedWidth;
-  if (isRecord6(value.budget)) result.budget = stripSecretKeys(value.budget);
+  if (isRecord7(value.connection)) result.connection = stripSecretKeys(value.connection);
+  if (isRecord7(value.memory)) result.memory = value.memory;
+  if (isRecord7(value.injection)) result.injection = value.injection;
+  if (isRecord7(value.renderer)) result.renderer = value.renderer;
+  if (isRecord7(value.messageDisplay)) result.messageDisplay = value.messageDisplay;
+  if (isRecord7(value.expandedWidth)) result.expandedWidth = value.expandedWidth;
+  if (isRecord7(value.budget)) result.budget = stripSecretKeys(value.budget);
   return Object.keys(result).length > 0 ? result : null;
 }
 function importPresetPack(value, existingIds, now) {
-  if (!isRecord6(value)) {
+  if (!isRecord7(value)) {
     return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import must be a JSON object.", warnings: [], packMeta: null };
   }
   if (value.kind === PRESET_PACK_KIND) {
@@ -2474,11 +2674,11 @@ function importPresetPack(value, existingIds, now) {
     if (containsSecretKeys(value)) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import rejected: pack contains potential secret/API key fields.", warnings: [], packMeta: null };
     }
-    const presetData = isRecord6(value.preset) ? value.preset : null;
+    const presetData = isRecord7(value.preset) ? value.preset : null;
     if (!presetData) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import preset data is missing or invalid.", warnings: [], packMeta: null };
     }
-    const compat = isRecord6(value.appCompatibility) ? value.appCompatibility : null;
+    const compat = isRecord7(value.appCompatibility) ? value.appCompatibility : null;
     const warnings = [];
     const existing = new Set(existingIds);
     const rawId = sanitizePresetId(stringValue2(presetData.id, stringValue2(presetData.name, "imported")));
@@ -2490,7 +2690,7 @@ function importPresetPack(value, existingIds, now) {
       version: stringValue2(presetData.version, "1.0"),
       createdAt: now,
       updatedAt: now,
-      jsonSchema: isRecord6(presetData.jsonSchema) ? presetData.jsonSchema : {},
+      jsonSchema: isRecord7(presetData.jsonSchema) ? presetData.jsonSchema : {},
       promptInstructions: stringValue2(presetData.promptInstructions),
       htmlTemplate: typeof presetData.htmlTemplate === "string" ? presetData.htmlTemplate : "",
       notes: typeof presetData.notes === "string" ? presetData.notes : "",
@@ -2509,7 +2709,7 @@ function importPresetPack(value, existingIds, now) {
       warnings.push("Imported preset has empty prompt instructions.");
     }
     const recommendedSettings = validatePackRecommendedSettings(value.recommendedSettings);
-    const exampleSnapshot = isRecord6(value.exampleSnapshot) ? value.exampleSnapshot : null;
+    const exampleSnapshot = isRecord7(value.exampleSnapshot) ? value.exampleSnapshot : null;
     const tags = Array.isArray(presetData.tags) ? presetData.tags.filter((t) => typeof t === "string") : [];
     const packMeta = {
       kind: PRESET_PACK_KIND,
@@ -2537,7 +2737,7 @@ function importPresetPack(value, existingIds, now) {
       packMeta: { kind: PRESET_EXPORT_KIND, formatVersion: PRESET_EXPORT_FORMAT_VERSION, exportedAt: null, minVersion: null, recommendedVersion: null, tags: [], author: null }
     };
   }
-  if (isRecord6(value) && isRecord6(value.jsonSchema) && typeof value.promptInstructions === "string") {
+  if (isRecord7(value) && isRecord7(value.jsonSchema) && typeof value.promptInstructions === "string") {
     const repaired = repairTrackerPreset({
       ...value,
       origin: value.origin ?? "user_imported",
@@ -2608,16 +2808,16 @@ function sampleValueForField(fieldName, depth) {
 }
 function generateSampleFromSchema(schema, depth = 0) {
   if (depth > SAMPLE_MAX_DEPTH) return "[max depth]";
-  if (!isRecord6(schema)) {
+  if (!isRecord7(schema)) {
     return "sample value";
   }
   const schemaType = stringValue2(schema.type, "object");
-  if (schemaType === "object" || schema.properties && isRecord6(schema.properties)) {
-    const properties = isRecord6(schema.properties) ? schema.properties : schema;
+  if (schemaType === "object" || schema.properties && isRecord7(schema.properties)) {
+    const properties = isRecord7(schema.properties) ? schema.properties : schema;
     const result = {};
     for (const [key, value] of Object.entries(properties)) {
       if (key === "type" || key === "properties" || key === "required" || key === "description" || key === "items" || key === "default" || key === "enum") continue;
-      if (isRecord6(value)) {
+      if (isRecord7(value)) {
         result[key] = generateSampleForProperty(key, value, depth + 1);
       } else {
         result[key] = sampleValueForField(key, depth);
@@ -2625,7 +2825,7 @@ function generateSampleFromSchema(schema, depth = 0) {
     }
     if (Object.keys(result).length === 0 && !schema.properties) {
       for (const key of Object.keys(schema)) {
-        if (isRecord6(schema[key])) {
+        if (isRecord7(schema[key])) {
           result[key] = generateSampleFromSchema(schema[key], depth + 1);
         } else {
           result[key] = sampleValueForField(key, depth);
@@ -2635,11 +2835,11 @@ function generateSampleFromSchema(schema, depth = 0) {
     return result;
   }
   if (schemaType === "array") {
-    const items = isRecord6(schema.items) ? schema.items : null;
+    const items = isRecord7(schema.items) ? schema.items : null;
     const sample = items ? generateSampleFromSchema(items, depth + 1) : "sample item";
     return Array.from(
       { length: Math.min(SAMPLE_MAX_ARRAY_LENGTH, 2) },
-      () => isRecord6(sample) ? { ...sample } : sample
+      () => isRecord7(sample) ? { ...sample } : sample
     );
   }
   if (schemaType === "string") {
@@ -2664,15 +2864,15 @@ function generateSampleForProperty(fieldName, prop, depth) {
   if (typeof prop.default !== "undefined") return prop.default;
   if (Array.isArray(prop.enum) && prop.enum.length > 0) return prop.enum[0];
   const propType = stringValue2(prop.type, "");
-  if (propType === "object" || isRecord6(prop.properties)) {
+  if (propType === "object" || isRecord7(prop.properties)) {
     return generateSampleFromSchema(prop, depth);
   }
   if (propType === "array") {
-    const items = isRecord6(prop.items) ? prop.items : null;
+    const items = isRecord7(prop.items) ? prop.items : null;
     const itemSample = items ? generateSampleFromSchema(items, depth + 1) : sampleValueForField(fieldName, depth);
     return Array.from(
       { length: SAMPLE_MAX_ARRAY_LENGTH },
-      () => isRecord6(itemSample) ? { ...itemSample } : itemSample
+      () => isRecord7(itemSample) ? { ...itemSample } : itemSample
     );
   }
   if (propType === "number" || propType === "integer") {
@@ -2687,13 +2887,13 @@ function generateSampleForProperty(fieldName, prop, depth) {
 }
 function generateSampleSnapshot(jsonSchema) {
   const result = generateSampleFromSchema(jsonSchema, 0);
-  return isRecord6(result) ? result : { data: result };
+  return isRecord7(result) ? result : { data: result };
 }
 var SCHEMA_META_KEYS = /* @__PURE__ */ new Set(["type", "properties", "required", "description", "items", "default", "enum"]);
 var TEMPLATE_HELPERS = /* @__PURE__ */ new Set(["default", "percent", "json", "eq", "gt", "lt", "and", "or", "not", "class", "lower", "upper", "truncate"]);
 function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
   if (depth > 5) return [];
-  if (isRecord6(schema.properties)) {
+  if (isRecord7(schema.properties)) {
     return collectSchemaFieldNames(schema.properties, prefix, depth);
   }
   const fields = [];
@@ -2702,14 +2902,14 @@ function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
     const fullKey = prefix ? `${prefix}.${key}` : key;
     fields.push(fullKey);
     const val = schema[key];
-    if (isRecord6(val)) {
-      if (isRecord6(val.properties)) {
+    if (isRecord7(val)) {
+      if (isRecord7(val.properties)) {
         fields.push(...collectSchemaFieldNames(val.properties, fullKey, depth + 1));
-      } else if (val.type === "array" && isRecord6(val.items)) {
+      } else if (val.type === "array" && isRecord7(val.items)) {
         const item = val.items;
-        if (isRecord6(item.properties)) {
+        if (isRecord7(item.properties)) {
           fields.push(...collectSchemaFieldNames(item.properties, fullKey, depth + 1));
-        } else if (isRecord6(item)) {
+        } else if (isRecord7(item)) {
           fields.push(...collectSchemaFieldNames(item, fullKey, depth + 1));
         }
       } else if (val.type !== "string" && val.type !== "number" && val.type !== "boolean" && val.type !== "integer" && val.type !== "array") {
@@ -2808,7 +3008,7 @@ function validatePresetReport(preset, options) {
   } else {
     entries.push({ severity: "error", category: "Metadata", message: "Preset version is missing." });
   }
-  if (isRecord6(preset.jsonSchema)) {
+  if (isRecord7(preset.jsonSchema)) {
     const rootKeys = Object.keys(preset.jsonSchema);
     if (rootKeys.length > 0) {
       entries.push({ severity: "pass", category: "Schema", message: `JSON schema has ${rootKeys.length} root field(s): ${rootKeys.slice(0, 10).join(", ")}${rootKeys.length > 10 ? "..." : ""}.` });
@@ -2825,7 +3025,7 @@ function validatePresetReport(preset, options) {
     const schemaObj = preset.jsonSchema;
     if (Array.isArray(schemaObj.required)) {
       const requiredFields = schemaObj.required.filter((f) => typeof f === "string");
-      const invalidRequired = requiredFields.filter((f) => !rootKeys.includes(f) && !(isRecord6(schemaObj.properties) && f in schemaObj.properties));
+      const invalidRequired = requiredFields.filter((f) => !rootKeys.includes(f) && !(isRecord7(schemaObj.properties) && f in schemaObj.properties));
       if (invalidRequired.length > 0) {
         entries.push({ severity: "warning", category: "Schema", message: `Required fields not in schema properties: ${invalidRequired.join(", ")}.` });
       }
@@ -2862,7 +3062,7 @@ function validatePresetReport(preset, options) {
     for (const warning of rendererRequirements.warnings) {
       entries.push({ severity: "warning", category: "Renderer", message: warning });
     }
-    if (isRecord6(preset.jsonSchema)) {
+    if (isRecord7(preset.jsonSchema)) {
       const schemaFields = collectSchemaFieldNames(preset.jsonSchema);
       const templatePlaceholders = findTemplatePlaceholders(template);
       for (const placeholder of templatePlaceholders) {
@@ -2884,7 +3084,7 @@ function validatePresetReport(preset, options) {
         entries.push({ severity: "info", category: "Template", message: `Schema fields not referenced in template: ${unusedSchemaFields.join(", ")}.` });
       }
     }
-    const sampleData = isRecord6(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema) : {};
+    const sampleData = isRecord7(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema) : {};
     sampleRenderResult = renderHtmlTemplate(
       { template, snapshotData: sampleData, presetId: presetId(preset), presetName: presetName(preset) },
       {
@@ -2929,7 +3129,7 @@ function validatePresetReport(preset, options) {
     version: preset.version ?? "1.0",
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    jsonSchema: isRecord6(preset.jsonSchema) ? preset.jsonSchema : {},
+    jsonSchema: isRecord7(preset.jsonSchema) ? preset.jsonSchema : {},
     promptInstructions: preset.promptInstructions ?? "",
     htmlTemplate: preset.htmlTemplate ?? "",
     notes: preset.notes ?? "",
@@ -3252,7 +3452,7 @@ var DEFAULT_SETTINGS = {
     cleanupDuplicatesOnly: true
   }
 };
-function isRecord7(value) {
+function isRecord8(value) {
   return typeof value === "object" && value !== null;
 }
 function clampNumber(value, fallback, min, max) {
@@ -3306,7 +3506,7 @@ function injectionPlacement(value) {
 function injectionRoleFallback(value) {
   return value === "system" || value === "assistant" ? value : DEFAULT_SETTINGS.injection.roleFallback;
 }
-function stringOrNull2(value) {
+function stringOrNull3(value) {
   return typeof value === "string" && value.trim() ? value : null;
 }
 function clampNullableNumber(source, key, fallback, min, max, integer = false) {
@@ -3337,20 +3537,20 @@ function thinkingDisplay(value) {
   return value === "auto" || value === "summarized" || value === "omitted" ? value : DEFAULT_SETTINGS.connection.reasoning.thinkingDisplay;
 }
 function repairSettings(value) {
-  const source = isRecord7(value) ? value : {};
-  const autoSource = isRecord7(source.auto) ? source.auto : {};
-  const historySource = isRecord7(source.history) ? source.history : {};
-  const storageMaintenanceSource = isRecord7(source.storageMaintenance) ? source.storageMaintenance : {};
-  const autoTimingSource = isRecord7(source.autoTiming) ? source.autoTiming : {};
-  const budgetSource = isRecord7(source.budget) ? source.budget : {};
-  const memorySourceObject = isRecord7(source.memory) ? source.memory : {};
-  const injectionSource = isRecord7(source.injection) ? source.injection : {};
-  const rendererSource = isRecord7(source.renderer) ? source.renderer : {};
-  const messageDisplaySource = isRecord7(source.messageDisplay) ? source.messageDisplay : {};
-  const expandedWidthSource = isRecord7(source.expandedWidth) ? source.expandedWidth : {};
-  const connectionSource = isRecord7(source.connection) ? source.connection : {};
-  const connectionParameterSource = isRecord7(connectionSource.parameters) ? connectionSource.parameters : {};
-  const connectionReasoningSource = isRecord7(connectionSource.reasoning) ? connectionSource.reasoning : {};
+  const source = isRecord8(value) ? value : {};
+  const autoSource = isRecord8(source.auto) ? source.auto : {};
+  const historySource = isRecord8(source.history) ? source.history : {};
+  const storageMaintenanceSource = isRecord8(source.storageMaintenance) ? source.storageMaintenance : {};
+  const autoTimingSource = isRecord8(source.autoTiming) ? source.autoTiming : {};
+  const budgetSource = isRecord8(source.budget) ? source.budget : {};
+  const memorySourceObject = isRecord8(source.memory) ? source.memory : {};
+  const injectionSource = isRecord8(source.injection) ? source.injection : {};
+  const rendererSource = isRecord8(source.renderer) ? source.renderer : {};
+  const messageDisplaySource = isRecord8(source.messageDisplay) ? source.messageDisplay : {};
+  const expandedWidthSource = isRecord8(source.expandedWidth) ? source.expandedWidth : {};
+  const connectionSource = isRecord8(source.connection) ? source.connection : {};
+  const connectionParameterSource = isRecord8(connectionSource.parameters) ? connectionSource.parameters : {};
+  const connectionReasoningSource = isRecord8(connectionSource.reasoning) ? connectionSource.reasoning : {};
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot" ? rendererSource.previewSource : DEFAULT_SETTINGS.renderer.previewSource;
   const messageDisplayPlacement = messageDisplaySource.placement === "bottom" || messageDisplaySource.placement === "top" ? messageDisplaySource.placement : DEFAULT_SETTINGS.messageDisplay.placement;
   const messageDisplaySourceSetting = messageDisplaySource.source === "latest_chat_snapshot" || messageDisplaySource.source === "message_attached_snapshot" ? messageDisplaySource.source : DEFAULT_SETTINGS.messageDisplay.source;
@@ -3609,8 +3809,8 @@ function repairSettings(value) {
     },
     connection: {
       mode: connectionMode(connectionSource.mode),
-      selectedConnectionId: stringOrNull2(connectionSource.selectedConnectionId),
-      selectedConnectionName: stringOrNull2(connectionSource.selectedConnectionName),
+      selectedConnectionId: stringOrNull3(connectionSource.selectedConnectionId),
+      selectedConnectionName: stringOrNull3(connectionSource.selectedConnectionName),
       refreshConnectionsOnDrawerOpen: typeof connectionSource.refreshConnectionsOnDrawerOpen === "boolean" ? connectionSource.refreshConnectionsOnDrawerOpen : DEFAULT_SETTINGS.connection.refreshConnectionsOnDrawerOpen,
       parameters: {
         temperature: clampNullableNumber(
@@ -4031,7 +4231,7 @@ var EMPTY_MEMORY = {
   truncated: false,
   skippedReason: null
 };
-function isRecord8(value) {
+function isRecord9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function primitiveToString3(value) {
@@ -4042,7 +4242,7 @@ function primitiveToString3(value) {
 }
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (isRecord8(value)) {
+  if (isRecord9(value)) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
@@ -4088,14 +4288,14 @@ function compactValue(value) {
     const rendered = value.map((item) => {
       const itemPrimitive = primitiveToString3(item);
       if (itemPrimitive) return itemPrimitive;
-      if (isRecord8(item)) {
+      if (isRecord9(item)) {
         return primitiveToString3(item.name) ?? primitiveToString3(item.title) ?? primitiveToString3(item.id);
       }
       return null;
     }).filter((item) => Boolean(item));
     return rendered.length > 0 ? rendered.slice(0, 5).join("; ") : null;
   }
-  if (isRecord8(value)) {
+  if (isRecord9(value)) {
     for (const key of ["location", "time", "date", "mood", "status", "name", "title", "summary"]) {
       const rendered = primitiveToString3(value[key]);
       if (rendered) return rendered;
@@ -4104,7 +4304,7 @@ function compactValue(value) {
   return null;
 }
 function compactPayloadSummary(payload) {
-  const scene = isRecord8(payload.scene) ? payload.scene : null;
+  const scene = isRecord9(payload.scene) ? payload.scene : null;
   const sceneParts = [
     scene ? compactValue(scene.location) : null,
     scene ? compactValue(scene.time) ?? compactValue(scene.date) : null,
@@ -4317,7 +4517,7 @@ function cleanRecentlyDeletedSnapshots() {
     }
   }
 }
-function isRecord9(value) {
+function isRecord10(value) {
   return typeof value === "object" && value !== null;
 }
 function nowIso() {
@@ -4346,7 +4546,7 @@ function diagnosticError(error, fallbackStage) {
   return result;
 }
 function isFrontendMessage(payload) {
-  if (!isRecord9(payload) || typeof payload.type !== "string") return false;
+  if (!isRecord10(payload) || typeof payload.type !== "string") return false;
   if (![
     "ready",
     "refresh_state",
@@ -4414,9 +4614,9 @@ function isFrontendMessage(payload) {
     "validate_preset_report",
     "generate_sample_snapshot"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
-  if (payload.type === "save_settings" && !isRecord9(payload.settings)) return false;
-  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord9(payload.settings)) return false;
-  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset", "validate_preset_report"].includes(payload.type) && !isRecord9(payload.preset)) return false;
+  if (payload.type === "save_settings" && !isRecord10(payload.settings)) return false;
+  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord10(payload.settings)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset", "validate_preset_report"].includes(payload.type) && !isRecord10(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (["import_preset", "import_preset_pack"].includes(payload.type) && typeof payload.importText !== "string") return false;
   if (payload.type === "regenerate_message_tracker" && (typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
@@ -4520,6 +4720,12 @@ function defaultDiagnostics(chatId) {
     lastRenderAt: null,
     lastRenderPresetId: null,
     lastRenderPresetName: null,
+    lastRenderPresetSource: null,
+    lastRenderLockedPresetId: null,
+    lastRenderLockedPresetName: null,
+    lastRenderLockedPresetVersion: null,
+    lastRenderPresetMismatchDetected: null,
+    lastRenderPresetFallbackReason: null,
     lastRenderSnapshotCreatedAt: null,
     lastRenderSource: null,
     lastRenderStatus: null,
@@ -4675,7 +4881,7 @@ function defaultDiagnostics(chatId) {
     lastPresetValidationEstimatedRenderedChars: null
   };
 }
-function stringOrNull3(value) {
+function stringOrNull4(value) {
   return typeof value === "string" ? value : null;
 }
 function numberOrNull2(value) {
@@ -4688,7 +4894,7 @@ function stringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 function recordOrNull(value) {
-  return isRecord9(value) && !Array.isArray(value) ? value : null;
+  return isRecord10(value) && !Array.isArray(value) ? value : null;
 }
 function sourceKindOrNull(value) {
   return value === "manual" || value === "auto" || value === "widget" ? value : null;
@@ -4707,6 +4913,9 @@ function renderSourceOrNull(value) {
 }
 function renderStatusOrNull(value) {
   return value === "rendered" || value === "fallback" || value === "no_template" || value === "no_snapshot" || value === "error" ? value : null;
+}
+function renderPresetSourceOrNull(value) {
+  return value === "snapshot_render_lock" || value === "installed_preset_id" || value === "installed_preset_name_version" || value === "active_preset_legacy_fallback" || value === "json_fallback_original_preset_missing" ? value : null;
 }
 function messageDisplayModeOrNull(value) {
   return value === "dom_injection" || value === "message_widget" || value === "drawer_history" || value === "disabled" ? value : null;
@@ -4738,11 +4947,11 @@ function connectionTestStatus(value) {
 function activeTrackerJobsOrEmpty(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => {
-    return isRecord9(item) && typeof item.jobId === "string" && typeof item.messageId === "string" && typeof item.swipeKey === "string" && typeof item.startedAt === "string";
+    return isRecord10(item) && typeof item.jobId === "string" && typeof item.messageId === "string" && typeof item.swipeKey === "string" && typeof item.startedAt === "string";
   });
 }
 function errorOrNull(value) {
-  if (!isRecord9(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
+  if (!isRecord10(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
   const error = {
     stage: value.stage,
     message: value.message,
@@ -4752,7 +4961,7 @@ function errorOrNull(value) {
   return error;
 }
 function cancellationOrNull(value) {
-  if (!isRecord9(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
+  if (!isRecord10(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
   return {
     jobId: value.jobId,
     requestId: value.requestId,
@@ -4762,80 +4971,86 @@ function cancellationOrNull(value) {
 }
 function repairDiagnostics(value, chatId) {
   const base = defaultDiagnostics(chatId);
-  if (!isRecord9(value)) return base;
+  if (!isRecord10(value)) return base;
   return {
     ...base,
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
-    lastJobId: stringOrNull3(value.lastJobId),
-    lastRequestId: stringOrNull3(value.lastRequestId),
+    lastJobId: stringOrNull4(value.lastJobId),
+    lastRequestId: stringOrNull4(value.lastRequestId),
     lastGenerationSource: sourceKindOrNull(value.lastGenerationSource),
-    lastGenerationStartedAt: stringOrNull3(value.lastGenerationStartedAt),
-    lastGenerationCompletedAt: stringOrNull3(value.lastGenerationCompletedAt),
+    lastGenerationStartedAt: stringOrNull4(value.lastGenerationStartedAt),
+    lastGenerationCompletedAt: stringOrNull4(value.lastGenerationCompletedAt),
     lastGenerationDurationMs: numberOrNull2(value.lastGenerationDurationMs),
     lastMessagesRead: typeof value.lastMessagesRead === "number" && Number.isFinite(value.lastMessagesRead) ? Math.max(0, Math.round(value.lastMessagesRead)) : 0,
     lastSourceMessageIds: stringArray(value.lastSourceMessageIds),
-    lastSourceMessageRange: stringOrNull3(value.lastSourceMessageRange),
-    lastRawOutput: stringOrNull3(value.lastRawOutput),
+    lastSourceMessageRange: stringOrNull4(value.lastSourceMessageRange),
+    lastRawOutput: stringOrNull4(value.lastRawOutput),
     lastParsedTracker: recordOrNull(value.lastParsedTracker),
-    lastPromptPreview: stringOrNull3(value.lastPromptPreview),
+    lastPromptPreview: stringOrNull4(value.lastPromptPreview),
     lastError: errorOrNull(value.lastError),
     lastCancellation: cancellationOrNull(value.lastCancellation),
     autoSubscriptionActive: autoSubscriptionsActive,
-    lastAutoEventAt: stringOrNull3(value.lastAutoEventAt),
+    lastAutoEventAt: stringOrNull4(value.lastAutoEventAt),
     lastAutoEventType: autoEventTypeOrNull(value.lastAutoEventType),
-    lastAutoSkippedReason: stringOrNull3(value.lastAutoSkippedReason),
-    lastAutoScheduledAt: stringOrNull3(value.lastAutoScheduledAt),
-    lastAutoTriggeredAt: stringOrNull3(value.lastAutoTriggeredAt),
-    lastAutoSourceMessageId: stringOrNull3(value.lastAutoSourceMessageId),
+    lastAutoSkippedReason: stringOrNull4(value.lastAutoSkippedReason),
+    lastAutoScheduledAt: stringOrNull4(value.lastAutoScheduledAt),
+    lastAutoTriggeredAt: stringOrNull4(value.lastAutoTriggeredAt),
+    lastAutoSourceMessageId: stringOrNull4(value.lastAutoSourceMessageId),
     lastAutoSourceMessageIndex: nonNegativeInteger(value.lastAutoSourceMessageIndex),
-    lastAutoGenerationId: stringOrNull3(value.lastAutoGenerationId),
-    lastAutoFinalizationState: stringOrNull3(value.lastAutoFinalizationState),
-    lastAutoWaitingMessageId: stringOrNull3(value.lastAutoWaitingMessageId),
-    lastAutoWaitingSwipeKey: stringOrNull3(value.lastAutoWaitingSwipeKey),
-    lastAutoFinalizedAt: stringOrNull3(value.lastAutoFinalizedAt),
-    lastAutoStableCheckAt: stringOrNull3(value.lastAutoStableCheckAt),
+    lastAutoGenerationId: stringOrNull4(value.lastAutoGenerationId),
+    lastAutoFinalizationState: stringOrNull4(value.lastAutoFinalizationState),
+    lastAutoWaitingMessageId: stringOrNull4(value.lastAutoWaitingMessageId),
+    lastAutoWaitingSwipeKey: stringOrNull4(value.lastAutoWaitingSwipeKey),
+    lastAutoFinalizedAt: stringOrNull4(value.lastAutoFinalizedAt),
+    lastAutoStableCheckAt: stringOrNull4(value.lastAutoStableCheckAt),
     lastAutoStableCheckPassed: typeof value.lastAutoStableCheckPassed === "boolean" ? value.lastAutoStableCheckPassed : null,
-    lastAutoContentStableHash: stringOrNull3(value.lastAutoContentStableHash),
-    lastAutoFinalizationSkippedReason: stringOrNull3(value.lastAutoFinalizationSkippedReason),
+    lastAutoContentStableHash: stringOrNull4(value.lastAutoContentStableHash),
+    lastAutoFinalizationSkippedReason: stringOrNull4(value.lastAutoFinalizationSkippedReason),
     pendingAutoFinalizationCount: typeof value.pendingAutoFinalizationCount === "number" && Number.isFinite(value.pendingAutoFinalizationCount) ? Math.max(0, Math.round(value.pendingAutoFinalizationCount)) : 0,
     lastSwipeChangeCancelledPendingJob: typeof value.lastSwipeChangeCancelledPendingJob === "boolean" ? value.lastSwipeChangeCancelledPendingJob : false,
-    latestAttachedMessageId: stringOrNull3(value.latestAttachedMessageId),
+    latestAttachedMessageId: stringOrNull4(value.latestAttachedMessageId),
     latestAttachedMessageIndex: nonNegativeInteger(value.latestAttachedMessageIndex),
-    latestAttachedSnapshotAt: stringOrNull3(value.latestAttachedSnapshotAt),
-    latestAttachedSnapshotStorageKey: stringOrNull3(value.latestAttachedSnapshotStorageKey),
+    latestAttachedSnapshotAt: stringOrNull4(value.latestAttachedSnapshotAt),
+    latestAttachedSnapshotStorageKey: stringOrNull4(value.latestAttachedSnapshotStorageKey),
     injectionEnabled: typeof value.injectionEnabled === "boolean" ? value.injectionEnabled : false,
-    lastInjectionAt: stringOrNull3(value.lastInjectionAt),
+    lastInjectionAt: stringOrNull4(value.lastInjectionAt),
     lastInjectionMode: injectionModeOrNull(value.lastInjectionMode),
     lastInjectionFormat: injectionFormatOrNull(value.lastInjectionFormat),
     lastInjectedChars: typeof value.lastInjectedChars === "number" && Number.isFinite(value.lastInjectedChars) ? Math.max(0, Math.round(value.lastInjectedChars)) : 0,
-    lastInjectionSkippedReason: stringOrNull3(value.lastInjectionSkippedReason),
-    lastInjectionSnapshotCreatedAt: stringOrNull3(value.lastInjectionSnapshotCreatedAt),
-    lastInjectionSourceMessageId: stringOrNull3(value.lastInjectionSourceMessageId),
+    lastInjectionSkippedReason: stringOrNull4(value.lastInjectionSkippedReason),
+    lastInjectionSnapshotCreatedAt: stringOrNull4(value.lastInjectionSnapshotCreatedAt),
+    lastInjectionSourceMessageId: stringOrNull4(value.lastInjectionSourceMessageId),
     lastMemoryEntryCount: typeof value.lastMemoryEntryCount === "number" && Number.isFinite(value.lastMemoryEntryCount) ? Math.max(0, Math.round(value.lastMemoryEntryCount)) : 0,
     lastMemoryChars: typeof value.lastMemoryChars === "number" && Number.isFinite(value.lastMemoryChars) ? Math.max(0, Math.round(value.lastMemoryChars)) : 0,
     lastMemoryTruncated: typeof value.lastMemoryTruncated === "boolean" ? value.lastMemoryTruncated : false,
-    lastMemorySourceSummary: stringOrNull3(value.lastMemorySourceSummary),
-    lastMemorySkippedReason: stringOrNull3(value.lastMemorySkippedReason),
+    lastMemorySourceSummary: stringOrNull4(value.lastMemorySourceSummary),
+    lastMemorySkippedReason: stringOrNull4(value.lastMemorySkippedReason),
     lastPromptIncludedMemory: typeof value.lastPromptIncludedMemory === "boolean" ? value.lastPromptIncludedMemory : false,
     interceptorRegistered,
-    lastInterceptorAt: stringOrNull3(value.lastInterceptorAt),
+    lastInterceptorAt: stringOrNull4(value.lastInterceptorAt),
     lastInterceptorInjectedCount: typeof value.lastInterceptorInjectedCount === "number" && Number.isFinite(value.lastInterceptorInjectedCount) ? Math.max(0, Math.round(value.lastInterceptorInjectedCount)) : 0,
     lastInterceptorInjectedChars: typeof value.lastInterceptorInjectedChars === "number" && Number.isFinite(value.lastInterceptorInjectedChars) ? Math.max(0, Math.round(value.lastInterceptorInjectedChars)) : 0,
     lastInterceptorStrippedCount: typeof value.lastInterceptorStrippedCount === "number" && Number.isFinite(value.lastInterceptorStrippedCount) ? Math.max(0, Math.round(value.lastInterceptorStrippedCount)) : 0,
-    lastInterceptorSkippedReason: stringOrNull3(value.lastInterceptorSkippedReason),
-    lastInterceptorError: stringOrNull3(value.lastInterceptorError),
+    lastInterceptorSkippedReason: stringOrNull4(value.lastInterceptorSkippedReason),
+    lastInterceptorError: stringOrNull4(value.lastInterceptorError),
     lastInterceptorPromptTrackerCountBefore: typeof value.lastInterceptorPromptTrackerCountBefore === "number" && Number.isFinite(value.lastInterceptorPromptTrackerCountBefore) ? Math.max(0, Math.round(value.lastInterceptorPromptTrackerCountBefore)) : 0,
     lastInterceptorPromptTrackerCountAfter: typeof value.lastInterceptorPromptTrackerCountAfter === "number" && Number.isFinite(value.lastInterceptorPromptTrackerCountAfter) ? Math.max(0, Math.round(value.lastInterceptorPromptTrackerCountAfter)) : 0,
-    selectedPresetId: stringOrNull3(value.selectedPresetId),
-    selectedPresetName: stringOrNull3(value.selectedPresetName),
-    lastPresetFallbackReason: stringOrNull3(value.lastPresetFallbackReason),
-    lastPresetValidationError: stringOrNull3(value.lastPresetValidationError),
-    lastPromptUsedPresetId: stringOrNull3(value.lastPromptUsedPresetId),
-    lastPromptUsedPresetName: stringOrNull3(value.lastPromptUsedPresetName),
-    lastRenderAt: stringOrNull3(value.lastRenderAt),
-    lastRenderPresetId: stringOrNull3(value.lastRenderPresetId),
-    lastRenderPresetName: stringOrNull3(value.lastRenderPresetName),
-    lastRenderSnapshotCreatedAt: stringOrNull3(value.lastRenderSnapshotCreatedAt),
+    selectedPresetId: stringOrNull4(value.selectedPresetId),
+    selectedPresetName: stringOrNull4(value.selectedPresetName),
+    lastPresetFallbackReason: stringOrNull4(value.lastPresetFallbackReason),
+    lastPresetValidationError: stringOrNull4(value.lastPresetValidationError),
+    lastPromptUsedPresetId: stringOrNull4(value.lastPromptUsedPresetId),
+    lastPromptUsedPresetName: stringOrNull4(value.lastPromptUsedPresetName),
+    lastRenderAt: stringOrNull4(value.lastRenderAt),
+    lastRenderPresetId: stringOrNull4(value.lastRenderPresetId),
+    lastRenderPresetName: stringOrNull4(value.lastRenderPresetName),
+    lastRenderPresetSource: renderPresetSourceOrNull(value.lastRenderPresetSource),
+    lastRenderLockedPresetId: stringOrNull4(value.lastRenderLockedPresetId),
+    lastRenderLockedPresetName: stringOrNull4(value.lastRenderLockedPresetName),
+    lastRenderLockedPresetVersion: stringOrNull4(value.lastRenderLockedPresetVersion),
+    lastRenderPresetMismatchDetected: typeof value.lastRenderPresetMismatchDetected === "boolean" ? value.lastRenderPresetMismatchDetected : null,
+    lastRenderPresetFallbackReason: stringOrNull4(value.lastRenderPresetFallbackReason),
+    lastRenderSnapshotCreatedAt: stringOrNull4(value.lastRenderSnapshotCreatedAt),
     lastRenderSource: renderSourceOrNull(value.lastRenderSource),
     lastRenderStatus: renderStatusOrNull(value.lastRenderStatus),
     lastRenderWarnings: stringArray(value.lastRenderWarnings),
@@ -4843,119 +5058,119 @@ function repairDiagnostics(value, chatId) {
     lastSanitizedHtmlChars: typeof value.lastSanitizedHtmlChars === "number" && Number.isFinite(value.lastSanitizedHtmlChars) ? Math.max(0, Math.round(value.lastSanitizedHtmlChars)) : 0,
     lastFallbackTextChars: typeof value.lastFallbackTextChars === "number" && Number.isFinite(value.lastFallbackTextChars) ? Math.max(0, Math.round(value.lastFallbackTextChars)) : 0,
     contextHandlerRegistered,
-    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? stringOrNull3(value.contextHandlerDisabledReason) : CONTEXT_HANDLER_DISABLED_REASON,
-    lastContextHandlerError: stringOrNull3(value.lastContextHandlerError),
+    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? stringOrNull4(value.contextHandlerDisabledReason) : CONTEXT_HANDLER_DISABLED_REASON,
+    lastContextHandlerError: stringOrNull4(value.lastContextHandlerError),
     messageDisplayEnabled: typeof value.messageDisplayEnabled === "boolean" ? value.messageDisplayEnabled : base.messageDisplayEnabled,
     messageDisplayMode: messageDisplayModeOrNull(value.messageDisplayMode),
     messageDisplayPlacement: messageDisplayPlacementOrNull(value.messageDisplayPlacement),
     messageDisplayHydratedCount: typeof value.messageDisplayHydratedCount === "number" && Number.isFinite(value.messageDisplayHydratedCount) ? Math.max(0, Math.round(value.messageDisplayHydratedCount)) : 0,
-    lastMessageDisplayHydratedAt: stringOrNull3(value.lastMessageDisplayHydratedAt),
-    lastMessageDisplayError: stringOrNull3(value.lastMessageDisplayError),
+    lastMessageDisplayHydratedAt: stringOrNull4(value.lastMessageDisplayHydratedAt),
+    lastMessageDisplayError: stringOrNull4(value.lastMessageDisplayError),
     selectedDisplaySurface: displaySurfaceOrNull(value.selectedDisplaySurface) ?? DEFAULT_SETTINGS.messageDisplay.displaySurface,
     resolvedDisplaySurface: displaySurfaceOrNull(value.resolvedDisplaySurface) ?? DEFAULT_SETTINGS.messageDisplay.displaySurface,
     displaySurfaceKind: displaySurfaceKindOrNull(value.displaySurfaceKind) ?? "inline",
     displaySurfaceMountStrategy: mountPointStrategy(value.displaySurfaceMountStrategy),
     displaySurfaceParentWidthConstrained: typeof value.displaySurfaceParentWidthConstrained === "boolean" ? value.displaySurfaceParentWidthConstrained : null,
-    displaySurfaceFallbackReason: stringOrNull3(value.displaySurfaceFallbackReason),
-    lastDisplaySurfaceRehydratedAt: stringOrNull3(value.lastDisplaySurfaceRehydratedAt),
-    lastDisplayPreviewAction: stringOrNull3(value.lastDisplayPreviewAction),
-    lastDisplayPreviewResult: stringOrNull3(value.lastDisplayPreviewResult),
-    lastDisplayPreviewReason: stringOrNull3(value.lastDisplayPreviewReason),
+    displaySurfaceFallbackReason: stringOrNull4(value.displaySurfaceFallbackReason),
+    lastDisplaySurfaceRehydratedAt: stringOrNull4(value.lastDisplaySurfaceRehydratedAt),
+    lastDisplayPreviewAction: stringOrNull4(value.lastDisplayPreviewAction),
+    lastDisplayPreviewResult: stringOrNull4(value.lastDisplayPreviewResult),
+    lastDisplayPreviewReason: stringOrNull4(value.lastDisplayPreviewReason),
     messageLocalUiSupported: typeof value.messageLocalUiSupported === "boolean" ? value.messageLocalUiSupported : MESSAGE_LOCAL_UI_SUPPORTED,
-    messageLocalUiFallbackReason: stringOrNull3(value.messageLocalUiFallbackReason) ?? MESSAGE_LOCAL_UI_FALLBACK_REASON,
+    messageLocalUiFallbackReason: stringOrNull4(value.messageLocalUiFallbackReason) ?? MESSAGE_LOCAL_UI_FALLBACK_REASON,
     messageSnapshotIndexCount: typeof value.messageSnapshotIndexCount === "number" && Number.isFinite(value.messageSnapshotIndexCount) ? Math.max(0, Math.round(value.messageSnapshotIndexCount)) : 0,
-    lastWidgetRegenerateMessageId: stringOrNull3(value.lastWidgetRegenerateMessageId),
-    lastWidgetRegenerateStartedAt: stringOrNull3(value.lastWidgetRegenerateStartedAt),
-    lastWidgetRegenerateCompletedAt: stringOrNull3(value.lastWidgetRegenerateCompletedAt),
+    lastWidgetRegenerateMessageId: stringOrNull4(value.lastWidgetRegenerateMessageId),
+    lastWidgetRegenerateStartedAt: stringOrNull4(value.lastWidgetRegenerateStartedAt),
+    lastWidgetRegenerateCompletedAt: stringOrNull4(value.lastWidgetRegenerateCompletedAt),
     lastWidgetRegenerateDurationMs: numberOrNull2(value.lastWidgetRegenerateDurationMs),
-    lastWidgetRegenerateCancelledAt: stringOrNull3(value.lastWidgetRegenerateCancelledAt),
-    lastWidgetRegenerateError: stringOrNull3(value.lastWidgetRegenerateError),
+    lastWidgetRegenerateCancelledAt: stringOrNull4(value.lastWidgetRegenerateCancelledAt),
+    lastWidgetRegenerateError: stringOrNull4(value.lastWidgetRegenerateError),
     activeWidgetRegenerationCount: typeof value.activeWidgetRegenerationCount === "number" && Number.isFinite(value.activeWidgetRegenerationCount) ? Math.max(0, Math.round(value.activeWidgetRegenerationCount)) : 0,
     messageWidgetPlacementResolved: messageWidgetPlacementResolved(value.messageWidgetPlacementResolved),
-    messageWidgetPlacementReason: stringOrNull3(value.messageWidgetPlacementReason) ?? MESSAGE_WIDGET_PLACEMENT_REASON,
+    messageWidgetPlacementReason: stringOrNull4(value.messageWidgetPlacementReason) ?? MESSAGE_WIDGET_PLACEMENT_REASON,
     messageDisplayRenderer: messageDisplayRenderer(value.messageDisplayRenderer),
-    lastDomInjectionAt: stringOrNull3(value.lastDomInjectionAt),
-    lastDomInjectionError: stringOrNull3(value.lastDomInjectionError),
-    lastUninjectAt: stringOrNull3(value.lastUninjectAt),
-    lastDeletedTrackerMessageId: stringOrNull3(value.lastDeletedTrackerMessageId),
-    lastDeletedTrackerSwipeKey: stringOrNull3(value.lastDeletedTrackerSwipeKey),
-    lastEditedTrackerMessageId: stringOrNull3(value.lastEditedTrackerMessageId),
-    lastEditedTrackerSwipeKey: stringOrNull3(value.lastEditedTrackerSwipeKey),
-    lastSwipeDetectedMessageId: stringOrNull3(value.lastSwipeDetectedMessageId),
-    lastSwipeKey: stringOrNull3(value.lastSwipeKey),
-    lastSwipeKeySource: stringOrNull3(value.lastSwipeKeySource),
+    lastDomInjectionAt: stringOrNull4(value.lastDomInjectionAt),
+    lastDomInjectionError: stringOrNull4(value.lastDomInjectionError),
+    lastUninjectAt: stringOrNull4(value.lastUninjectAt),
+    lastDeletedTrackerMessageId: stringOrNull4(value.lastDeletedTrackerMessageId),
+    lastDeletedTrackerSwipeKey: stringOrNull4(value.lastDeletedTrackerSwipeKey),
+    lastEditedTrackerMessageId: stringOrNull4(value.lastEditedTrackerMessageId),
+    lastEditedTrackerSwipeKey: stringOrNull4(value.lastEditedTrackerSwipeKey),
+    lastSwipeDetectedMessageId: stringOrNull4(value.lastSwipeDetectedMessageId),
+    lastSwipeKey: stringOrNull4(value.lastSwipeKey),
+    lastSwipeKeySource: stringOrNull4(value.lastSwipeKeySource),
     swipeTrackerIndexCount: typeof value.swipeTrackerIndexCount === "number" && Number.isFinite(value.swipeTrackerIndexCount) ? Math.max(0, Math.round(value.swipeTrackerIndexCount)) : 0,
     activeTrackerJobs: activeTrackerJobsOrEmpty(value.activeTrackerJobs),
     lastPlacementRequested: messageDisplayPlacementOrNull(value.lastPlacementRequested),
     lastPlacementResolved: messageDisplayPlacementOrNull(value.lastPlacementResolved),
-    lastPlacementRenderAttemptAt: stringOrNull3(value.lastPlacementRenderAttemptAt),
-    lastPlacementRenderResult: stringOrNull3(value.lastPlacementRenderResult),
-    lastPlacementError: stringOrNull3(value.lastPlacementError),
+    lastPlacementRenderAttemptAt: stringOrNull4(value.lastPlacementRenderAttemptAt),
+    lastPlacementRenderResult: stringOrNull4(value.lastPlacementRenderResult),
+    lastPlacementError: stringOrNull4(value.lastPlacementError),
     lastMountPointStrategy: mountPointStrategy(value.lastMountPointStrategy),
-    lastEmbeddedTagWriteAt: stringOrNull3(value.lastEmbeddedTagWriteAt),
-    lastEmbeddedTagWriteMessageId: stringOrNull3(value.lastEmbeddedTagWriteMessageId),
-    lastEmbeddedTagWriteSwipeKey: stringOrNull3(value.lastEmbeddedTagWriteSwipeKey),
-    lastEmbeddedTagError: stringOrNull3(value.lastEmbeddedTagError),
-    lastTagInterceptAt: stringOrNull3(value.lastTagInterceptAt),
-    lastTagInterceptMessageId: stringOrNull3(value.lastTagInterceptMessageId),
-    lastTagInterceptSwipeKey: stringOrNull3(value.lastTagInterceptSwipeKey),
-    lastTagInterceptError: stringOrNull3(value.lastTagInterceptError),
-    lastMessageControlRenderAt: stringOrNull3(value.lastMessageControlRenderAt),
-    lastMessageControlMessageId: stringOrNull3(value.lastMessageControlMessageId),
-    lastMessageControlSwipeKey: stringOrNull3(value.lastMessageControlSwipeKey),
-    lastMessageControlState: stringOrNull3(value.lastMessageControlState),
-    lastGenerateButtonMessageId: stringOrNull3(value.lastGenerateButtonMessageId),
-    lastGenerateButtonClickedAt: stringOrNull3(value.lastGenerateButtonClickedAt),
+    lastEmbeddedTagWriteAt: stringOrNull4(value.lastEmbeddedTagWriteAt),
+    lastEmbeddedTagWriteMessageId: stringOrNull4(value.lastEmbeddedTagWriteMessageId),
+    lastEmbeddedTagWriteSwipeKey: stringOrNull4(value.lastEmbeddedTagWriteSwipeKey),
+    lastEmbeddedTagError: stringOrNull4(value.lastEmbeddedTagError),
+    lastTagInterceptAt: stringOrNull4(value.lastTagInterceptAt),
+    lastTagInterceptMessageId: stringOrNull4(value.lastTagInterceptMessageId),
+    lastTagInterceptSwipeKey: stringOrNull4(value.lastTagInterceptSwipeKey),
+    lastTagInterceptError: stringOrNull4(value.lastTagInterceptError),
+    lastMessageControlRenderAt: stringOrNull4(value.lastMessageControlRenderAt),
+    lastMessageControlMessageId: stringOrNull4(value.lastMessageControlMessageId),
+    lastMessageControlSwipeKey: stringOrNull4(value.lastMessageControlSwipeKey),
+    lastMessageControlState: stringOrNull4(value.lastMessageControlState),
+    lastGenerateButtonMessageId: stringOrNull4(value.lastGenerateButtonMessageId),
+    lastGenerateButtonClickedAt: stringOrNull4(value.lastGenerateButtonClickedAt),
     lastInlineActionClicked: inlineActionOrNull(value.lastInlineActionClicked),
-    lastInlineActionAt: stringOrNull3(value.lastInlineActionAt),
-    lastInlineActionError: stringOrNull3(value.lastInlineActionError),
+    lastInlineActionAt: stringOrNull4(value.lastInlineActionAt),
+    lastInlineActionError: stringOrNull4(value.lastInlineActionError),
     nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
     nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
     connectionMode: typeof value.connectionMode === "string" ? value.connectionMode : base.connectionMode,
-    selectedConnectionId: stringOrNull3(value.selectedConnectionId),
-    selectedConnectionName: stringOrNull3(value.selectedConnectionName),
+    selectedConnectionId: stringOrNull4(value.selectedConnectionId),
+    selectedConnectionName: stringOrNull4(value.selectedConnectionName),
     selectedConnectionAvailable: typeof value.selectedConnectionAvailable === "boolean" ? value.selectedConnectionAvailable : base.selectedConnectionAvailable,
     connectionListCount: typeof value.connectionListCount === "number" && Number.isFinite(value.connectionListCount) ? Math.max(0, Math.round(value.connectionListCount)) : 0,
     connectionProfileSelected: typeof value.connectionProfileSelected === "boolean" ? value.connectionProfileSelected : base.connectionProfileSelected,
-    effectiveTrackerConnectionMode: stringOrNull3(value.effectiveTrackerConnectionMode),
-    effectiveTrackerConnectionReason: stringOrNull3(value.effectiveTrackerConnectionReason),
-    lastSelectedConnectionFallbackReason: stringOrNull3(value.lastSelectedConnectionFallbackReason),
-    lastTrackerProfileMissingAt: stringOrNull3(value.lastTrackerProfileMissingAt),
-    lastConnectionRefreshAt: stringOrNull3(value.lastConnectionRefreshAt),
-    lastConnectionRefreshError: stringOrNull3(value.lastConnectionRefreshError),
-    lastGenerationConnectionModeUsed: stringOrNull3(value.lastGenerationConnectionModeUsed),
-    lastGenerationConnectionIdUsed: stringOrNull3(value.lastGenerationConnectionIdUsed),
-    lastGenerationConnectionNameUsed: stringOrNull3(value.lastGenerationConnectionNameUsed),
-    lastGenerationConnectionFallbackReason: stringOrNull3(value.lastGenerationConnectionFallbackReason),
+    effectiveTrackerConnectionMode: stringOrNull4(value.effectiveTrackerConnectionMode),
+    effectiveTrackerConnectionReason: stringOrNull4(value.effectiveTrackerConnectionReason),
+    lastSelectedConnectionFallbackReason: stringOrNull4(value.lastSelectedConnectionFallbackReason),
+    lastTrackerProfileMissingAt: stringOrNull4(value.lastTrackerProfileMissingAt),
+    lastConnectionRefreshAt: stringOrNull4(value.lastConnectionRefreshAt),
+    lastConnectionRefreshError: stringOrNull4(value.lastConnectionRefreshError),
+    lastGenerationConnectionModeUsed: stringOrNull4(value.lastGenerationConnectionModeUsed),
+    lastGenerationConnectionIdUsed: stringOrNull4(value.lastGenerationConnectionIdUsed),
+    lastGenerationConnectionNameUsed: stringOrNull4(value.lastGenerationConnectionNameUsed),
+    lastGenerationConnectionFallbackReason: stringOrNull4(value.lastGenerationConnectionFallbackReason),
     lastGenerationParametersUsed: recordOrNull(value.lastGenerationParametersUsed),
     lastReasoningOverrideUsed: recordOrNull(value.lastReasoningOverrideUsed),
-    lastConnectionTestAt: stringOrNull3(value.lastConnectionTestAt),
+    lastConnectionTestAt: stringOrNull4(value.lastConnectionTestAt),
     lastConnectionTestStatus: connectionTestStatus(value.lastConnectionTestStatus),
     lastConnectionTestDurationMs: numberOrNull2(value.lastConnectionTestDurationMs),
-    lastConnectionTestError: stringOrNull3(value.lastConnectionTestError),
-    lastConnectionTestOutputPreview: stringOrNull3(value.lastConnectionTestOutputPreview),
-    lastConnectionTestFinishReason: stringOrNull3(value.lastConnectionTestFinishReason),
+    lastConnectionTestError: stringOrNull4(value.lastConnectionTestError),
+    lastConnectionTestOutputPreview: stringOrNull4(value.lastConnectionTestOutputPreview),
+    lastConnectionTestFinishReason: stringOrNull4(value.lastConnectionTestFinishReason),
     lastConnectionTestUsage: recordOrNull(value.lastConnectionTestUsage),
-    drawerActiveSection: stringOrNull3(value.drawerActiveSection),
-    lastDrawerRefreshAt: stringOrNull3(value.lastDrawerRefreshAt),
+    drawerActiveSection: stringOrNull4(value.drawerActiveSection),
+    lastDrawerRefreshAt: stringOrNull4(value.lastDrawerRefreshAt),
     lastHistoryGroupedCount: typeof value.lastHistoryGroupedCount === "number" && Number.isFinite(value.lastHistoryGroupedCount) ? Math.max(0, Math.round(value.lastHistoryGroupedCount)) : 0,
     lastHistoryDuplicateCount: typeof value.lastHistoryDuplicateCount === "number" && Number.isFinite(value.lastHistoryDuplicateCount) ? Math.max(0, Math.round(value.lastHistoryDuplicateCount)) : 0,
-    lastHistoryCleanupAt: stringOrNull3(value.lastHistoryCleanupAt),
-    expandedWidthModeResolved: stringOrNull3(value.expandedWidthModeResolved),
+    lastHistoryCleanupAt: stringOrNull4(value.lastHistoryCleanupAt),
+    expandedWidthModeResolved: stringOrNull4(value.expandedWidthModeResolved),
     lastExpandedTrackerWidthPx: numberOrNull2(value.lastExpandedTrackerWidthPx),
     lastDisplaySurface: displaySurfaceOrNull(value.lastDisplaySurface),
-    lastPopoverOpenedAt: stringOrNull3(value.lastPopoverOpenedAt),
-    lastPopoverMessageId: stringOrNull3(value.lastPopoverMessageId),
-    lastPopoverSwipeKey: stringOrNull3(value.lastPopoverSwipeKey),
+    lastPopoverOpenedAt: stringOrNull4(value.lastPopoverOpenedAt),
+    lastPopoverMessageId: stringOrNull4(value.lastPopoverMessageId),
+    lastPopoverSwipeKey: stringOrNull4(value.lastPopoverSwipeKey),
     lastPopoverWidthPx: numberOrNull2(value.lastPopoverWidthPx),
     lastPopoverHeightPx: numberOrNull2(value.lastPopoverHeightPx),
-    lastReaderOpenedAt: stringOrNull3(value.lastReaderOpenedAt),
-    lastReaderMessageId: stringOrNull3(value.lastReaderMessageId),
-    lastReaderSwipeKey: stringOrNull3(value.lastReaderSwipeKey),
+    lastReaderOpenedAt: stringOrNull4(value.lastReaderOpenedAt),
+    lastReaderMessageId: stringOrNull4(value.lastReaderMessageId),
+    lastReaderSwipeKey: stringOrNull4(value.lastReaderSwipeKey),
     lastResolvedViewportWidth: numberOrNull2(value.lastResolvedViewportWidth),
     lastResolvedViewportHeight: numberOrNull2(value.lastResolvedViewportHeight),
-    lastWidthModeResolved: stringOrNull3(value.lastWidthModeResolved),
-    lastWidthConstraintReason: stringOrNull3(value.lastWidthConstraintReason),
+    lastWidthModeResolved: stringOrNull4(value.lastWidthModeResolved),
+    lastWidthConstraintReason: stringOrNull4(value.lastWidthConstraintReason),
     lastWidthOverflowDetected: typeof value.lastWidthOverflowDetected === "boolean" ? value.lastWidthOverflowDetected : null,
     templateTrustMode: value.templateTrustMode === "safe" || value.templateTrustMode === "trusted" || value.templateTrustMode === "dev" ? value.templateTrustMode : base.templateTrustMode,
     ultraModeEnabled: typeof value.ultraModeEnabled === "boolean" ? value.ultraModeEnabled : base.ultraModeEnabled,
@@ -4967,23 +5182,23 @@ function repairDiagnostics(value, chatId) {
     lastMemoryLoadedSnapshotCount: typeof value.lastMemoryLoadedSnapshotCount === "number" && Number.isFinite(value.lastMemoryLoadedSnapshotCount) ? Math.max(0, Math.round(value.lastMemoryLoadedSnapshotCount)) : 0,
     lastMemoryLoadDurationMs: typeof value.lastMemoryLoadDurationMs === "number" && Number.isFinite(value.lastMemoryLoadDurationMs) ? Math.max(0, Math.round(value.lastMemoryLoadDurationMs)) : 0,
     lastMemoryLoadSkippedCount: typeof value.lastMemoryLoadSkippedCount === "number" && Number.isFinite(value.lastMemoryLoadSkippedCount) ? Math.max(0, Math.round(value.lastMemoryLoadSkippedCount)) : 0,
-    lastJobTimeoutAt: stringOrNull3(value.lastJobTimeoutAt),
-    lastJobTimeoutJobId: stringOrNull3(value.lastJobTimeoutJobId),
-    lastJobTimeoutMessageId: stringOrNull3(value.lastJobTimeoutMessageId),
-    lastJobTimeoutSwipeKey: stringOrNull3(value.lastJobTimeoutSwipeKey),
+    lastJobTimeoutAt: stringOrNull4(value.lastJobTimeoutAt),
+    lastJobTimeoutJobId: stringOrNull4(value.lastJobTimeoutJobId),
+    lastJobTimeoutMessageId: stringOrNull4(value.lastJobTimeoutMessageId),
+    lastJobTimeoutSwipeKey: stringOrNull4(value.lastJobTimeoutSwipeKey),
     staleJobsEvictedCount: typeof value.staleJobsEvictedCount === "number" && Number.isFinite(value.staleJobsEvictedCount) ? Math.max(0, Math.round(value.staleJobsEvictedCount)) : 0,
     lastHistoryOrphanCount: typeof value.lastHistoryOrphanCount === "number" && Number.isFinite(value.lastHistoryOrphanCount) ? Math.max(0, Math.round(value.lastHistoryOrphanCount)) : 0,
     lastPresetEstimatedTokens: numberOrNull2(value.lastPresetEstimatedTokens),
     lastPresetEstimatedRenderedChars: numberOrNull2(value.lastPresetEstimatedRenderedChars),
-    lastPresetPackImportAt: stringOrNull3(value.lastPresetPackImportAt),
-    lastPresetPackImportStatus: stringOrNull3(value.lastPresetPackImportStatus),
-    lastPresetPackImportError: stringOrNull3(value.lastPresetPackImportError),
+    lastPresetPackImportAt: stringOrNull4(value.lastPresetPackImportAt),
+    lastPresetPackImportStatus: stringOrNull4(value.lastPresetPackImportStatus),
+    lastPresetPackImportError: stringOrNull4(value.lastPresetPackImportError),
     lastPresetPackImportSizeChars: numberOrNull2(value.lastPresetPackImportSizeChars),
     lastPresetPackImportEstimatedTokens: numberOrNull2(value.lastPresetPackImportEstimatedTokens),
-    lastPresetPackExportAt: stringOrNull3(value.lastPresetPackExportAt),
-    lastPresetPackExportName: stringOrNull3(value.lastPresetPackExportName),
-    lastPresetValidationAt: stringOrNull3(value.lastPresetValidationAt),
-    lastPresetValidationStatus: stringOrNull3(value.lastPresetValidationStatus),
+    lastPresetPackExportAt: stringOrNull4(value.lastPresetPackExportAt),
+    lastPresetPackExportName: stringOrNull4(value.lastPresetPackExportName),
+    lastPresetValidationAt: stringOrNull4(value.lastPresetValidationAt),
+    lastPresetValidationStatus: stringOrNull4(value.lastPresetValidationStatus),
     lastPresetValidationErrorCount: typeof value.lastPresetValidationErrorCount === "number" && Number.isFinite(value.lastPresetValidationErrorCount) ? Math.max(0, Math.round(value.lastPresetValidationErrorCount)) : 0,
     lastPresetValidationWarningCount: typeof value.lastPresetValidationWarningCount === "number" && Number.isFinite(value.lastPresetValidationWarningCount) ? Math.max(0, Math.round(value.lastPresetValidationWarningCount)) : 0,
     lastPresetValidationEstimatedTokens: numberOrNull2(value.lastPresetValidationEstimatedTokens),
@@ -5054,7 +5269,7 @@ async function loadActivePresetState(chatId, userId) {
     fallback: null,
     userId
   });
-  if (!isRecord9(raw) || typeof raw.selectedPresetId !== "string") {
+  if (!isRecord10(raw) || typeof raw.selectedPresetId !== "string") {
     return defaultActivePresetState();
   }
   return {
@@ -5532,6 +5747,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     snapshots: historySnapshots,
     latestChatSnapshot: snapshot,
     preset: presetState.activePreset,
+    presets: presetState.presets,
     settings: settings.messageDisplay,
     activeWidgetJobs,
     selectedSwipeIdentities
@@ -5716,7 +5932,7 @@ function normalizeMessages(messages) {
 }
 function normalizeGenerationText(result) {
   if (typeof result === "string" && result.trim()) return result;
-  if (!isRecord9(result)) {
+  if (!isRecord10(result)) {
     throw new Error("Lumiverse generation returned an unsupported response.");
   }
   for (const key of ["content", "text", "output", "response"]) {
@@ -5725,19 +5941,19 @@ function normalizeGenerationText(result) {
   }
   const message = result.message;
   if (typeof message === "string" && message.trim()) return message;
-  if (isRecord9(message) && typeof message.content === "string" && message.content.trim()) {
+  if (isRecord10(message) && typeof message.content === "string" && message.content.trim()) {
     return message.content;
   }
   throw new Error("Lumiverse generation completed without textual content.");
 }
 function generationFinishReason(result) {
-  if (!isRecord9(result)) return null;
+  if (!isRecord10(result)) return null;
   for (const key of ["finish_reason", "finishReason", "stop_reason", "stopReason"]) {
     const value = result[key];
     if (typeof value === "string") return value;
   }
   const choice = Array.isArray(result.choices) ? result.choices[0] : null;
-  if (isRecord9(choice)) {
+  if (isRecord10(choice)) {
     for (const key of ["finish_reason", "finishReason"]) {
       const value = choice[key];
       if (typeof value === "string") return value;
@@ -5746,7 +5962,7 @@ function generationFinishReason(result) {
   return null;
 }
 function generationUsage(result) {
-  if (!isRecord9(result)) return null;
+  if (!isRecord10(result)) return null;
   const usage = result.usage ?? result.token_usage ?? result.tokenUsage;
   return recordOrNull(usage);
 }
@@ -6073,11 +6289,11 @@ function targetUsersForChat(chatId, userId) {
   return [...usersByChat.get(chatId) ?? []];
 }
 function isChatMessage(value) {
-  return isRecord9(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
+  return isRecord10(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
 }
 function messageFromEventPayload(payload) {
   if (isChatMessage(payload)) return payload;
-  if (isRecord9(payload) && isChatMessage(payload.message)) return payload.message;
+  if (isRecord10(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
 }
 async function queueAutoDebounce(input) {
@@ -6413,7 +6629,7 @@ async function handleMessageSent(payload, userId) {
   }
 }
 async function handleMessageSwiped(payload, userId) {
-  if (!isRecord9(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  if (!isRecord10(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
   const message = payload.message;
   const identity = deriveSwipeTrackerIdentity(payload.chatId, message);
   const users = targetUsersForChat(payload.chatId, userId);
@@ -6452,7 +6668,7 @@ async function handleMessageSwiped(payload, userId) {
   }
 }
 async function handleSwipeEdited(payload, userId) {
-  if (!isRecord9(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  if (!isRecord10(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
   await handleMessageSwiped({
     chatId: payload.chatId,
     message: payload.message,
@@ -6460,14 +6676,14 @@ async function handleSwipeEdited(payload, userId) {
   }, userId);
 }
 function handleChatSwitched(payload, userId) {
-  if (!userId || !isRecord9(payload)) return;
+  if (!userId || !isRecord10(payload)) return;
   const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
   rememberActiveChat(userId, chatId);
 }
 function stringAtPath2(value, path) {
   let current = value;
   for (const segment of path) {
-    if (!isRecord9(current)) return null;
+    if (!isRecord10(current)) return null;
     current = current[segment];
   }
   return typeof current === "string" && current.trim() ? current : null;
@@ -6913,6 +7129,7 @@ async function generateTracker(chatId, userId, trigger) {
     }
     const completedAtMs = Date.now();
     const completedAt = new Date(completedAtMs).toISOString();
+    const presetRenderLock = capturePresetRenderLock(presetState.activePreset, completedAt);
     const snapshot = {
       schemaVersion: STORAGE_SCHEMA_VERSION,
       extensionVersion: EXTENSION_VERSION,
@@ -6928,6 +7145,7 @@ async function generateTracker(chatId, userId, trigger) {
       generationDurationMs: completedAtMs - startedAtMs,
       generationCancelledAt: null,
       generationStatus: "completed",
+      presetRenderLock,
       data
     };
     stage = "storage";
@@ -7127,6 +7345,8 @@ async function renderTemplatePreview(chatId, userId, requestId, requestedSource)
     const presetState = await resolveActivePreset(resolvedChatId, userId);
     const snapshotSource = source === "latest_message_snapshot" ? await loadMessageSnapshot(resolvedChatId, diagnostics.latestAttachedMessageId, userId) : await loadSnapshot(resolvedChatId, userId);
     const snapshot = snapshotSource && "snapshot" in snapshotSource ? snapshotSource.snapshot : snapshotSource;
+    const presetResolution = snapshot ? resolvePresetForSnapshot(snapshotSource, presetState.presets, presetState.activePreset) : null;
+    const renderPreset = presetResolution?.preset ?? presetState.activePreset;
     if (!snapshot) {
       const preview2 = {
         presetId: presetState.activePreset.id,
@@ -7144,6 +7364,12 @@ async function renderTemplatePreview(chatId, userId, requestId, requestedSource)
         lastRenderAt: nowIso(),
         lastRenderPresetId: preview2.presetId,
         lastRenderPresetName: preview2.presetName,
+        lastRenderPresetSource: null,
+        lastRenderLockedPresetId: null,
+        lastRenderLockedPresetName: null,
+        lastRenderLockedPresetVersion: null,
+        lastRenderPresetMismatchDetected: null,
+        lastRenderPresetFallbackReason: null,
         lastRenderSnapshotCreatedAt: null,
         lastRenderSource: source,
         lastRenderStatus: preview2.status,
@@ -7156,27 +7382,42 @@ async function renderTemplatePreview(chatId, userId, requestId, requestedSource)
       await sendState(resolvedChatId, userId, "idle", null, requestId, preview2);
       return;
     }
-    const template = presetState.activePreset.htmlTemplate ?? "";
+    const template = renderPreset.htmlTemplate ?? "";
     const fallback = formatTemplateTextFallback(snapshot.data);
     let preview;
     if (!settings.renderer.enabled) {
       preview = {
-        presetId: presetState.activePreset.id,
-        presetName: presetState.activePreset.name,
+        presetId: renderPreset.id,
+        presetName: renderPreset.name,
         snapshotCreatedAt: snapshot.createdAt,
         source,
         status: "fallback",
         html: "",
         textFallback: fallback,
-        warnings: ["Renderer preview is disabled in settings; showing text fallback."],
+        warnings: [
+          ...presetResolution?.warning ? [presetResolution.warning] : [],
+          "Renderer preview is disabled in settings; showing text fallback."
+        ],
+        errors: []
+      };
+    } else if (!presetResolution?.preset && presetResolution?.source === "json_fallback_original_preset_missing") {
+      preview = {
+        presetId: presetResolution.lockedPresetId ?? "original-preset-unavailable",
+        presetName: presetResolution.lockedPresetName ?? "Original preset unavailable",
+        snapshotCreatedAt: snapshot.createdAt,
+        source,
+        status: "fallback",
+        html: "",
+        textFallback: fallback,
+        warnings: [presetResolution.warning ?? "Original preset unavailable. Showing JSON fallback."],
         errors: []
       };
     } else {
       const result = renderHtmlTemplate({
         template,
         snapshotData: snapshot.data,
-        presetId: presetState.activePreset.id,
-        presetName: presetState.activePreset.name
+        presetId: renderPreset.id,
+        presetName: renderPreset.name
       }, {
         missingValuePlaceholder: settings.renderer.missingValuePlaceholder,
         maxRenderedChars: settings.renderer.maxRenderedChars,
@@ -7185,14 +7426,17 @@ async function renderTemplatePreview(chatId, userId, requestId, requestedSource)
       });
       const status = !template.trim() ? "no_template" : result.ok ? "rendered" : "error";
       preview = {
-        presetId: presetState.activePreset.id,
-        presetName: presetState.activePreset.name,
+        presetId: renderPreset.id,
+        presetName: renderPreset.name,
         snapshotCreatedAt: snapshot.createdAt,
         source,
         status,
         html: result.html,
         textFallback: result.textFallback,
-        warnings: result.warnings,
+        warnings: [
+          ...presetResolution?.warning ? [presetResolution.warning] : [],
+          ...result.warnings
+        ],
         errors: result.errors
       };
     }
@@ -7201,6 +7445,12 @@ async function renderTemplatePreview(chatId, userId, requestId, requestedSource)
       lastRenderAt: nowIso(),
       lastRenderPresetId: preview.presetId,
       lastRenderPresetName: preview.presetName,
+      lastRenderPresetSource: presetResolution?.source ?? null,
+      lastRenderLockedPresetId: presetResolution?.lockedPresetId ?? null,
+      lastRenderLockedPresetName: presetResolution?.lockedPresetName ?? null,
+      lastRenderLockedPresetVersion: presetResolution?.lockedPresetVersion ?? null,
+      lastRenderPresetMismatchDetected: presetResolution?.mismatchDetected ?? null,
+      lastRenderPresetFallbackReason: presetResolution?.fallbackReason ?? null,
       lastRenderSnapshotCreatedAt: preview.snapshotCreatedAt,
       lastRenderSource: source,
       lastRenderStatus: preview.status,
@@ -7220,13 +7470,13 @@ function normalizePresetDraft(value) {
     name: typeof value.name === "string" ? value.name : "",
     description: typeof value.description === "string" ? value.description : "",
     version: typeof value.version === "string" ? value.version : "1.0",
-    jsonSchema: isRecord9(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord10(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: typeof value.promptInstructions === "string" ? value.promptInstructions : ""
   };
   if (typeof value.id === "string") draft.id = value.id;
   if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
   if (typeof value.notes === "string") draft.notes = value.notes;
-  if (isRecord9(value.capabilities)) {
+  if (isRecord10(value.capabilities)) {
     const capabilities = {};
     if (typeof value.capabilities.supportsHtmlTemplate === "boolean") {
       capabilities.supportsHtmlTemplate = value.capabilities.supportsHtmlTemplate;
@@ -7973,6 +8223,7 @@ async function handleEmbeddedTrackerTagIntercepted(payload, userId) {
   let index = await loadMessageSnapshotIndex(resolvedChatId, userId);
   if (settings.messageDisplay.attachmentMode === "both") {
     const attachedAt = nowIso();
+    const presetRenderLock = capturePresetRenderLock(presetState.activePreset, attachedAt);
     const attachedSnapshot = {
       schemaVersion: STORAGE_SCHEMA_VERSION,
       extensionVersion: EXTENSION_VERSION,
@@ -8008,6 +8259,7 @@ async function handleEmbeddedTrackerTagIntercepted(payload, userId) {
         presetId: presetState.activePreset.id,
         presetName: presetState.activePreset.name,
         presetVersion: presetState.activePreset.version,
+        presetRenderLock,
         data: parsed
       },
       attachedAt

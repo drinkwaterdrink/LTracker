@@ -33,6 +33,7 @@ import {
   DEFAULT_TRACKER_CONNECTION_PARAMETERS,
   TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
 } from "./shared/generationRequest";
+import { capturePresetRenderLock } from "./shared/presetRenderLock";
 import {
   estimateCharsFromTokens,
   estimateTokensFromChars,
@@ -603,6 +604,12 @@ function emptyState(): FrontendState {
       lastRenderAt: null,
       lastRenderPresetId: null,
       lastRenderPresetName: null,
+      lastRenderPresetSource: null,
+      lastRenderLockedPresetId: null,
+      lastRenderLockedPresetName: null,
+      lastRenderLockedPresetVersion: null,
+      lastRenderPresetMismatchDetected: null,
+      lastRenderPresetFallbackReason: null,
       lastRenderSnapshotCreatedAt: null,
       lastRenderSource: null,
       lastRenderStatus: null,
@@ -1083,6 +1090,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         attachedSnapshot: entry.snapshot,
         latestChatSnapshot: state.snapshot,
         preset: state.activePreset,
+        presets: state.presets,
+        activePreset: state.activePreset,
         settings: state.settings.messageDisplay,
         swipeIdentity: {
           chatId,
@@ -1710,6 +1719,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         attachedSnapshot: entry.snapshot,
         latestChatSnapshot: state.snapshot,
         preset: state.activePreset,
+        presets: state.presets,
+        activePreset: state.activePreset,
         settings: {
           ...state.settings.messageDisplay,
           displaySurface: surface,
@@ -2044,6 +2055,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       throw new Error("Embedded LTracker tag content must be a JSON object.");
     }
     const attachedAt = new Date().toISOString();
+    const presetRenderLock = capturePresetRenderLock(state.activePreset, attachedAt);
     const snapshot: MessageAttachedSnapshot = {
       schemaVersion: STORAGE_SCHEMA_VERSION,
       extensionVersion: version,
@@ -2084,6 +2096,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         generationDurationMs: null,
         generationCancelledAt: null,
         generationStatus: "completed",
+        presetRenderLock,
         data: parsed,
       },
       attachedAt,
@@ -2110,6 +2123,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         attachedSnapshot: snapshot,
         latestChatSnapshot: state.snapshot,
         preset: state.activePreset,
+        presets: state.presets,
+        activePreset: state.activePreset,
         settings: state.settings.messageDisplay,
         swipeIdentity: {
           chatId,
@@ -2973,6 +2988,25 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     render();
   }
 
+  function renderPresetSourceLabel(source: string | null): string {
+    if (source === "snapshot_render_lock") return "Snapshot locked template";
+    if (source === "installed_preset_id") return "Installed preset id match";
+    if (source === "installed_preset_name_version") return "Installed preset name/version match";
+    if (source === "active_preset_legacy_fallback") return "Active preset legacy fallback";
+    if (source === "json_fallback_original_preset_missing") return "JSON fallback; original preset unavailable";
+    return "Unknown render source";
+  }
+
+  function generatedPresetLabel(entry: MessageTrackerHistoryEntry): string {
+    return entry.rendered.presetName
+      ? `${entry.rendered.presetName}${entry.rendered.presetVersion ? ` ${entry.rendered.presetVersion}` : ""}`
+      : entry.indexEntry.presetName ?? "Preset unknown";
+  }
+
+  function renderedPresetLabel(entry: MessageTrackerHistoryEntry): string {
+    return renderPresetSourceLabel(entry.rendered.renderPresetSource);
+  }
+
   function openTrackerEditor(entry: MessageTrackerHistoryEntry): void {
     const modal = ctx.ui.showModal({
       title: "LTracker Message Tracker",
@@ -2991,6 +3025,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       presetId: rendered.presetId,
       presetName: rendered.presetName,
       presetVersion: rendered.presetVersion,
+      generatedWith: generatedPresetLabel(entry),
+      renderedWith: renderedPresetLabel(entry),
+      renderPresetSource: rendered.renderPresetSource,
+      renderPresetWarning: rendered.renderPresetWarning,
+      renderPresetFallbackReason: rendered.renderPresetFallbackReason,
+      renderPresetMismatchDetected: rendered.renderPresetMismatchDetected,
+      renderLockedPresetId: rendered.renderLockedPresetId,
+      renderLockedPresetName: rendered.renderLockedPresetName,
+      renderLockedPresetVersion: rendered.renderLockedPresetVersion,
       snapshotCreatedAt: rendered.snapshotCreatedAt,
       attachedAt: rendered.attachedAt,
       generationDurationMs: rendered.generationDurationMs,
@@ -3006,6 +3049,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           <button class="ltracker-button" type="button" data-editor-action="close">Close</button>
         </div>
         <div class="ltracker-editor-error" data-editor-error></div>
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Preset identity</span>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Generated with", generatedPresetLabel(entry))}
+            ${renderRow("Rendered with", renderedPresetLabel(entry))}
+            ${renderRow("Render warning", rendered.renderPresetWarning)}
+          </div>
+          <button class="ltracker-button" type="button" disabled>Rebind to current preset (future)</button>
+        </section>
         <section class="ltracker-panel">
           <span class="ltracker-label">Rendered preview</span>
           ${rendered.html ? `<div class="ltracker-render-preview">${rendered.html}</div>` : `<pre class="ltracker-text">${escapeHtml(rendered.textFallback)}</pre>`}
@@ -3146,6 +3198,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             rendered.generationDurationMs !== null ? `duration ${formatDurationMs(rendered.generationDurationMs)}` : null,
             rendered.isRegenerating ? "generating" : null,
             `mode ${rendered.renderMode}`,
+            `generated ${generatedPresetLabel(entry)}`,
+            `rendered ${renderedPresetLabel(entry)}`,
+            rendered.renderPresetWarning ? `render warning ${rendered.renderPresetWarning}` : null,
           ].filter((item): item is string => Boolean(item)).join(" / ");
           const htmlPreview = rendered.html
             ? `<div class="ltracker-render-preview">${rendered.html}</div>`
@@ -4641,6 +4696,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               ${renderRow("Last render at", diagnostics.lastRenderAt)}
               ${renderRow("Last render preset id", diagnostics.lastRenderPresetId)}
               ${renderRow("Last render preset name", diagnostics.lastRenderPresetName)}
+              ${renderRow("Last render preset source", diagnostics.lastRenderPresetSource)}
+              ${renderRow("Last render locked preset id", diagnostics.lastRenderLockedPresetId)}
+              ${renderRow("Last render locked preset name", diagnostics.lastRenderLockedPresetName)}
+              ${renderRow("Last render locked preset version", diagnostics.lastRenderLockedPresetVersion)}
+              ${renderRow("Last render preset mismatch", diagnostics.lastRenderPresetMismatchDetected === null ? null : diagnostics.lastRenderPresetMismatchDetected ? "yes" : "no")}
+              ${renderRow("Last render fallback reason", diagnostics.lastRenderPresetFallbackReason)}
               ${renderRow("Last render snapshot", diagnostics.lastRenderSnapshotCreatedAt)}
               ${renderRow("Last render source", diagnostics.lastRenderSource)}
               ${renderRow("Last render status", diagnostics.lastRenderStatus)}

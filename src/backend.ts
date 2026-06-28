@@ -123,6 +123,10 @@ import {
   type TrackerGenerationRequestBuildResult,
 } from "./shared/generationRequest";
 import {
+  capturePresetRenderLock,
+  resolvePresetForSnapshot,
+} from "./shared/presetRenderLock";
+import {
   DEFAULT_SWIPE_KEY,
   defaultSwipeIdentity,
   deriveSwipeTrackerIdentity,
@@ -160,6 +164,7 @@ import {
   type MessageSnapshotIndexEntry,
   type MessageTrackerHistoryEntry,
   type PermissionState,
+  type RenderPresetSource,
   type RenderedTrackerPreview,
   type SwipeTrackerIdentity,
   type TrackerPresetDraft,
@@ -556,6 +561,12 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastRenderAt: null,
     lastRenderPresetId: null,
     lastRenderPresetName: null,
+    lastRenderPresetSource: null,
+    lastRenderLockedPresetId: null,
+    lastRenderLockedPresetName: null,
+    lastRenderLockedPresetVersion: null,
+    lastRenderPresetMismatchDetected: null,
+    lastRenderPresetFallbackReason: null,
     lastRenderSnapshotCreatedAt: null,
     lastRenderSource: null,
     lastRenderStatus: null,
@@ -762,6 +773,16 @@ function renderStatusOrNull(value: unknown): LTrackerRenderStatus | null {
     : null;
 }
 
+function renderPresetSourceOrNull(value: unknown): RenderPresetSource | null {
+  return value === "snapshot_render_lock"
+    || value === "installed_preset_id"
+    || value === "installed_preset_name_version"
+    || value === "active_preset_legacy_fallback"
+    || value === "json_fallback_original_preset_missing"
+    ? value
+    : null;
+}
+
 function messageDisplayModeOrNull(value: unknown): LTrackerMessageDisplayMode | null {
   return value === "dom_injection" || value === "message_widget" || value === "drawer_history" || value === "disabled" ? value : null;
 }
@@ -962,6 +983,12 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastRenderAt: stringOrNull(value.lastRenderAt),
     lastRenderPresetId: stringOrNull(value.lastRenderPresetId),
     lastRenderPresetName: stringOrNull(value.lastRenderPresetName),
+    lastRenderPresetSource: renderPresetSourceOrNull(value.lastRenderPresetSource),
+    lastRenderLockedPresetId: stringOrNull(value.lastRenderLockedPresetId),
+    lastRenderLockedPresetName: stringOrNull(value.lastRenderLockedPresetName),
+    lastRenderLockedPresetVersion: stringOrNull(value.lastRenderLockedPresetVersion),
+    lastRenderPresetMismatchDetected: typeof value.lastRenderPresetMismatchDetected === "boolean" ? value.lastRenderPresetMismatchDetected : null,
+    lastRenderPresetFallbackReason: stringOrNull(value.lastRenderPresetFallbackReason),
     lastRenderSnapshotCreatedAt: stringOrNull(value.lastRenderSnapshotCreatedAt),
     lastRenderSource: renderSourceOrNull(value.lastRenderSource),
     lastRenderStatus: renderStatusOrNull(value.lastRenderStatus),
@@ -1856,6 +1883,7 @@ async function buildState(
     snapshots: historySnapshots,
     latestChatSnapshot: snapshot,
     preset: presetState.activePreset,
+    presets: presetState.presets,
     settings: settings.messageDisplay,
     activeWidgetJobs,
     selectedSwipeIdentities,
@@ -3599,6 +3627,7 @@ async function generateTracker(
 
     const completedAtMs = Date.now();
     const completedAt = new Date(completedAtMs).toISOString();
+    const presetRenderLock = capturePresetRenderLock(presetState.activePreset, completedAt);
     const snapshot: TrackerSnapshot = {
       schemaVersion: STORAGE_SCHEMA_VERSION,
       extensionVersion: EXTENSION_VERSION,
@@ -3614,6 +3643,7 @@ async function generateTracker(
       generationDurationMs: completedAtMs - startedAtMs,
       generationCancelledAt: null,
       generationStatus: "completed",
+      presetRenderLock,
       data,
     };
 
@@ -3833,6 +3863,10 @@ async function renderTemplatePreview(
     const snapshot = snapshotSource && "snapshot" in snapshotSource
       ? snapshotSource.snapshot
       : snapshotSource;
+    const presetResolution = snapshot
+      ? resolvePresetForSnapshot(snapshotSource, presetState.presets, presetState.activePreset)
+      : null;
+    const renderPreset = presetResolution?.preset ?? presetState.activePreset;
 
     if (!snapshot) {
       const preview: RenderedTrackerPreview = {
@@ -3851,6 +3885,12 @@ async function renderTemplatePreview(
         lastRenderAt: nowIso(),
         lastRenderPresetId: preview.presetId,
         lastRenderPresetName: preview.presetName,
+        lastRenderPresetSource: null,
+        lastRenderLockedPresetId: null,
+        lastRenderLockedPresetName: null,
+        lastRenderLockedPresetVersion: null,
+        lastRenderPresetMismatchDetected: null,
+        lastRenderPresetFallbackReason: null,
         lastRenderSnapshotCreatedAt: null,
         lastRenderSource: source,
         lastRenderStatus: preview.status,
@@ -3864,27 +3904,42 @@ async function renderTemplatePreview(
       return;
     }
 
-    const template = presetState.activePreset.htmlTemplate ?? "";
+    const template = renderPreset.htmlTemplate ?? "";
     const fallback = formatTemplateTextFallback(snapshot.data);
     let preview: RenderedTrackerPreview;
     if (!settings.renderer.enabled) {
       preview = {
-        presetId: presetState.activePreset.id,
-        presetName: presetState.activePreset.name,
+        presetId: renderPreset.id,
+        presetName: renderPreset.name,
         snapshotCreatedAt: snapshot.createdAt,
         source,
         status: "fallback",
         html: "",
         textFallback: fallback,
-        warnings: ["Renderer preview is disabled in settings; showing text fallback."],
+        warnings: [
+          ...(presetResolution?.warning ? [presetResolution.warning] : []),
+          "Renderer preview is disabled in settings; showing text fallback.",
+        ],
+        errors: [],
+      };
+    } else if (!presetResolution?.preset && presetResolution?.source === "json_fallback_original_preset_missing") {
+      preview = {
+        presetId: presetResolution.lockedPresetId ?? "original-preset-unavailable",
+        presetName: presetResolution.lockedPresetName ?? "Original preset unavailable",
+        snapshotCreatedAt: snapshot.createdAt,
+        source,
+        status: "fallback",
+        html: "",
+        textFallback: fallback,
+        warnings: [presetResolution.warning ?? "Original preset unavailable. Showing JSON fallback."],
         errors: [],
       };
     } else {
       const result = renderHtmlTemplate({
         template,
         snapshotData: snapshot.data,
-        presetId: presetState.activePreset.id,
-        presetName: presetState.activePreset.name,
+        presetId: renderPreset.id,
+        presetName: renderPreset.name,
       }, {
         missingValuePlaceholder: settings.renderer.missingValuePlaceholder,
         maxRenderedChars: settings.renderer.maxRenderedChars,
@@ -3895,14 +3950,17 @@ async function renderTemplatePreview(
         ? "no_template"
         : result.ok ? "rendered" : "error";
       preview = {
-        presetId: presetState.activePreset.id,
-        presetName: presetState.activePreset.name,
+        presetId: renderPreset.id,
+        presetName: renderPreset.name,
         snapshotCreatedAt: snapshot.createdAt,
         source,
         status,
         html: result.html,
         textFallback: result.textFallback,
-        warnings: result.warnings,
+        warnings: [
+          ...(presetResolution?.warning ? [presetResolution.warning] : []),
+          ...result.warnings,
+        ],
         errors: result.errors,
       };
     }
@@ -3912,6 +3970,12 @@ async function renderTemplatePreview(
       lastRenderAt: nowIso(),
       lastRenderPresetId: preview.presetId,
       lastRenderPresetName: preview.presetName,
+      lastRenderPresetSource: presetResolution?.source ?? null,
+      lastRenderLockedPresetId: presetResolution?.lockedPresetId ?? null,
+      lastRenderLockedPresetName: presetResolution?.lockedPresetName ?? null,
+      lastRenderLockedPresetVersion: presetResolution?.lockedPresetVersion ?? null,
+      lastRenderPresetMismatchDetected: presetResolution?.mismatchDetected ?? null,
+      lastRenderPresetFallbackReason: presetResolution?.fallbackReason ?? null,
       lastRenderSnapshotCreatedAt: preview.snapshotCreatedAt,
       lastRenderSource: source,
       lastRenderStatus: preview.status,
@@ -4840,6 +4904,7 @@ async function handleEmbeddedTrackerTagIntercepted(
   let index = await loadMessageSnapshotIndex(resolvedChatId, userId);
   if (settings.messageDisplay.attachmentMode === "both") {
     const attachedAt = nowIso();
+    const presetRenderLock = capturePresetRenderLock(presetState.activePreset, attachedAt);
     const attachedSnapshot: MessageAttachedSnapshot = {
       schemaVersion: STORAGE_SCHEMA_VERSION,
       extensionVersion: EXTENSION_VERSION,
@@ -4875,6 +4940,7 @@ async function handleEmbeddedTrackerTagIntercepted(
         presetId: presetState.activePreset.id,
         presetName: presetState.activePreset.name,
         presetVersion: presetState.activePreset.version,
+        presetRenderLock,
         data: parsed,
       },
       attachedAt,

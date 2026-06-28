@@ -239,7 +239,7 @@ function estimatePresetStats(preset) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.19.1";
+var EXTENSION_VERSION = "0.19.2";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1530,6 +1530,178 @@ ${JSON.stringify(snapshot.data, null, 2)}
   return truncateSafe2(raw, settings.maxInjectedChars);
 }
 
+// src/shared/presetRenderLock.ts
+var MAX_LOCKED_SCHEMA_CHARS = 5e4;
+var MAX_LOCKED_PROMPT_CHARS = 4e4;
+function isRecord5(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringOrNull(value) {
+  return typeof value === "string" ? value : null;
+}
+function schemaTitle(schema) {
+  return typeof schema.title === "string" && schema.title.trim() ? schema.title : null;
+}
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  const record = value;
+  const parts = Object.keys(record).sort((left, right) => left.localeCompare(right)).filter((key) => record[key] !== void 0).map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`);
+  return `{${parts.join(",")}}`;
+}
+function hashText(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return `fnv1a32-${hash.toString(16).padStart(8, "0")}`;
+}
+function copyJsonSchema(schema) {
+  const text = stableStringify(schema);
+  if (text.length > MAX_LOCKED_SCHEMA_CHARS) return null;
+  try {
+    return JSON.parse(JSON.stringify(schema));
+  } catch {
+    return null;
+  }
+}
+function capturePresetRenderLock(preset, capturedAt) {
+  const schemaText = stableStringify(preset.jsonSchema);
+  const htmlTemplate = preset.htmlTemplate ?? "";
+  const promptInstructions = preset.promptInstructions ?? "";
+  return {
+    presetId: preset.id,
+    presetName: preset.name,
+    presetVersion: preset.version,
+    schemaTitle: schemaTitle(preset.jsonSchema),
+    schemaHash: hashText(schemaText),
+    htmlTemplateHash: hashText(htmlTemplate),
+    promptInstructionsHash: hashText(promptInstructions),
+    htmlTemplate,
+    jsonSchema: copyJsonSchema(preset.jsonSchema),
+    promptInstructions: promptInstructions.length <= MAX_LOCKED_PROMPT_CHARS ? promptInstructions : null,
+    capturedAt
+  };
+}
+function normalizePresetRenderLock(value) {
+  if (!isRecord5(value)) return null;
+  const schema = isRecord5(value.jsonSchema) ? value.jsonSchema : null;
+  return {
+    presetId: stringOrNull(value.presetId),
+    presetName: stringOrNull(value.presetName),
+    presetVersion: stringOrNull(value.presetVersion),
+    schemaTitle: stringOrNull(value.schemaTitle),
+    schemaHash: stringOrNull(value.schemaHash),
+    htmlTemplateHash: stringOrNull(value.htmlTemplateHash),
+    promptInstructionsHash: stringOrNull(value.promptInstructionsHash),
+    htmlTemplate: stringOrNull(value.htmlTemplate),
+    jsonSchema: schema,
+    promptInstructions: stringOrNull(value.promptInstructions),
+    capturedAt: typeof value.capturedAt === "string" ? value.capturedAt : (/* @__PURE__ */ new Date(0)).toISOString()
+  };
+}
+function snapshotFromSource(source) {
+  if (!source) return null;
+  if ("snapshot" in source) return source.snapshot;
+  return source;
+}
+function attachedMetadata(source) {
+  const snapshot = snapshotFromSource(source);
+  return {
+    presetId: ("snapshot" in (source ?? {}) ? source.presetId : null) ?? snapshot?.presetId ?? null,
+    presetName: ("snapshot" in (source ?? {}) ? source.presetName : null) ?? snapshot?.presetName ?? null,
+    presetVersion: ("snapshot" in (source ?? {}) ? source.presetVersion : null) ?? snapshot?.presetVersion ?? null
+  };
+}
+function renderOnlyPresetFromLock(lock) {
+  return {
+    id: lock.presetId ?? "snapshot-render-lock",
+    name: lock.presetName ?? "Snapshot locked preset",
+    description: "Render-only preset captured with a generated tracker snapshot.",
+    version: lock.presetVersion ?? "unknown",
+    createdAt: lock.capturedAt,
+    updatedAt: lock.capturedAt,
+    jsonSchema: lock.jsonSchema ?? {},
+    promptInstructions: lock.promptInstructions ?? "",
+    htmlTemplate: lock.htmlTemplate ?? "",
+    origin: "user_imported"
+  };
+}
+function findByNameVersion(presets, presetName, presetVersion) {
+  if (!presetName || !presetVersion) return null;
+  return presets.find((preset) => preset.name === presetName && preset.version === presetVersion) ?? null;
+}
+function resolvePresetForSnapshot(source, installedPresets, activePreset) {
+  const snapshot = snapshotFromSource(source);
+  const metadata = attachedMetadata(source);
+  const lock = normalizePresetRenderLock(snapshot?.presetRenderLock);
+  const snapshotHasMetadata = Boolean(metadata.presetId || metadata.presetName || metadata.presetVersion);
+  const activeMismatch = (id) => Boolean(id && id !== activePreset.id);
+  if (lock?.htmlTemplate !== null && lock?.htmlTemplate !== void 0) {
+    return {
+      preset: renderOnlyPresetFromLock(lock),
+      source: "snapshot_render_lock",
+      warning: null,
+      fallbackReason: null,
+      mismatchDetected: activeMismatch(lock.presetId),
+      lockedPresetId: lock.presetId,
+      lockedPresetName: lock.presetName,
+      lockedPresetVersion: lock.presetVersion
+    };
+  }
+  if (metadata.presetId) {
+    const byId = installedPresets.find((preset) => preset.id === metadata.presetId) ?? null;
+    if (byId) {
+      return {
+        preset: byId,
+        source: "installed_preset_id",
+        warning: "Legacy snapshot rendered with installed preset id match.",
+        fallbackReason: null,
+        mismatchDetected: activeMismatch(byId.id),
+        lockedPresetId: metadata.presetId,
+        lockedPresetName: metadata.presetName,
+        lockedPresetVersion: metadata.presetVersion
+      };
+    }
+  }
+  const byNameVersion = findByNameVersion(installedPresets, metadata.presetName, metadata.presetVersion);
+  if (byNameVersion) {
+    return {
+      preset: byNameVersion,
+      source: "installed_preset_name_version",
+      warning: "Legacy snapshot rendered with installed preset name/version match.",
+      fallbackReason: null,
+      mismatchDetected: activeMismatch(byNameVersion.id),
+      lockedPresetId: metadata.presetId,
+      lockedPresetName: metadata.presetName,
+      lockedPresetVersion: metadata.presetVersion
+    };
+  }
+  if (!snapshotHasMetadata) {
+    return {
+      preset: activePreset,
+      source: "active_preset_legacy_fallback",
+      warning: "Legacy snapshot has no preset lock; rendered with active preset fallback.",
+      fallbackReason: "Legacy snapshot has no preset identity or render lock.",
+      mismatchDetected: false,
+      lockedPresetId: null,
+      lockedPresetName: null,
+      lockedPresetVersion: null
+    };
+  }
+  return {
+    preset: null,
+    source: "json_fallback_original_preset_missing",
+    warning: "Original preset unavailable. Showing JSON fallback.",
+    fallbackReason: "Original preset metadata did not match an installed preset and no snapshot render lock was present.",
+    mismatchDetected: true,
+    lockedPresetId: metadata.presetId,
+    lockedPresetName: metadata.presetName,
+    lockedPresetVersion: metadata.presetVersion
+  };
+}
+
 // src/shared/swipeIdentity.ts
 var DEFAULT_SWIPE_KEY = "default";
 function defaultSwipeIdentity(chatId, messageId) {
@@ -1622,6 +1794,15 @@ function generationMetadataFromSnapshot(snapshot, input) {
     isRegenerating: input.isRegenerating === true,
     activeJobId: input.activeJobId ?? null
   };
+}
+function renderPresetResolution(input, snapshot) {
+  if (!snapshot) return null;
+  if (input.presetResolution) return input.presetResolution;
+  const activePreset = input.activePreset ?? input.preset ?? input.presets?.[0] ?? null;
+  if (!activePreset) return null;
+  const installedPresets = input.presets ?? (input.preset ? [input.preset] : [activePreset]);
+  const source = input.settings.source === "latest_chat_snapshot" ? snapshot : input.attachedSnapshot ?? snapshot;
+  return resolvePresetForSnapshot(source, installedPresets, activePreset);
 }
 function injectionSettings(settings) {
   return {
@@ -1899,6 +2080,17 @@ function renderMessageTracker(input) {
   const metadata = metadataFromSnapshot(input.attachedSnapshot, snapshot);
   const generationMetadata = generationMetadataFromSnapshot(snapshot, input);
   const identity = identityFromInput(input);
+  const presetResolution = renderPresetResolution(input, snapshot);
+  const renderPreset = presetResolution?.preset ?? (snapshot ? null : input.preset);
+  const renderPresetFields = {
+    renderPresetSource: presetResolution?.source ?? null,
+    renderPresetWarning: presetResolution?.warning ?? null,
+    renderPresetFallbackReason: presetResolution?.fallbackReason ?? null,
+    renderPresetMismatchDetected: presetResolution?.mismatchDetected ?? false,
+    renderLockedPresetId: presetResolution?.lockedPresetId ?? null,
+    renderLockedPresetName: presetResolution?.lockedPresetName ?? null,
+    renderLockedPresetVersion: presetResolution?.lockedPresetVersion ?? null
+  };
   if (!snapshot) {
     const textFallback2 = "No tracker snapshot is available for this message.";
     const base2 = {
@@ -1910,6 +2102,7 @@ function renderMessageTracker(input) {
       swipeContentHash: identity.swipeContentHash,
       swipeKeySource: identity.swipeKeySource,
       ...metadata,
+      ...renderPresetFields,
       ...generationMetadata,
       renderMode: input.settings.renderMode,
       html: "",
@@ -1928,7 +2121,7 @@ function renderMessageTracker(input) {
       domHtml: buildDomHtml(renderable2, input.settings)
     };
   }
-  const warnings = [];
+  const warnings = presetResolution?.warning ? [presetResolution.warning] : [];
   const errors = [];
   const json = displayJson(input.messageId, input.messageIndex, input.attachedSnapshot, snapshot, input.settings);
   let html = "";
@@ -1940,13 +2133,16 @@ function renderMessageTracker(input) {
     const source = input.attachedSnapshot ?? snapshot;
     textFallback = formatSnapshotForInjection(source, injectionSettings(input.settings));
     html = `<pre class="ltr-pre">${escapeHtml(textFallback)}</pre>`;
+  } else if (!renderPreset) {
+    textFallback = json;
+    html = `<pre class="ltr-pre">${escapeHtml(json)}</pre>`;
   } else {
-    const template = input.preset.htmlTemplate ?? "";
+    const template = renderPreset.htmlTemplate ?? "";
     const result = renderHtmlTemplate({
       template,
       snapshotData: snapshot.data,
-      presetId: input.preset.id,
-      presetName: input.preset.name
+      presetId: renderPreset.id,
+      presetName: renderPreset.name
     }, {
       missingValuePlaceholder: "",
       maxRenderedChars: input.settings.maxRenderedChars,
@@ -1969,6 +2165,7 @@ function renderMessageTracker(input) {
     swipeContentHash: identity.swipeContentHash,
     swipeKeySource: identity.swipeKeySource,
     ...metadata,
+    ...renderPresetFields,
     ...generationMetadata,
     renderMode: input.settings.renderMode,
     html,
@@ -2751,6 +2948,12 @@ function emptyState() {
       lastRenderAt: null,
       lastRenderPresetId: null,
       lastRenderPresetName: null,
+      lastRenderPresetSource: null,
+      lastRenderLockedPresetId: null,
+      lastRenderLockedPresetName: null,
+      lastRenderLockedPresetVersion: null,
+      lastRenderPresetMismatchDetected: null,
+      lastRenderPresetFallbackReason: null,
       lastRenderSnapshotCreatedAt: null,
       lastRenderSource: null,
       lastRenderStatus: null,
@@ -2919,11 +3122,11 @@ function emptyState() {
     connectionProfiles: []
   };
 }
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null;
 }
 function isBackendMessage(payload) {
-  return isRecord5(payload) && typeof payload.type === "string";
+  return isRecord6(payload) && typeof payload.type === "string";
 }
 function escapeHtml2(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -3184,6 +3387,8 @@ function setup(ctx) {
         attachedSnapshot: entry.snapshot,
         latestChatSnapshot: state.snapshot,
         preset: state.activePreset,
+        presets: state.presets,
+        activePreset: state.activePreset,
         settings: state.settings.messageDisplay,
         swipeIdentity: {
           chatId,
@@ -3276,7 +3481,7 @@ function setup(ctx) {
     });
   }
   function handleWidgetPayload(expectedMessageId, expectedSwipeKey, payload) {
-    if (!isRecord5(payload) || payload.type !== "ltracker_widget_action" || payload.action !== "toggle_regenerate" && payload.action !== "generate" || payload.messageId !== expectedMessageId) return;
+    if (!isRecord6(payload) || payload.type !== "ltracker_widget_action" || payload.action !== "toggle_regenerate" && payload.action !== "generate" || payload.messageId !== expectedMessageId) return;
     if ("swipeKey" in payload && payload.swipeKey !== expectedSwipeKey) return;
     const jobId = typeof payload.jobId === "string" && payload.jobId ? payload.jobId : null;
     if (payload.action === "generate") generateMessageTracker(expectedMessageId, expectedSwipeKey);
@@ -3728,6 +3933,8 @@ function setup(ctx) {
         attachedSnapshot: entry.snapshot,
         latestChatSnapshot: state.snapshot,
         preset: state.activePreset,
+        presets: state.presets,
+        activePreset: state.activePreset,
         settings: {
           ...state.settings.messageDisplay,
           displaySurface: surface,
@@ -4027,10 +4234,11 @@ function setup(ctx) {
     const swipeKey = payload.attrs.swipe || DEFAULT_SWIPE_KEY;
     const version = payload.attrs.version || EXTENSION_VERSION;
     const parsed = JSON.parse(payload.content);
-    if (!isRecord5(parsed) || Array.isArray(parsed)) {
+    if (!isRecord6(parsed) || Array.isArray(parsed)) {
       throw new Error("Embedded LTracker tag content must be a JSON object.");
     }
     const attachedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const presetRenderLock = capturePresetRenderLock(state.activePreset, attachedAt);
     const snapshot = {
       schemaVersion: STORAGE_SCHEMA_VERSION,
       extensionVersion: version,
@@ -4071,6 +4279,7 @@ function setup(ctx) {
         generationDurationMs: null,
         generationCancelledAt: null,
         generationStatus: "completed",
+        presetRenderLock,
         data: parsed
       },
       attachedAt
@@ -4097,6 +4306,8 @@ function setup(ctx) {
         attachedSnapshot: snapshot,
         latestChatSnapshot: state.snapshot,
         preset: state.activePreset,
+        presets: state.presets,
+        activePreset: state.activePreset,
         settings: state.settings.messageDisplay,
         swipeIdentity: {
           chatId,
@@ -4847,6 +5058,20 @@ function setup(ctx) {
     recentlyDeletedBanner = { messageId, swipeKey, timer };
     render();
   }
+  function renderPresetSourceLabel(source) {
+    if (source === "snapshot_render_lock") return "Snapshot locked template";
+    if (source === "installed_preset_id") return "Installed preset id match";
+    if (source === "installed_preset_name_version") return "Installed preset name/version match";
+    if (source === "active_preset_legacy_fallback") return "Active preset legacy fallback";
+    if (source === "json_fallback_original_preset_missing") return "JSON fallback; original preset unavailable";
+    return "Unknown render source";
+  }
+  function generatedPresetLabel(entry) {
+    return entry.rendered.presetName ? `${entry.rendered.presetName}${entry.rendered.presetVersion ? ` ${entry.rendered.presetVersion}` : ""}` : entry.indexEntry.presetName ?? "Preset unknown";
+  }
+  function renderedPresetLabel(entry) {
+    return renderPresetSourceLabel(entry.rendered.renderPresetSource);
+  }
   function openTrackerEditor(entry) {
     const modal = ctx.ui.showModal({
       title: "LTracker Message Tracker",
@@ -4865,6 +5090,15 @@ function setup(ctx) {
       presetId: rendered.presetId,
       presetName: rendered.presetName,
       presetVersion: rendered.presetVersion,
+      generatedWith: generatedPresetLabel(entry),
+      renderedWith: renderedPresetLabel(entry),
+      renderPresetSource: rendered.renderPresetSource,
+      renderPresetWarning: rendered.renderPresetWarning,
+      renderPresetFallbackReason: rendered.renderPresetFallbackReason,
+      renderPresetMismatchDetected: rendered.renderPresetMismatchDetected,
+      renderLockedPresetId: rendered.renderLockedPresetId,
+      renderLockedPresetName: rendered.renderLockedPresetName,
+      renderLockedPresetVersion: rendered.renderLockedPresetVersion,
       snapshotCreatedAt: rendered.snapshotCreatedAt,
       attachedAt: rendered.attachedAt,
       generationDurationMs: rendered.generationDurationMs,
@@ -4880,6 +5114,15 @@ function setup(ctx) {
           <button class="ltracker-button" type="button" data-editor-action="close">Close</button>
         </div>
         <div class="ltracker-editor-error" data-editor-error></div>
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Preset identity</span>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Generated with", generatedPresetLabel(entry))}
+            ${renderRow("Rendered with", renderedPresetLabel(entry))}
+            ${renderRow("Render warning", rendered.renderPresetWarning)}
+          </div>
+          <button class="ltracker-button" type="button" disabled>Rebind to current preset (future)</button>
+        </section>
         <section class="ltracker-panel">
           <span class="ltracker-label">Rendered preview</span>
           ${rendered.html ? `<div class="ltracker-render-preview">${rendered.html}</div>` : `<pre class="ltracker-text">${escapeHtml2(rendered.textFallback)}</pre>`}
@@ -4919,7 +5162,7 @@ function setup(ctx) {
         const jsonText = jsonInput?.value ?? "";
         try {
           const parsed = JSON.parse(jsonText);
-          const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "data" in parsed && isRecord5(parsed.data) ? parsed.data : parsed;
+          const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "data" in parsed && isRecord6(parsed.data) ? parsed.data : parsed;
           if (!data || typeof data !== "object" || Array.isArray(data)) {
             setError("Tracker JSON must be a JSON object.");
             return;
@@ -5002,7 +5245,10 @@ function setup(ctx) {
         rendered.attachedAt ? `attached ${rendered.attachedAt}` : null,
         rendered.generationDurationMs !== null ? `duration ${formatDurationMs2(rendered.generationDurationMs)}` : null,
         rendered.isRegenerating ? "generating" : null,
-        `mode ${rendered.renderMode}`
+        `mode ${rendered.renderMode}`,
+        `generated ${generatedPresetLabel(entry)}`,
+        `rendered ${renderedPresetLabel(entry)}`,
+        rendered.renderPresetWarning ? `render warning ${rendered.renderPresetWarning}` : null
       ].filter((item) => Boolean(item)).join(" / ");
       const htmlPreview = rendered.html ? `<div class="ltracker-render-preview">${rendered.html}</div>` : `<pre class="ltracker-text">${escapeHtml2(rendered.textFallback)}</pre>`;
       const copyActions = state.settings.messageDisplay.showDebugCopyButtonsInHistory ? `
@@ -6419,6 +6665,12 @@ function setup(ctx) {
               ${renderRow("Last render at", diagnostics.lastRenderAt)}
               ${renderRow("Last render preset id", diagnostics.lastRenderPresetId)}
               ${renderRow("Last render preset name", diagnostics.lastRenderPresetName)}
+              ${renderRow("Last render preset source", diagnostics.lastRenderPresetSource)}
+              ${renderRow("Last render locked preset id", diagnostics.lastRenderLockedPresetId)}
+              ${renderRow("Last render locked preset name", diagnostics.lastRenderLockedPresetName)}
+              ${renderRow("Last render locked preset version", diagnostics.lastRenderLockedPresetVersion)}
+              ${renderRow("Last render preset mismatch", diagnostics.lastRenderPresetMismatchDetected === null ? null : diagnostics.lastRenderPresetMismatchDetected ? "yes" : "no")}
+              ${renderRow("Last render fallback reason", diagnostics.lastRenderPresetFallbackReason)}
               ${renderRow("Last render snapshot", diagnostics.lastRenderSnapshotCreatedAt)}
               ${renderRow("Last render source", diagnostics.lastRenderSource)}
               ${renderRow("Last render status", diagnostics.lastRenderStatus)}

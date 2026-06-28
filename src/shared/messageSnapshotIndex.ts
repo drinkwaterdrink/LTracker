@@ -3,6 +3,7 @@ import type {
   MessageSnapshotIndexEntry,
   TrackerSnapshot,
 } from "./types";
+import { normalizePresetRenderLock } from "./presetRenderLock";
 import {
   DEFAULT_SWIPE_KEY,
   swipeIdentityKey,
@@ -113,6 +114,7 @@ export function normalizeTrackerSnapshotPresetMetadata(snapshot: TrackerSnapshot
       : null,
     editedAt: snapshot.editedAt ?? null,
     editedByUser: snapshot.editedByUser === true,
+    presetRenderLock: normalizePresetRenderLock(snapshot.presetRenderLock),
   };
 }
 
