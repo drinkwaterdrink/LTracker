@@ -59,6 +59,16 @@ var DEFAULT_TRACKER_PRESET = {
     supportsHtmlTemplate: false,
     supportsPartialRegeneration: false,
     supportsSequentialGeneration: false
+  },
+  recommendedConnection: {
+    mode: "active_quiet",
+    temperature: 0.2,
+    max_tokens: 2e3,
+    reasoning: {
+      source: "inherit",
+      effort: "auto"
+    },
+    notes: "Start with active quiet mode, low temperature, and inherited reasoning. Use a selected raw tracker profile after confirming it returns strict JSON."
   }
 };
 function exportTrackerPreset(preset) {
@@ -1093,7 +1103,7 @@ function renderMessageTracker(input) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.12";
+var EXTENSION_VERSION = "0.13";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1101,6 +1111,23 @@ var SPINDLE_TYPES_VERSION = "0.5.21";
 // src/shared/embeddedTrackerTag.ts
 var LTRACKER_TAG_NAME = "ltracker";
 var LTRACKER_TAG_TYPE = "state";
+
+// src/shared/generationRequest.ts
+var TRACKER_CONNECTION_DEFAULT_TEST_PROMPT = "Return a compact JSON object with ok true and a short status.";
+var TRACKER_CONNECTION_PARAMETER_LIMITS = {
+  temperature: { min: 0, max: 2, default: 0.2 },
+  max_tokens: { min: 256, max: 32e3, default: 2e3 },
+  top_p: { min: 0, max: 1, default: null },
+  frequency_penalty: { min: -2, max: 2, default: null },
+  presence_penalty: { min: -2, max: 2, default: null }
+};
+var DEFAULT_TRACKER_CONNECTION_PARAMETERS = {
+  temperature: TRACKER_CONNECTION_PARAMETER_LIMITS.temperature.default,
+  max_tokens: TRACKER_CONNECTION_PARAMETER_LIMITS.max_tokens.default,
+  top_p: null,
+  frequency_penalty: null,
+  presence_penalty: null
+};
 
 // src/shared/settings.ts
 var SETTINGS_LIMITS = {
@@ -1177,6 +1204,20 @@ var DEFAULT_SETTINGS = {
     showGenerationDuration: true,
     minimizedMaxHeightPx: SETTINGS_LIMITS.minimizedMaxHeightPx.default,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default
+  },
+  connection: {
+    mode: "active_quiet",
+    selectedConnectionId: null,
+    selectedConnectionName: null,
+    refreshConnectionsOnDrawerOpen: true,
+    parameters: DEFAULT_TRACKER_CONNECTION_PARAMETERS,
+    reasoning: {
+      source: "inherit",
+      apiReasoning: true,
+      effort: "auto",
+      thinkingDisplay: "auto"
+    },
+    testPrompt: TRACKER_CONNECTION_DEFAULT_TEST_PROMPT
   }
 };
 
@@ -1536,7 +1577,7 @@ function emptyState() {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection is disabled in 0.12 while the Lumiverse context handler return contract is being verified.",
+      contextHandlerDisabledReason: "Context handler injection is disabled in 0.13 while the Lumiverse context handler return contract is being verified.",
       lastContextHandlerError: null,
       messageDisplayEnabled: false,
       messageDisplayMode: null,
@@ -1593,7 +1634,27 @@ function emptyState() {
       lastInlineActionAt: null,
       lastInlineActionError: null,
       nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
-      nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON
+      nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+      connectionMode: DEFAULT_SETTINGS.connection.mode,
+      selectedConnectionId: null,
+      selectedConnectionName: null,
+      selectedConnectionAvailable: false,
+      connectionListCount: 0,
+      lastConnectionRefreshAt: null,
+      lastConnectionRefreshError: null,
+      lastGenerationConnectionModeUsed: null,
+      lastGenerationConnectionIdUsed: null,
+      lastGenerationConnectionNameUsed: null,
+      lastGenerationConnectionFallbackReason: null,
+      lastGenerationParametersUsed: null,
+      lastReasoningOverrideUsed: null,
+      lastConnectionTestAt: null,
+      lastConnectionTestStatus: "idle",
+      lastConnectionTestDurationMs: null,
+      lastConnectionTestError: null,
+      lastConnectionTestOutputPreview: null,
+      lastConnectionTestFinishReason: null,
+      lastConnectionTestUsage: null
     },
     injectionPreview: null,
     renderPreview: null,
@@ -1604,7 +1665,8 @@ function emptyState() {
     activePresetState: {
       selectedPresetId: DEFAULT_TRACKER_PRESET.id,
       selectedAt: (/* @__PURE__ */ new Date(0)).toISOString()
-    }
+    },
+    connectionProfiles: []
   };
 }
 function isRecord3(value) {
@@ -1635,6 +1697,13 @@ function renderRow(label, value) {
     <div class="ltracker-key">${escapeHtml2(label)}</div>
     <div class="ltracker-value">${escapeHtml2(value === null || value === "" ? "None" : String(value))}</div>
   `;
+}
+function numberInputValue(value) {
+  return value === null ? "" : String(value);
+}
+function compactRecord(value) {
+  if (!value) return null;
+  return JSON.stringify(value);
 }
 function renderError(error) {
   if (!error) return "None";
@@ -1774,7 +1843,7 @@ function setup(ctx) {
   }
   function isSettingsControl(target) {
     if (!(target instanceof HTMLElement)) return false;
-    return Boolean(target.closest("[data-setting], [data-renderer-setting], [data-message-display-setting]"));
+    return Boolean(target.closest("[data-setting], [data-renderer-setting], [data-message-display-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning]"));
   }
   function localDiagnostics(update) {
     state = {
@@ -2249,12 +2318,87 @@ function setup(ctx) {
   function requestState() {
     send({ type: "refresh_state", chatId: activeChatId() });
   }
+  function activateDrawer() {
+    if (state.settings.connection.refreshConnectionsOnDrawerOpen) {
+      refreshConnections();
+      return;
+    }
+    requestState();
+  }
   function generateTracker() {
     send({
       type: "generate_tracker",
       chatId: activeChatId(),
       requestId: requestId("generate")
     });
+  }
+  function refreshConnections() {
+    send({
+      type: "refresh_connections",
+      chatId: activeChatId(),
+      requestId: requestId("connections-refresh")
+    });
+  }
+  function testTrackerConnection() {
+    send({
+      type: "test_tracker_connection",
+      chatId: activeChatId(),
+      settings: readSettings(),
+      requestId: requestId("connection-test")
+    });
+  }
+  function cancelConnectionTest() {
+    send({
+      type: "cancel_connection_test",
+      chatId: activeChatId(),
+      requestId: requestId("connection-test-cancel")
+    });
+  }
+  function resetConnectionParameters() {
+    const current = readSettings();
+    state = {
+      ...state,
+      settings: {
+        ...current,
+        connection: {
+          ...current.connection,
+          parameters: DEFAULT_TRACKER_CONNECTION_PARAMETERS
+        }
+      }
+    };
+    render();
+    scheduleSettingsAutosave();
+  }
+  function validReasoningEffort(value) {
+    return value === "auto" || value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "max" || value === "xhigh" ? value : null;
+  }
+  function applyPresetRecommendedConnection() {
+    const recommended = state.activePreset.recommendedConnection;
+    if (!recommended) return;
+    const current = readSettings();
+    const reasoningSource = recommended.reasoning?.source;
+    state = {
+      ...state,
+      settings: {
+        ...current,
+        connection: {
+          ...current.connection,
+          mode: recommended.mode ?? current.connection.mode,
+          parameters: {
+            ...current.connection.parameters,
+            temperature: recommended.temperature ?? current.connection.parameters.temperature,
+            max_tokens: recommended.max_tokens ?? current.connection.parameters.max_tokens
+          },
+          reasoning: {
+            ...current.connection.reasoning,
+            source: reasoningSource === "inherit" || reasoningSource === "off" || reasoningSource === "custom" ? reasoningSource : current.connection.reasoning.source,
+            effort: validReasoningEffort(recommended.reasoning?.effort) ?? current.connection.reasoning.effort
+          }
+        }
+      }
+    };
+    render();
+    scheduleSettingsAutosave();
   }
   function clearSnapshot() {
     send({
@@ -2320,6 +2464,28 @@ function setup(ctx) {
       const input = tab.root.querySelector(`[data-message-display-setting="${name}"]`);
       return input ? input.value : fallback;
     };
+    const connectionBooleanValue = (name) => {
+      const input = tab.root.querySelector(`[data-connection-setting="${name}"]`);
+      return input ? input.checked : state.settings.connection[name];
+    };
+    const connectionTextValue = (name) => {
+      const input = tab.root.querySelector(`[data-connection-setting="${name}"]`);
+      return input ? input.value : state.settings.connection[name];
+    };
+    const connectionSelectValue = (name, fallback) => {
+      const input = tab.root.querySelector(`[data-connection-setting="${name}"], [data-connection-reasoning="${name}"]`);
+      return input ? input.value : fallback;
+    };
+    const connectionParameterValue = (name) => {
+      const input = tab.root.querySelector(`[data-connection-parameter="${name}"]`);
+      if (!input) return state.settings.connection.parameters[name];
+      if (!input.value.trim()) return null;
+      const numeric = Number(input.value);
+      return Number.isFinite(numeric) ? numeric : null;
+    };
+    const selectedConnectionInput = tab.root.querySelector('[data-connection-setting="selectedConnectionId"]');
+    const selectedConnectionId = selectedConnectionInput?.value.trim() || null;
+    const selectedConnection = selectedConnectionId ? state.connectionProfiles.find((profile) => profile.id === selectedConnectionId) ?? null : null;
     return {
       schemaVersion: SETTINGS_SCHEMA_VERSION,
       recentMessageLimit: numberValue("recentMessageLimit"),
@@ -2383,6 +2549,26 @@ function setup(ctx) {
         showGenerationDuration: messageDisplayBooleanValue("showGenerationDuration"),
         minimizedMaxHeightPx: messageDisplayNumberValue("minimizedMaxHeightPx"),
         maxRenderedChars: messageDisplayNumberValue("maxRenderedChars")
+      },
+      connection: {
+        mode: connectionSelectValue("mode", state.settings.connection.mode),
+        selectedConnectionId,
+        selectedConnectionName: selectedConnection ? selectedConnection.name : selectedConnectionId ? state.settings.connection.selectedConnectionName : null,
+        refreshConnectionsOnDrawerOpen: connectionBooleanValue("refreshConnectionsOnDrawerOpen"),
+        parameters: {
+          temperature: connectionParameterValue("temperature"),
+          max_tokens: connectionParameterValue("max_tokens"),
+          top_p: connectionParameterValue("top_p"),
+          frequency_penalty: connectionParameterValue("frequency_penalty"),
+          presence_penalty: connectionParameterValue("presence_penalty")
+        },
+        reasoning: {
+          source: connectionSelectValue("source", state.settings.connection.reasoning.source),
+          apiReasoning: Boolean(tab.root.querySelector('[data-connection-reasoning="apiReasoning"]')?.checked ?? state.settings.connection.reasoning.apiReasoning),
+          effort: connectionSelectValue("effort", state.settings.connection.reasoning.effort),
+          thinkingDisplay: connectionSelectValue("thinkingDisplay", state.settings.connection.reasoning.thinkingDisplay)
+        },
+        testPrompt: connectionTextValue("testPrompt")
       }
     };
   }
@@ -2763,6 +2949,64 @@ function setup(ctx) {
       state.permissions.chatMutation ? "chat_mutation granted" : "chat_mutation missing",
       diagnostics.contextHandlerDisabledReason ? "context_handler disabled by hotfix" : state.permissions.contextHandler ? "context_handler granted" : "context_handler missing"
     ].join(" / ");
+    const connectionSettings = state.settings.connection;
+    const selectedConnection = connectionSettings.selectedConnectionId ? state.connectionProfiles.find((profile) => profile.id === connectionSettings.selectedConnectionId) ?? null : null;
+    const connectionOptions = [
+      `<option value=""${selected(!connectionSettings.selectedConnectionId)}>None selected</option>`,
+      ...state.connectionProfiles.map((profile) => {
+        const label = [
+          profile.name,
+          profile.provider ? `provider ${profile.provider}` : null,
+          profile.model ? `model ${profile.model}` : null,
+          profile.is_default ? "default" : null
+        ].filter((item) => Boolean(item)).join(" / ");
+        return `<option value="${escapeHtml2(profile.id)}"${selected(profile.id === connectionSettings.selectedConnectionId)}>${escapeHtml2(label)}</option>`;
+      }),
+      connectionSettings.selectedConnectionId && !selectedConnection ? `<option value="${escapeHtml2(connectionSettings.selectedConnectionId)}" selected>${escapeHtml2(connectionSettings.selectedConnectionName ?? connectionSettings.selectedConnectionId)} (missing)</option>` : ""
+    ].join("");
+    const connectionWarning = connectionSettings.mode !== "active_quiet" && !connectionSettings.selectedConnectionId ? "Selected connection mode needs a connection profile. LTracker will fall back to active quiet mode." : connectionSettings.mode !== "active_quiet" && !selectedConnection ? "Selected tracker connection is not in the current profile list. LTracker will fall back to active quiet mode." : diagnostics.lastGenerationConnectionFallbackReason;
+    const reasoningControls = connectionSettings.reasoning.source === "custom" ? `
+            <label class="ltracker-check">
+              <input type="checkbox" data-connection-reasoning="apiReasoning"${checked(connectionSettings.reasoning.apiReasoning)}>
+              API reasoning
+            </label>
+            <label class="ltracker-field">
+              Effort
+              <select data-connection-reasoning="effort">
+                <option value="auto"${selected(connectionSettings.reasoning.effort === "auto")}>Auto</option>
+                <option value="none"${selected(connectionSettings.reasoning.effort === "none")}>None</option>
+                <option value="minimal"${selected(connectionSettings.reasoning.effort === "minimal")}>Minimal</option>
+                <option value="low"${selected(connectionSettings.reasoning.effort === "low")}>Low</option>
+                <option value="medium"${selected(connectionSettings.reasoning.effort === "medium")}>Medium</option>
+                <option value="high"${selected(connectionSettings.reasoning.effort === "high")}>High</option>
+                <option value="max"${selected(connectionSettings.reasoning.effort === "max")}>Max</option>
+                <option value="xhigh"${selected(connectionSettings.reasoning.effort === "xhigh")}>XHigh</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Thinking display
+              <select data-connection-reasoning="thinkingDisplay">
+                <option value="auto"${selected(connectionSettings.reasoning.thinkingDisplay === "auto")}>Auto</option>
+                <option value="summarized"${selected(connectionSettings.reasoning.thinkingDisplay === "summarized")}>Summarized</option>
+                <option value="omitted"${selected(connectionSettings.reasoning.thinkingDisplay === "omitted")}>Omitted</option>
+              </select>
+            </label>
+        ` : "";
+    const connectionTestRunning = diagnostics.lastConnectionTestStatus === "running";
+    const connectionTestSummary = [
+      `status ${diagnostics.lastConnectionTestStatus}`,
+      diagnostics.lastConnectionTestDurationMs !== null ? `duration ${formatDurationMs2(diagnostics.lastConnectionTestDurationMs)}` : null,
+      diagnostics.lastConnectionTestFinishReason ? `finish ${diagnostics.lastConnectionTestFinishReason}` : null,
+      diagnostics.lastConnectionTestError ? `error ${diagnostics.lastConnectionTestError}` : null
+    ].filter((item) => Boolean(item)).join(" / ");
+    const recommendedConnection = activePreset.recommendedConnection;
+    const recommendedConnectionText = recommendedConnection ? [
+      recommendedConnection.notes ?? null,
+      recommendedConnection.mode ? `mode ${recommendedConnection.mode}` : null,
+      recommendedConnection.temperature !== void 0 ? `temperature ${recommendedConnection.temperature}` : null,
+      recommendedConnection.max_tokens !== void 0 ? `max_tokens ${recommendedConnection.max_tokens}` : null,
+      recommendedConnection.reasoning?.source ? `reasoning ${recommendedConnection.reasoning.source}` : null
+    ].filter((item) => Boolean(item)).join(" / ") : null;
     tab.root.innerHTML = `
       <section class="ltracker-shell">
         <header class="ltracker-header">
@@ -2840,6 +3084,104 @@ function setup(ctx) {
           <div class="ltracker-actions" style="margin-top: 10px;">
             <span class="ltracker-save-status" data-settings-save-status>${escapeHtml2(settingsSaveStatusLabel())}</span>
             <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
+          </div>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Tracker Connection</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-field">
+              Mode
+              <select data-connection-setting="mode">
+                <option value="active_quiet"${selected(connectionSettings.mode === "active_quiet")}>Active chat connection</option>
+                <option value="selected_connection_quiet"${selected(connectionSettings.mode === "selected_connection_quiet")}>Selected connection, quiet mode</option>
+                <option value="selected_connection_raw"${selected(connectionSettings.mode === "selected_connection_raw")}>Selected connection, raw mode</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Profile
+              <select data-connection-setting="selectedConnectionId">
+                ${connectionOptions}
+              </select>
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-connection-setting="refreshConnectionsOnDrawerOpen"${checked(connectionSettings.refreshConnectionsOnDrawerOpen)}>
+              Refresh on drawer open
+            </label>
+            <label class="ltracker-field ltracker-field-wide">
+              Test prompt
+              <textarea data-connection-setting="testPrompt">${escapeHtml2(connectionSettings.testPrompt || TRACKER_CONNECTION_DEFAULT_TEST_PROMPT)}</textarea>
+            </label>
+          </div>
+          ${connectionWarning ? `<p class="ltracker-note">${escapeHtml2(connectionWarning)}</p>` : ""}
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="refresh-connections">Refresh Connections</button>
+            <button class="ltracker-button" type="button" data-action="test-connection" ${disabled(connectionTestRunning)}>Test Tracker Connection</button>
+            <button class="ltracker-button" type="button" data-action="cancel-connection-test" ${disabled(!connectionTestRunning)}>Cancel Test</button>
+          </div>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Selected name", selectedConnection?.name ?? connectionSettings.selectedConnectionName)}
+            ${renderRow("Selected id", connectionSettings.selectedConnectionId)}
+            ${renderRow("Provider", selectedConnection?.provider ?? null)}
+            ${renderRow("Model", selectedConnection?.model ?? null)}
+            ${renderRow("Has API key", selectedConnection?.has_api_key === null || selectedConnection?.has_api_key === void 0 ? null : selectedConnection.has_api_key ? "yes" : "no")}
+            ${renderRow("Reasoning binding", compactRecord(selectedConnection?.reasoning_bindings ?? null))}
+            ${renderRow("Profiles loaded", state.connectionProfiles.length)}
+            ${renderRow("Last refresh", diagnostics.lastConnectionRefreshAt)}
+            ${renderRow("Refresh error", diagnostics.lastConnectionRefreshError)}
+            ${renderRow("Connection test", connectionTestSummary || null)}
+          </div>
+          <details class="ltracker-details">
+            <summary>Last connection test output</summary>
+            <pre class="ltracker-text">${escapeHtml2(diagnostics.lastConnectionTestOutputPreview ?? "None")}</pre>
+          </details>
+          <details class="ltracker-details">
+            <summary>Last connection test usage</summary>
+            <pre class="ltracker-text">${escapeHtml2(compactRecord(diagnostics.lastConnectionTestUsage) ?? "None")}</pre>
+          </details>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Tracker Generation Parameters</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-field">
+              Temperature
+              <input type="number" min="0" max="2" step="0.05" data-connection-parameter="temperature" value="${escapeHtml2(numberInputValue(connectionSettings.parameters.temperature))}">
+            </label>
+            <label class="ltracker-field">
+              Max tokens
+              <input type="number" min="256" max="32000" step="256" data-connection-parameter="max_tokens" value="${escapeHtml2(numberInputValue(connectionSettings.parameters.max_tokens))}">
+            </label>
+            <label class="ltracker-field">
+              Top p
+              <input type="number" min="0" max="1" step="0.05" data-connection-parameter="top_p" value="${escapeHtml2(numberInputValue(connectionSettings.parameters.top_p))}">
+            </label>
+            <label class="ltracker-field">
+              Frequency penalty
+              <input type="number" min="-2" max="2" step="0.05" data-connection-parameter="frequency_penalty" value="${escapeHtml2(numberInputValue(connectionSettings.parameters.frequency_penalty))}">
+            </label>
+            <label class="ltracker-field">
+              Presence penalty
+              <input type="number" min="-2" max="2" step="0.05" data-connection-parameter="presence_penalty" value="${escapeHtml2(numberInputValue(connectionSettings.parameters.presence_penalty))}">
+            </label>
+          </div>
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="reset-connection-parameters">Reset Parameters</button>
+          </div>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Tracker Reasoning</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-field">
+              Source
+              <select data-connection-reasoning="source">
+                <option value="inherit"${selected(connectionSettings.reasoning.source === "inherit")}>Inherit</option>
+                <option value="off"${selected(connectionSettings.reasoning.source === "off")}>Off</option>
+                <option value="custom"${selected(connectionSettings.reasoning.source === "custom")}>Custom</option>
+              </select>
+            </label>
+            ${reasoningControls}
           </div>
         </section>
 
@@ -3162,9 +3504,13 @@ function setup(ctx) {
             </label>
           </div>
           ${presetHtmlWarning ? `<p class="ltracker-note">${escapeHtml2(presetHtmlWarning)}</p>` : ""}
+          ${recommendedConnectionText ? `<p class="ltracker-note">${escapeHtml2(recommendedConnectionText)}</p>` : ""}
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
               Render With Latest Snapshot
+            </button>
+            <button class="ltracker-button" type="button" data-action="apply-preset-connection" ${disabled(!recommendedConnection)}>
+              Apply Preset Recommended Tracker Settings
             </button>
             <button class="ltracker-button" type="button" data-action="save-preset-new">Save As New Preset</button>
             <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate Preset</button>
@@ -3185,6 +3531,25 @@ function setup(ctx) {
             ${renderRow("Current status", state.status)}
             ${renderRow("Auto mode", autoStatus)}
             ${renderRow("Permission status", permissionText)}
+            ${renderRow("Connection mode", diagnostics.connectionMode)}
+            ${renderRow("Selected connection id", diagnostics.selectedConnectionId)}
+            ${renderRow("Selected connection name", diagnostics.selectedConnectionName)}
+            ${renderRow("Selected connection available", diagnostics.selectedConnectionAvailable ? "yes" : "no")}
+            ${renderRow("Connection list count", diagnostics.connectionListCount)}
+            ${renderRow("Last connection refresh", diagnostics.lastConnectionRefreshAt)}
+            ${renderRow("Last connection refresh error", diagnostics.lastConnectionRefreshError)}
+            ${renderRow("Last generation connection mode", diagnostics.lastGenerationConnectionModeUsed)}
+            ${renderRow("Last generation connection id", diagnostics.lastGenerationConnectionIdUsed)}
+            ${renderRow("Last generation connection name", diagnostics.lastGenerationConnectionNameUsed)}
+            ${renderRow("Last generation connection fallback", diagnostics.lastGenerationConnectionFallbackReason)}
+            ${renderRow("Last generation parameters", compactRecord(diagnostics.lastGenerationParametersUsed))}
+            ${renderRow("Last reasoning override", compactRecord(diagnostics.lastReasoningOverrideUsed))}
+            ${renderRow("Last connection test at", diagnostics.lastConnectionTestAt)}
+            ${renderRow("Last connection test status", diagnostics.lastConnectionTestStatus)}
+            ${renderRow("Last connection test duration", diagnostics.lastConnectionTestDurationMs)}
+            ${renderRow("Last connection test error", diagnostics.lastConnectionTestError)}
+            ${renderRow("Last connection test finish", diagnostics.lastConnectionTestFinishReason)}
+            ${renderRow("Last connection test usage", compactRecord(diagnostics.lastConnectionTestUsage))}
             ${renderRow("Message display enabled", diagnostics.messageDisplayEnabled ? "yes" : "no")}
             ${renderRow("Message display mode", diagnostics.messageDisplayMode)}
             ${renderRow("Message display renderer", diagnostics.messageDisplayRenderer)}
@@ -3351,6 +3716,11 @@ function setup(ctx) {
     const historyEntry = findHistoryEntry(target?.dataset.messageId, target?.dataset.swipeKey ?? null);
     if (action === "generate") generateTracker();
     if (action === "refresh") requestState();
+    if (action === "refresh-connections") refreshConnections();
+    if (action === "test-connection") testTrackerConnection();
+    if (action === "cancel-connection-test") cancelConnectionTest();
+    if (action === "reset-connection-parameters") resetConnectionParameters();
+    if (action === "apply-preset-connection") applyPresetRecommendedConnection();
     if (action === "clear-snapshot") clearSnapshot();
     if (action === "reset-settings") resetSettings();
     if (action === "copy-snapshot") {
@@ -3417,7 +3787,7 @@ function setup(ctx) {
     attrs: { type: LTRACKER_TAG_TYPE },
     removeFromMessage: true
   }, handleEmbeddedTrackerTag));
-  cleanups.push(tab.onActivate(requestState));
+  cleanups.push(tab.onActivate(activateDrawer));
   cleanups.push(inputAction.onClick(generateTracker));
   cleanups.push(ctx.onBackendMessage((payload) => {
     if (!isBackendMessage(payload)) return;

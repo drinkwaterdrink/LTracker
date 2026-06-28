@@ -228,10 +228,10 @@ function emptyDecision(skippedReason) {
 
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
-var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.12 while the Lumiverse context handler return contract is being verified.";
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.13 while the Lumiverse context handler return contract is being verified.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.12";
+var EXTENSION_VERSION = "0.13";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1512,6 +1512,16 @@ var DEFAULT_TRACKER_PRESET = {
     supportsHtmlTemplate: false,
     supportsPartialRegeneration: false,
     supportsSequentialGeneration: false
+  },
+  recommendedConnection: {
+    mode: "active_quiet",
+    temperature: 0.2,
+    max_tokens: 2e3,
+    reasoning: {
+      source: "inherit",
+      effort: "auto"
+    },
+    notes: "Start with active quiet mode, low temperature, and inherited reasoning. Use a selected raw tracker profile after confirming it returns strict JSON."
   }
 };
 function isRecord5(value) {
@@ -1526,12 +1536,45 @@ function optionalString(value) {
 function validOrigin(value) {
   return value === "built_in" || value === "user_imported" || value === "user_created";
 }
+function recommendedMode(value) {
+  return value === "active_quiet" || value === "selected_connection_quiet" || value === "selected_connection_raw" ? value : void 0;
+}
+function recommendedReasoningSource(value) {
+  return value === "inherit" || value === "off" || value === "custom" ? value : void 0;
+}
+function boundedNumber(value, min, max) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return void 0;
+  return Math.min(max, Math.max(min, value));
+}
 function repairCapabilities(value) {
   if (!isRecord5(value)) return void 0;
   const result = {};
   if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
   if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
   if (typeof value.supportsSequentialGeneration === "boolean") result.supportsSequentialGeneration = value.supportsSequentialGeneration;
+  return Object.keys(result).length > 0 ? result : void 0;
+}
+function repairRecommendedConnection(value) {
+  if (!isRecord5(value)) return void 0;
+  const result = {};
+  const mode = recommendedMode(value.mode);
+  if (mode) result.mode = mode;
+  const temperature = boundedNumber(value.temperature, 0, 2);
+  if (temperature !== void 0) result.temperature = temperature;
+  const maxTokens = boundedNumber(value.max_tokens, 256, 32e3);
+  if (maxTokens !== void 0) result.max_tokens = Math.round(maxTokens);
+  const reasoning = isRecord5(value.reasoning) ? value.reasoning : null;
+  if (reasoning) {
+    const source = recommendedReasoningSource(reasoning.source);
+    const effort = typeof reasoning.effort === "string" ? reasoning.effort : void 0;
+    if (source || effort) {
+      result.reasoning = {};
+      if (source) result.reasoning.source = source;
+      if (effort) result.reasoning.effort = effort;
+    }
+  }
+  const notes = optionalString(value.notes);
+  if (notes !== void 0) result.notes = notes;
   return Object.keys(result).length > 0 ? result : void 0;
 }
 function sanitizePresetId(value) {
@@ -1576,6 +1619,9 @@ function validateTrackerPreset(value) {
   if ("htmlTemplate" in value && typeof value.htmlTemplate !== "string") {
     return { ok: false, error: "HTML template must be text." };
   }
+  if ("recommendedConnection" in value && value.recommendedConnection !== void 0 && !isRecord5(value.recommendedConnection)) {
+    return { ok: false, error: "Recommended connection must be an object." };
+  }
   return { ok: true, error: null };
 }
 function repairTrackerPreset(value) {
@@ -1599,6 +1645,8 @@ function repairTrackerPreset(value) {
   if (notes !== void 0) preset.notes = notes;
   const capabilities = repairCapabilities(value.capabilities);
   if (capabilities) preset.capabilities = capabilities;
+  const recommendedConnection = repairRecommendedConnection(value.recommendedConnection);
+  if (recommendedConnection) preset.recommendedConnection = recommendedConnection;
   return validateTrackerPreset(preset).ok ? preset : null;
 }
 function draftToPreset(draft, options) {
@@ -1616,6 +1664,7 @@ function draftToPreset(draft, options) {
   if (draft.htmlTemplate !== void 0) preset.htmlTemplate = draft.htmlTemplate;
   if (draft.notes !== void 0) preset.notes = draft.notes;
   if (draft.capabilities) preset.capabilities = draft.capabilities;
+  if (draft.recommendedConnection) preset.recommendedConnection = draft.recommendedConnection;
   return preset;
 }
 function importTrackerPresetEnvelope(value, existingIds, now) {
@@ -1652,6 +1701,139 @@ function resolveSelectedPreset(presets, selectedPresetId) {
   return {
     preset: DEFAULT_TRACKER_PRESET,
     fallbackReason: `Selected preset ${selectedPresetId} was not found; using Default Scene Tracker.`
+  };
+}
+
+// src/shared/generationRequest.ts
+var TRACKER_CONNECTION_DEFAULT_TEST_PROMPT = "Return a compact JSON object with ok true and a short status.";
+var TRACKER_CONNECTION_PARAMETER_LIMITS = {
+  temperature: { min: 0, max: 2, default: 0.2 },
+  max_tokens: { min: 256, max: 32e3, default: 2e3 },
+  top_p: { min: 0, max: 1, default: null },
+  frequency_penalty: { min: -2, max: 2, default: null },
+  presence_penalty: { min: -2, max: 2, default: null }
+};
+var DEFAULT_TRACKER_CONNECTION_PARAMETERS = {
+  temperature: TRACKER_CONNECTION_PARAMETER_LIMITS.temperature.default,
+  max_tokens: TRACKER_CONNECTION_PARAMETER_LIMITS.max_tokens.default,
+  top_p: null,
+  frequency_penalty: null,
+  presence_penalty: null
+};
+function finiteNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+function cleanParameterValue(value, limits, integer = false) {
+  if (value === null || value === void 0 || value === "") return null;
+  const numeric = finiteNumber(value);
+  if (numeric === null) return null;
+  const clamped = clamp(numeric, limits.min, limits.max);
+  return integer ? Math.round(clamped) : clamped;
+}
+function cleanTrackerGenerationParameters(parameters) {
+  if (!parameters) return null;
+  const result = {};
+  const temperature = cleanParameterValue(parameters.temperature, TRACKER_CONNECTION_PARAMETER_LIMITS.temperature);
+  const maxTokens = cleanParameterValue(parameters.max_tokens, TRACKER_CONNECTION_PARAMETER_LIMITS.max_tokens, true);
+  const topP = cleanParameterValue(parameters.top_p, TRACKER_CONNECTION_PARAMETER_LIMITS.top_p);
+  const frequencyPenalty = cleanParameterValue(
+    parameters.frequency_penalty,
+    TRACKER_CONNECTION_PARAMETER_LIMITS.frequency_penalty
+  );
+  const presencePenalty = cleanParameterValue(
+    parameters.presence_penalty,
+    TRACKER_CONNECTION_PARAMETER_LIMITS.presence_penalty
+  );
+  if (temperature !== null) result.temperature = temperature;
+  if (maxTokens !== null) result.max_tokens = maxTokens;
+  if (topP !== null) result.top_p = topP;
+  if (frequencyPenalty !== null) result.frequency_penalty = frequencyPenalty;
+  if (presencePenalty !== null) result.presence_penalty = presencePenalty;
+  return Object.keys(result).length > 0 ? result : null;
+}
+function buildTrackerReasoningOverride(reasoning) {
+  if (!reasoning || reasoning.source === "inherit") return null;
+  if (reasoning.source === "off") {
+    return {
+      source: "off",
+      apiReasoning: false
+    };
+  }
+  return {
+    source: "custom",
+    apiReasoning: reasoning.apiReasoning,
+    effort: reasoning.effort,
+    thinkingDisplay: reasoning.thinkingDisplay
+  };
+}
+function activeQuietResult(messages, signal, parametersUsed, reasoningOverrideUsed, fallbackReason) {
+  const request = {
+    type: "quiet",
+    messages
+  };
+  if (parametersUsed) request.parameters = parametersUsed;
+  if (reasoningOverrideUsed) request.reasoning = reasoningOverrideUsed;
+  if (signal) request.signal = signal;
+  return {
+    request,
+    modeUsed: "active_quiet",
+    connectionIdUsed: null,
+    connectionNameUsed: null,
+    fallbackReason,
+    parametersUsed,
+    reasoningOverrideUsed
+  };
+}
+function buildTrackerGenerationRequest(input) {
+  const connectionSettings = input.settings.connection;
+  const quietSupportsConnectionId = input.quietSupportsConnectionId !== false;
+  const parametersUsed = cleanTrackerGenerationParameters(connectionSettings.parameters);
+  const reasoningOverrideUsed = buildTrackerReasoningOverride(connectionSettings.reasoning);
+  if (connectionSettings.mode === "active_quiet") {
+    return activeQuietResult(input.messages, input.signal, parametersUsed, reasoningOverrideUsed, null);
+  }
+  if (!connectionSettings.selectedConnectionId) {
+    return activeQuietResult(
+      input.messages,
+      input.signal,
+      parametersUsed,
+      reasoningOverrideUsed,
+      "Selected connection mode requires a selected connection."
+    );
+  }
+  if (!input.selectedConnection) {
+    return activeQuietResult(
+      input.messages,
+      input.signal,
+      parametersUsed,
+      reasoningOverrideUsed,
+      "Selected tracker connection is missing or unavailable."
+    );
+  }
+  const request = {
+    type: connectionSettings.mode === "selected_connection_raw" || !quietSupportsConnectionId ? "raw" : "quiet",
+    messages: input.messages,
+    connection_id: input.selectedConnection.id
+  };
+  if (parametersUsed) request.parameters = parametersUsed;
+  if (reasoningOverrideUsed) request.reasoning = reasoningOverrideUsed;
+  if (input.signal) request.signal = input.signal;
+  return {
+    request,
+    modeUsed: request.type === "raw" ? "selected_connection_raw" : "selected_connection_quiet",
+    connectionIdUsed: input.selectedConnection.id,
+    connectionNameUsed: input.selectedConnection.name,
+    fallbackReason: connectionSettings.mode === "selected_connection_quiet" && !quietSupportsConnectionId ? "Quiet generation does not support connection_id in this Lumiverse build; using raw generation." : null,
+    parametersUsed,
+    reasoningOverrideUsed
   };
 }
 
@@ -1730,6 +1912,20 @@ var DEFAULT_SETTINGS = {
     showGenerationDuration: true,
     minimizedMaxHeightPx: SETTINGS_LIMITS.minimizedMaxHeightPx.default,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default
+  },
+  connection: {
+    mode: "active_quiet",
+    selectedConnectionId: null,
+    selectedConnectionName: null,
+    refreshConnectionsOnDrawerOpen: true,
+    parameters: DEFAULT_TRACKER_CONNECTION_PARAMETERS,
+    reasoning: {
+      source: "inherit",
+      apiReasoning: true,
+      effort: "auto",
+      thinkingDisplay: "auto"
+    },
+    testPrompt: TRACKER_CONNECTION_DEFAULT_TEST_PROMPT
   }
 };
 function isRecord6(value) {
@@ -1740,12 +1936,42 @@ function clampNumber(value, fallback, min, max) {
   if (!Number.isFinite(numeric)) return fallback;
   return Math.min(max, Math.max(min, Math.round(numeric)));
 }
+function hasOwn(source, key) {
+  return Object.prototype.hasOwnProperty.call(source, key);
+}
+function stringOrNull2(value) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+function clampNullableNumber(source, key, fallback, min, max, integer = false) {
+  if (!hasOwn(source, key)) return fallback;
+  const value = source[key];
+  if (value === null || value === void 0 || value === "") return null;
+  const numeric = typeof value === "number" && Number.isFinite(value) ? value : typeof value === "string" && value.trim() ? Number(value) : null;
+  if (numeric === null || !Number.isFinite(numeric)) return null;
+  const clamped = Math.min(max, Math.max(min, numeric));
+  return integer ? Math.round(clamped) : clamped;
+}
+function connectionMode(value) {
+  return value === "active_quiet" || value === "selected_connection_quiet" || value === "selected_connection_raw" ? value : DEFAULT_SETTINGS.connection.mode;
+}
+function reasoningSource(value) {
+  return value === "inherit" || value === "off" || value === "custom" ? value : DEFAULT_SETTINGS.connection.reasoning.source;
+}
+function reasoningEffort(value) {
+  return value === "auto" || value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "max" || value === "xhigh" ? value : DEFAULT_SETTINGS.connection.reasoning.effort;
+}
+function thinkingDisplay(value) {
+  return value === "auto" || value === "summarized" || value === "omitted" ? value : DEFAULT_SETTINGS.connection.reasoning.thinkingDisplay;
+}
 function repairSettings(value) {
   const source = isRecord6(value) ? value : {};
   const autoSource = isRecord6(source.auto) ? source.auto : {};
   const injectionSource = isRecord6(source.injection) ? source.injection : {};
   const rendererSource = isRecord6(source.renderer) ? source.renderer : {};
   const messageDisplaySource = isRecord6(source.messageDisplay) ? source.messageDisplay : {};
+  const connectionSource = isRecord6(source.connection) ? source.connection : {};
+  const connectionParameterSource = isRecord6(connectionSource.parameters) ? connectionSource.parameters : {};
+  const connectionReasoningSource = isRecord6(connectionSource.reasoning) ? connectionSource.reasoning : {};
   const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot" ? injectionSource.mode : DEFAULT_SETTINGS.injection.mode;
   const format = injectionSource.format === "pretty_json" || injectionSource.format === "minimal" || injectionSource.format === "compact" ? injectionSource.format : DEFAULT_SETTINGS.injection.format;
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot" ? rendererSource.previewSource : DEFAULT_SETTINGS.renderer.previewSource;
@@ -1864,6 +2090,57 @@ function repairSettings(value) {
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.min,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.max
       )
+    },
+    connection: {
+      mode: connectionMode(connectionSource.mode),
+      selectedConnectionId: stringOrNull2(connectionSource.selectedConnectionId),
+      selectedConnectionName: stringOrNull2(connectionSource.selectedConnectionName),
+      refreshConnectionsOnDrawerOpen: typeof connectionSource.refreshConnectionsOnDrawerOpen === "boolean" ? connectionSource.refreshConnectionsOnDrawerOpen : DEFAULT_SETTINGS.connection.refreshConnectionsOnDrawerOpen,
+      parameters: {
+        temperature: clampNullableNumber(
+          connectionParameterSource,
+          "temperature",
+          TRACKER_CONNECTION_PARAMETER_LIMITS.temperature.default,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.temperature.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.temperature.max
+        ),
+        max_tokens: clampNullableNumber(
+          connectionParameterSource,
+          "max_tokens",
+          TRACKER_CONNECTION_PARAMETER_LIMITS.max_tokens.default,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.max_tokens.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.max_tokens.max,
+          true
+        ),
+        top_p: clampNullableNumber(
+          connectionParameterSource,
+          "top_p",
+          null,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.top_p.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.top_p.max
+        ),
+        frequency_penalty: clampNullableNumber(
+          connectionParameterSource,
+          "frequency_penalty",
+          null,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.frequency_penalty.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.frequency_penalty.max
+        ),
+        presence_penalty: clampNullableNumber(
+          connectionParameterSource,
+          "presence_penalty",
+          null,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.presence_penalty.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.presence_penalty.max
+        )
+      },
+      reasoning: {
+        source: reasoningSource(connectionReasoningSource.source),
+        apiReasoning: typeof connectionReasoningSource.apiReasoning === "boolean" ? connectionReasoningSource.apiReasoning : DEFAULT_SETTINGS.connection.reasoning.apiReasoning,
+        effort: reasoningEffort(connectionReasoningSource.effort),
+        thinkingDisplay: thinkingDisplay(connectionReasoningSource.thinkingDisplay)
+      },
+      testPrompt: typeof connectionSource.testPrompt === "string" && connectionSource.testPrompt.trim() ? connectionSource.testPrompt : TRACKER_CONNECTION_DEFAULT_TEST_PROMPT
     }
   };
 }
@@ -1967,6 +2244,8 @@ var BUILD_INFO = {
 };
 var activeJobs = /* @__PURE__ */ new Map();
 var pendingAutoJobs = /* @__PURE__ */ new Map();
+var connectionProfilesByUser = /* @__PURE__ */ new Map();
+var connectionTestJobs = /* @__PURE__ */ new Map();
 var activeChatByUser = /* @__PURE__ */ new Map();
 var usersByChat = /* @__PURE__ */ new Map();
 var eventCleanups = [];
@@ -2007,7 +2286,10 @@ function isFrontendMessage(payload) {
   if (![
     "ready",
     "refresh_state",
+    "refresh_connections",
     "generate_tracker",
+    "test_tracker_connection",
+    "cancel_connection_test",
     "clear_snapshot",
     "save_settings",
     "reset_settings",
@@ -2030,6 +2312,9 @@ function isFrontendMessage(payload) {
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if ([
     "generate_tracker",
+    "refresh_connections",
+    "test_tracker_connection",
+    "cancel_connection_test",
     "clear_snapshot",
     "save_settings",
     "reset_settings",
@@ -2050,6 +2335,7 @@ function isFrontendMessage(payload) {
     "embedded_tracker_tag_intercepted"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
   if (payload.type === "save_settings" && !isRecord7(payload.settings)) return false;
+  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord7(payload.settings)) return false;
   if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord7(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
@@ -2192,10 +2478,30 @@ function defaultDiagnostics(chatId) {
     lastInlineActionAt: null,
     lastInlineActionError: null,
     nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
-    nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON
+    nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+    connectionMode: DEFAULT_SETTINGS.connection.mode,
+    selectedConnectionId: DEFAULT_SETTINGS.connection.selectedConnectionId,
+    selectedConnectionName: DEFAULT_SETTINGS.connection.selectedConnectionName,
+    selectedConnectionAvailable: false,
+    connectionListCount: 0,
+    lastConnectionRefreshAt: null,
+    lastConnectionRefreshError: null,
+    lastGenerationConnectionModeUsed: null,
+    lastGenerationConnectionIdUsed: null,
+    lastGenerationConnectionNameUsed: null,
+    lastGenerationConnectionFallbackReason: null,
+    lastGenerationParametersUsed: null,
+    lastReasoningOverrideUsed: null,
+    lastConnectionTestAt: null,
+    lastConnectionTestStatus: "idle",
+    lastConnectionTestDurationMs: null,
+    lastConnectionTestError: null,
+    lastConnectionTestOutputPreview: null,
+    lastConnectionTestFinishReason: null,
+    lastConnectionTestUsage: null
   };
 }
-function stringOrNull2(value) {
+function stringOrNull3(value) {
   return typeof value === "string" ? value : null;
 }
 function numberOrNull2(value) {
@@ -2246,6 +2552,9 @@ function mountPointStrategy(value) {
 function inlineActionOrNull(value) {
   return value === "generate" || value === "regenerate" || value === "cancel" || value === "edit" || value === "delete" || value === "toggle" ? value : null;
 }
+function connectionTestStatus(value) {
+  return value === "idle" || value === "running" || value === "success" || value === "error" || value === "cancelled" ? value : "idle";
+}
 function activeTrackerJobsOrEmpty(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => {
@@ -2277,51 +2586,51 @@ function repairDiagnostics(value, chatId) {
   return {
     ...base,
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
-    lastJobId: stringOrNull2(value.lastJobId),
-    lastRequestId: stringOrNull2(value.lastRequestId),
+    lastJobId: stringOrNull3(value.lastJobId),
+    lastRequestId: stringOrNull3(value.lastRequestId),
     lastGenerationSource: sourceKindOrNull(value.lastGenerationSource),
-    lastGenerationStartedAt: stringOrNull2(value.lastGenerationStartedAt),
-    lastGenerationCompletedAt: stringOrNull2(value.lastGenerationCompletedAt),
+    lastGenerationStartedAt: stringOrNull3(value.lastGenerationStartedAt),
+    lastGenerationCompletedAt: stringOrNull3(value.lastGenerationCompletedAt),
     lastGenerationDurationMs: numberOrNull2(value.lastGenerationDurationMs),
     lastMessagesRead: typeof value.lastMessagesRead === "number" && Number.isFinite(value.lastMessagesRead) ? Math.max(0, Math.round(value.lastMessagesRead)) : 0,
     lastSourceMessageIds: stringArray(value.lastSourceMessageIds),
-    lastSourceMessageRange: stringOrNull2(value.lastSourceMessageRange),
-    lastRawOutput: stringOrNull2(value.lastRawOutput),
+    lastSourceMessageRange: stringOrNull3(value.lastSourceMessageRange),
+    lastRawOutput: stringOrNull3(value.lastRawOutput),
     lastParsedTracker: recordOrNull(value.lastParsedTracker),
-    lastPromptPreview: stringOrNull2(value.lastPromptPreview),
+    lastPromptPreview: stringOrNull3(value.lastPromptPreview),
     lastError: errorOrNull(value.lastError),
     lastCancellation: cancellationOrNull(value.lastCancellation),
     autoSubscriptionActive: autoSubscriptionsActive,
-    lastAutoEventAt: stringOrNull2(value.lastAutoEventAt),
+    lastAutoEventAt: stringOrNull3(value.lastAutoEventAt),
     lastAutoEventType: autoEventTypeOrNull(value.lastAutoEventType),
-    lastAutoSkippedReason: stringOrNull2(value.lastAutoSkippedReason),
-    lastAutoScheduledAt: stringOrNull2(value.lastAutoScheduledAt),
-    lastAutoTriggeredAt: stringOrNull2(value.lastAutoTriggeredAt),
-    lastAutoSourceMessageId: stringOrNull2(value.lastAutoSourceMessageId),
+    lastAutoSkippedReason: stringOrNull3(value.lastAutoSkippedReason),
+    lastAutoScheduledAt: stringOrNull3(value.lastAutoScheduledAt),
+    lastAutoTriggeredAt: stringOrNull3(value.lastAutoTriggeredAt),
+    lastAutoSourceMessageId: stringOrNull3(value.lastAutoSourceMessageId),
     lastAutoSourceMessageIndex: nonNegativeInteger(value.lastAutoSourceMessageIndex),
-    lastAutoGenerationId: stringOrNull2(value.lastAutoGenerationId),
-    latestAttachedMessageId: stringOrNull2(value.latestAttachedMessageId),
+    lastAutoGenerationId: stringOrNull3(value.lastAutoGenerationId),
+    latestAttachedMessageId: stringOrNull3(value.latestAttachedMessageId),
     latestAttachedMessageIndex: nonNegativeInteger(value.latestAttachedMessageIndex),
-    latestAttachedSnapshotAt: stringOrNull2(value.latestAttachedSnapshotAt),
-    latestAttachedSnapshotStorageKey: stringOrNull2(value.latestAttachedSnapshotStorageKey),
+    latestAttachedSnapshotAt: stringOrNull3(value.latestAttachedSnapshotAt),
+    latestAttachedSnapshotStorageKey: stringOrNull3(value.latestAttachedSnapshotStorageKey),
     injectionEnabled: typeof value.injectionEnabled === "boolean" ? value.injectionEnabled : false,
-    lastInjectionAt: stringOrNull2(value.lastInjectionAt),
+    lastInjectionAt: stringOrNull3(value.lastInjectionAt),
     lastInjectionMode: injectionModeOrNull(value.lastInjectionMode),
     lastInjectionFormat: injectionFormatOrNull(value.lastInjectionFormat),
     lastInjectedChars: typeof value.lastInjectedChars === "number" && Number.isFinite(value.lastInjectedChars) ? Math.max(0, Math.round(value.lastInjectedChars)) : 0,
-    lastInjectionSkippedReason: stringOrNull2(value.lastInjectionSkippedReason),
-    lastInjectionSnapshotCreatedAt: stringOrNull2(value.lastInjectionSnapshotCreatedAt),
-    lastInjectionSourceMessageId: stringOrNull2(value.lastInjectionSourceMessageId),
-    selectedPresetId: stringOrNull2(value.selectedPresetId),
-    selectedPresetName: stringOrNull2(value.selectedPresetName),
-    lastPresetFallbackReason: stringOrNull2(value.lastPresetFallbackReason),
-    lastPresetValidationError: stringOrNull2(value.lastPresetValidationError),
-    lastPromptUsedPresetId: stringOrNull2(value.lastPromptUsedPresetId),
-    lastPromptUsedPresetName: stringOrNull2(value.lastPromptUsedPresetName),
-    lastRenderAt: stringOrNull2(value.lastRenderAt),
-    lastRenderPresetId: stringOrNull2(value.lastRenderPresetId),
-    lastRenderPresetName: stringOrNull2(value.lastRenderPresetName),
-    lastRenderSnapshotCreatedAt: stringOrNull2(value.lastRenderSnapshotCreatedAt),
+    lastInjectionSkippedReason: stringOrNull3(value.lastInjectionSkippedReason),
+    lastInjectionSnapshotCreatedAt: stringOrNull3(value.lastInjectionSnapshotCreatedAt),
+    lastInjectionSourceMessageId: stringOrNull3(value.lastInjectionSourceMessageId),
+    selectedPresetId: stringOrNull3(value.selectedPresetId),
+    selectedPresetName: stringOrNull3(value.selectedPresetName),
+    lastPresetFallbackReason: stringOrNull3(value.lastPresetFallbackReason),
+    lastPresetValidationError: stringOrNull3(value.lastPresetValidationError),
+    lastPromptUsedPresetId: stringOrNull3(value.lastPromptUsedPresetId),
+    lastPromptUsedPresetName: stringOrNull3(value.lastPromptUsedPresetName),
+    lastRenderAt: stringOrNull3(value.lastRenderAt),
+    lastRenderPresetId: stringOrNull3(value.lastRenderPresetId),
+    lastRenderPresetName: stringOrNull3(value.lastRenderPresetName),
+    lastRenderSnapshotCreatedAt: stringOrNull3(value.lastRenderSnapshotCreatedAt),
     lastRenderSource: renderSourceOrNull(value.lastRenderSource),
     lastRenderStatus: renderStatusOrNull(value.lastRenderStatus),
     lastRenderWarnings: stringArray(value.lastRenderWarnings),
@@ -2329,64 +2638,84 @@ function repairDiagnostics(value, chatId) {
     lastSanitizedHtmlChars: typeof value.lastSanitizedHtmlChars === "number" && Number.isFinite(value.lastSanitizedHtmlChars) ? Math.max(0, Math.round(value.lastSanitizedHtmlChars)) : 0,
     lastFallbackTextChars: typeof value.lastFallbackTextChars === "number" && Number.isFinite(value.lastFallbackTextChars) ? Math.max(0, Math.round(value.lastFallbackTextChars)) : 0,
     contextHandlerRegistered,
-    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? stringOrNull2(value.contextHandlerDisabledReason) : CONTEXT_HANDLER_DISABLED_REASON,
-    lastContextHandlerError: stringOrNull2(value.lastContextHandlerError),
+    contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? stringOrNull3(value.contextHandlerDisabledReason) : CONTEXT_HANDLER_DISABLED_REASON,
+    lastContextHandlerError: stringOrNull3(value.lastContextHandlerError),
     messageDisplayEnabled: typeof value.messageDisplayEnabled === "boolean" ? value.messageDisplayEnabled : base.messageDisplayEnabled,
     messageDisplayMode: messageDisplayModeOrNull(value.messageDisplayMode),
     messageDisplayPlacement: messageDisplayPlacementOrNull(value.messageDisplayPlacement),
     messageDisplayHydratedCount: typeof value.messageDisplayHydratedCount === "number" && Number.isFinite(value.messageDisplayHydratedCount) ? Math.max(0, Math.round(value.messageDisplayHydratedCount)) : 0,
-    lastMessageDisplayHydratedAt: stringOrNull2(value.lastMessageDisplayHydratedAt),
-    lastMessageDisplayError: stringOrNull2(value.lastMessageDisplayError),
+    lastMessageDisplayHydratedAt: stringOrNull3(value.lastMessageDisplayHydratedAt),
+    lastMessageDisplayError: stringOrNull3(value.lastMessageDisplayError),
     messageLocalUiSupported: typeof value.messageLocalUiSupported === "boolean" ? value.messageLocalUiSupported : MESSAGE_LOCAL_UI_SUPPORTED,
-    messageLocalUiFallbackReason: stringOrNull2(value.messageLocalUiFallbackReason) ?? MESSAGE_LOCAL_UI_FALLBACK_REASON,
+    messageLocalUiFallbackReason: stringOrNull3(value.messageLocalUiFallbackReason) ?? MESSAGE_LOCAL_UI_FALLBACK_REASON,
     messageSnapshotIndexCount: typeof value.messageSnapshotIndexCount === "number" && Number.isFinite(value.messageSnapshotIndexCount) ? Math.max(0, Math.round(value.messageSnapshotIndexCount)) : 0,
-    lastWidgetRegenerateMessageId: stringOrNull2(value.lastWidgetRegenerateMessageId),
-    lastWidgetRegenerateStartedAt: stringOrNull2(value.lastWidgetRegenerateStartedAt),
-    lastWidgetRegenerateCompletedAt: stringOrNull2(value.lastWidgetRegenerateCompletedAt),
+    lastWidgetRegenerateMessageId: stringOrNull3(value.lastWidgetRegenerateMessageId),
+    lastWidgetRegenerateStartedAt: stringOrNull3(value.lastWidgetRegenerateStartedAt),
+    lastWidgetRegenerateCompletedAt: stringOrNull3(value.lastWidgetRegenerateCompletedAt),
     lastWidgetRegenerateDurationMs: numberOrNull2(value.lastWidgetRegenerateDurationMs),
-    lastWidgetRegenerateCancelledAt: stringOrNull2(value.lastWidgetRegenerateCancelledAt),
-    lastWidgetRegenerateError: stringOrNull2(value.lastWidgetRegenerateError),
+    lastWidgetRegenerateCancelledAt: stringOrNull3(value.lastWidgetRegenerateCancelledAt),
+    lastWidgetRegenerateError: stringOrNull3(value.lastWidgetRegenerateError),
     activeWidgetRegenerationCount: typeof value.activeWidgetRegenerationCount === "number" && Number.isFinite(value.activeWidgetRegenerationCount) ? Math.max(0, Math.round(value.activeWidgetRegenerationCount)) : 0,
     messageWidgetPlacementResolved: messageWidgetPlacementResolved(value.messageWidgetPlacementResolved),
-    messageWidgetPlacementReason: stringOrNull2(value.messageWidgetPlacementReason) ?? MESSAGE_WIDGET_PLACEMENT_REASON,
+    messageWidgetPlacementReason: stringOrNull3(value.messageWidgetPlacementReason) ?? MESSAGE_WIDGET_PLACEMENT_REASON,
     messageDisplayRenderer: messageDisplayRenderer(value.messageDisplayRenderer),
-    lastDomInjectionAt: stringOrNull2(value.lastDomInjectionAt),
-    lastDomInjectionError: stringOrNull2(value.lastDomInjectionError),
-    lastUninjectAt: stringOrNull2(value.lastUninjectAt),
-    lastDeletedTrackerMessageId: stringOrNull2(value.lastDeletedTrackerMessageId),
-    lastDeletedTrackerSwipeKey: stringOrNull2(value.lastDeletedTrackerSwipeKey),
-    lastEditedTrackerMessageId: stringOrNull2(value.lastEditedTrackerMessageId),
-    lastEditedTrackerSwipeKey: stringOrNull2(value.lastEditedTrackerSwipeKey),
-    lastSwipeDetectedMessageId: stringOrNull2(value.lastSwipeDetectedMessageId),
-    lastSwipeKey: stringOrNull2(value.lastSwipeKey),
-    lastSwipeKeySource: stringOrNull2(value.lastSwipeKeySource),
+    lastDomInjectionAt: stringOrNull3(value.lastDomInjectionAt),
+    lastDomInjectionError: stringOrNull3(value.lastDomInjectionError),
+    lastUninjectAt: stringOrNull3(value.lastUninjectAt),
+    lastDeletedTrackerMessageId: stringOrNull3(value.lastDeletedTrackerMessageId),
+    lastDeletedTrackerSwipeKey: stringOrNull3(value.lastDeletedTrackerSwipeKey),
+    lastEditedTrackerMessageId: stringOrNull3(value.lastEditedTrackerMessageId),
+    lastEditedTrackerSwipeKey: stringOrNull3(value.lastEditedTrackerSwipeKey),
+    lastSwipeDetectedMessageId: stringOrNull3(value.lastSwipeDetectedMessageId),
+    lastSwipeKey: stringOrNull3(value.lastSwipeKey),
+    lastSwipeKeySource: stringOrNull3(value.lastSwipeKeySource),
     swipeTrackerIndexCount: typeof value.swipeTrackerIndexCount === "number" && Number.isFinite(value.swipeTrackerIndexCount) ? Math.max(0, Math.round(value.swipeTrackerIndexCount)) : 0,
     activeTrackerJobs: activeTrackerJobsOrEmpty(value.activeTrackerJobs),
     lastPlacementRequested: messageDisplayPlacementOrNull(value.lastPlacementRequested),
     lastPlacementResolved: messageDisplayPlacementOrNull(value.lastPlacementResolved),
-    lastPlacementRenderAttemptAt: stringOrNull2(value.lastPlacementRenderAttemptAt),
-    lastPlacementRenderResult: stringOrNull2(value.lastPlacementRenderResult),
-    lastPlacementError: stringOrNull2(value.lastPlacementError),
+    lastPlacementRenderAttemptAt: stringOrNull3(value.lastPlacementRenderAttemptAt),
+    lastPlacementRenderResult: stringOrNull3(value.lastPlacementRenderResult),
+    lastPlacementError: stringOrNull3(value.lastPlacementError),
     lastMountPointStrategy: mountPointStrategy(value.lastMountPointStrategy),
-    lastEmbeddedTagWriteAt: stringOrNull2(value.lastEmbeddedTagWriteAt),
-    lastEmbeddedTagWriteMessageId: stringOrNull2(value.lastEmbeddedTagWriteMessageId),
-    lastEmbeddedTagWriteSwipeKey: stringOrNull2(value.lastEmbeddedTagWriteSwipeKey),
-    lastEmbeddedTagError: stringOrNull2(value.lastEmbeddedTagError),
-    lastTagInterceptAt: stringOrNull2(value.lastTagInterceptAt),
-    lastTagInterceptMessageId: stringOrNull2(value.lastTagInterceptMessageId),
-    lastTagInterceptSwipeKey: stringOrNull2(value.lastTagInterceptSwipeKey),
-    lastTagInterceptError: stringOrNull2(value.lastTagInterceptError),
-    lastMessageControlRenderAt: stringOrNull2(value.lastMessageControlRenderAt),
-    lastMessageControlMessageId: stringOrNull2(value.lastMessageControlMessageId),
-    lastMessageControlSwipeKey: stringOrNull2(value.lastMessageControlSwipeKey),
-    lastMessageControlState: stringOrNull2(value.lastMessageControlState),
-    lastGenerateButtonMessageId: stringOrNull2(value.lastGenerateButtonMessageId),
-    lastGenerateButtonClickedAt: stringOrNull2(value.lastGenerateButtonClickedAt),
+    lastEmbeddedTagWriteAt: stringOrNull3(value.lastEmbeddedTagWriteAt),
+    lastEmbeddedTagWriteMessageId: stringOrNull3(value.lastEmbeddedTagWriteMessageId),
+    lastEmbeddedTagWriteSwipeKey: stringOrNull3(value.lastEmbeddedTagWriteSwipeKey),
+    lastEmbeddedTagError: stringOrNull3(value.lastEmbeddedTagError),
+    lastTagInterceptAt: stringOrNull3(value.lastTagInterceptAt),
+    lastTagInterceptMessageId: stringOrNull3(value.lastTagInterceptMessageId),
+    lastTagInterceptSwipeKey: stringOrNull3(value.lastTagInterceptSwipeKey),
+    lastTagInterceptError: stringOrNull3(value.lastTagInterceptError),
+    lastMessageControlRenderAt: stringOrNull3(value.lastMessageControlRenderAt),
+    lastMessageControlMessageId: stringOrNull3(value.lastMessageControlMessageId),
+    lastMessageControlSwipeKey: stringOrNull3(value.lastMessageControlSwipeKey),
+    lastMessageControlState: stringOrNull3(value.lastMessageControlState),
+    lastGenerateButtonMessageId: stringOrNull3(value.lastGenerateButtonMessageId),
+    lastGenerateButtonClickedAt: stringOrNull3(value.lastGenerateButtonClickedAt),
     lastInlineActionClicked: inlineActionOrNull(value.lastInlineActionClicked),
-    lastInlineActionAt: stringOrNull2(value.lastInlineActionAt),
-    lastInlineActionError: stringOrNull2(value.lastInlineActionError),
+    lastInlineActionAt: stringOrNull3(value.lastInlineActionAt),
+    lastInlineActionError: stringOrNull3(value.lastInlineActionError),
     nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
-    nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON
+    nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+    connectionMode: typeof value.connectionMode === "string" ? value.connectionMode : base.connectionMode,
+    selectedConnectionId: stringOrNull3(value.selectedConnectionId),
+    selectedConnectionName: stringOrNull3(value.selectedConnectionName),
+    selectedConnectionAvailable: typeof value.selectedConnectionAvailable === "boolean" ? value.selectedConnectionAvailable : base.selectedConnectionAvailable,
+    connectionListCount: typeof value.connectionListCount === "number" && Number.isFinite(value.connectionListCount) ? Math.max(0, Math.round(value.connectionListCount)) : 0,
+    lastConnectionRefreshAt: stringOrNull3(value.lastConnectionRefreshAt),
+    lastConnectionRefreshError: stringOrNull3(value.lastConnectionRefreshError),
+    lastGenerationConnectionModeUsed: stringOrNull3(value.lastGenerationConnectionModeUsed),
+    lastGenerationConnectionIdUsed: stringOrNull3(value.lastGenerationConnectionIdUsed),
+    lastGenerationConnectionNameUsed: stringOrNull3(value.lastGenerationConnectionNameUsed),
+    lastGenerationConnectionFallbackReason: stringOrNull3(value.lastGenerationConnectionFallbackReason),
+    lastGenerationParametersUsed: recordOrNull(value.lastGenerationParametersUsed),
+    lastReasoningOverrideUsed: recordOrNull(value.lastReasoningOverrideUsed),
+    lastConnectionTestAt: stringOrNull3(value.lastConnectionTestAt),
+    lastConnectionTestStatus: connectionTestStatus(value.lastConnectionTestStatus),
+    lastConnectionTestDurationMs: numberOrNull2(value.lastConnectionTestDurationMs),
+    lastConnectionTestError: stringOrNull3(value.lastConnectionTestError),
+    lastConnectionTestOutputPreview: stringOrNull3(value.lastConnectionTestOutputPreview),
+    lastConnectionTestFinishReason: stringOrNull3(value.lastConnectionTestFinishReason),
+    lastConnectionTestUsage: recordOrNull(value.lastConnectionTestUsage)
   };
 }
 async function getSettings(userId) {
@@ -2666,9 +2995,91 @@ async function tryPersistDiagnostics(diagnostics, userId) {
     spindle.log.warn(`LTracker could not save diagnostics: ${errorMessage(error)}`);
   }
 }
+function summarizeConnectionProfile(profile) {
+  return {
+    id: profile.id,
+    name: profile.name,
+    provider: typeof profile.provider === "string" ? profile.provider : null,
+    model: typeof profile.model === "string" ? profile.model : null,
+    has_api_key: typeof profile.has_api_key === "boolean" ? profile.has_api_key : null,
+    is_default: typeof profile.is_default === "boolean" ? profile.is_default : null,
+    reasoning_bindings: recordOrNull(profile.reasoning_bindings),
+    updated_at: typeof profile.updated_at === "string" ? profile.updated_at : null
+  };
+}
+function connectionCacheForUser(userId) {
+  return connectionProfilesByUser.get(userId) ?? {
+    profiles: [],
+    refreshedAt: null,
+    error: null
+  };
+}
+async function refreshConnectionProfiles(userId, chatId) {
+  ensurePermission("generation", "generation is required to list connection profiles");
+  if (!spindle.connections?.list) {
+    throw new Error("Lumiverse connection profile list API is unavailable.");
+  }
+  const refreshedAt = nowIso();
+  try {
+    const profiles = (await spindle.connections.list(userId)).map(summarizeConnectionProfile);
+    connectionProfilesByUser.set(userId, { profiles, refreshedAt, error: null });
+    if (chatId) {
+      const settings = await getSettings(userId);
+      const diagnostics = {
+        ...await loadDiagnostics(chatId, userId),
+        connectionMode: settings.connection.mode,
+        selectedConnectionId: settings.connection.selectedConnectionId,
+        selectedConnectionName: settings.connection.selectedConnectionName,
+        selectedConnectionAvailable: Boolean(settings.connection.selectedConnectionId && profiles.some((profile) => profile.id === settings.connection.selectedConnectionId)),
+        connectionListCount: profiles.length,
+        lastConnectionRefreshAt: refreshedAt,
+        lastConnectionRefreshError: null
+      };
+      await tryPersistDiagnostics(diagnostics, userId);
+    }
+    return profiles;
+  } catch (error) {
+    const message = errorMessage(error);
+    const previous = connectionCacheForUser(userId);
+    connectionProfilesByUser.set(userId, { ...previous, refreshedAt, error: message });
+    if (chatId) {
+      const settings = await getSettings(userId);
+      const diagnostics = {
+        ...await loadDiagnostics(chatId, userId),
+        connectionMode: settings.connection.mode,
+        selectedConnectionId: settings.connection.selectedConnectionId,
+        selectedConnectionName: settings.connection.selectedConnectionName,
+        selectedConnectionAvailable: Boolean(settings.connection.selectedConnectionId && previous.profiles.some((profile) => profile.id === settings.connection.selectedConnectionId)),
+        connectionListCount: previous.profiles.length,
+        lastConnectionRefreshAt: refreshedAt,
+        lastConnectionRefreshError: message
+      };
+      await tryPersistDiagnostics(diagnostics, userId);
+    }
+    throw error;
+  }
+}
+async function getSelectedConnectionProfile(settings, userId) {
+  const selectedId = settings.connection.selectedConnectionId;
+  if (!selectedId) return null;
+  const cached = connectionCacheForUser(userId).profiles.find((profile) => profile.id === selectedId);
+  if (cached) return cached;
+  if (!spindle.connections?.get) return null;
+  try {
+    const profile = await spindle.connections.get(selectedId, userId);
+    return profile ? summarizeConnectionProfile(profile) : null;
+  } catch (error) {
+    spindle.log.warn(`LTracker could not fetch selected tracker connection: ${errorMessage(error)}`);
+    return null;
+  }
+}
 async function buildState(chatId, userId, status, error = null, renderPreview = null) {
   const settings = await getSettings(userId);
   const diagnostics = await loadDiagnostics(chatId, userId);
+  const connectionCache = connectionCacheForUser(userId);
+  const selectedConnectionAvailable = Boolean(
+    settings.connection.selectedConnectionId && connectionCache.profiles.some((profile) => profile.id === settings.connection.selectedConnectionId)
+  );
   const presetState = await resolveActivePreset(chatId, userId);
   const snapshot = await loadSnapshot(chatId, userId);
   const activeWidgetJobs = activeWidgetJobsForChat(chatId);
@@ -2736,6 +3147,13 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       ...diagnostics,
       status: status ?? diagnostics.status,
       lastError: stateError,
+      connectionMode: settings.connection.mode,
+      selectedConnectionId: settings.connection.selectedConnectionId,
+      selectedConnectionName: settings.connection.selectedConnectionName,
+      selectedConnectionAvailable,
+      connectionListCount: connectionCache.profiles.length,
+      lastConnectionRefreshAt: connectionCache.refreshedAt ?? diagnostics.lastConnectionRefreshAt,
+      lastConnectionRefreshError: connectionCache.error ?? diagnostics.lastConnectionRefreshError,
       autoSubscriptionActive: autoSubscriptionsActive,
       injectionEnabled: settings.injection.enabled && CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
       selectedPresetId: presetState.activePreset.id,
@@ -2759,7 +3177,8 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       messageDisplayRenderer: messageDisplayRenderer2,
       nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
       nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON
-    }
+    },
+    connectionProfiles: connectionCache.profiles
   };
 }
 async function sendState(chatId, userId, status, error = null, requestId, renderPreview = null) {
@@ -2844,11 +3263,28 @@ function normalizeGenerationText(result) {
   }
   throw new Error("Lumiverse generation completed without textual content.");
 }
-async function runTrackerGeneration(messages, userId, settings, parentSignal) {
-  ensurePermission("generation", "generation is required to call the active/default model");
-  if (!spindle.generate?.quiet) {
-    throw new Error("Lumiverse quiet generation API is unavailable.");
+function generationFinishReason(result) {
+  if (!isRecord7(result)) return null;
+  for (const key of ["finish_reason", "finishReason", "stop_reason", "stopReason"]) {
+    const value = result[key];
+    if (typeof value === "string") return value;
   }
+  const choice = Array.isArray(result.choices) ? result.choices[0] : null;
+  if (isRecord7(choice)) {
+    for (const key of ["finish_reason", "finishReason"]) {
+      const value = choice[key];
+      if (typeof value === "string") return value;
+    }
+  }
+  return null;
+}
+function generationUsage(result) {
+  if (!isRecord7(result)) return null;
+  const usage = result.usage ?? result.token_usage ?? result.tokenUsage;
+  return recordOrNull(usage);
+}
+async function runTrackerGeneration(messages, userId, settings, parentSignal) {
+  ensurePermission("generation", "generation is required to call the tracker model");
   const controller = new AbortController();
   const onParentAbort = () => controller.abort();
   let timedOut = false;
@@ -2859,15 +3295,31 @@ async function runTrackerGeneration(messages, userId, settings, parentSignal) {
   parentSignal.addEventListener("abort", onParentAbort, { once: true });
   if (parentSignal.aborted) controller.abort();
   try {
-    internalTrackerGenerationDepth += 1;
-    const result = await spindle.generate.quiet({
-      type: "quiet",
+    const selectedConnection = await getSelectedConnectionProfile(settings, userId);
+    const requestDiagnostics = buildTrackerGenerationRequest({
       messages,
-      reasoning: { source: "off" },
-      userId,
+      settings,
+      selectedConnection,
+      quietSupportsConnectionId: true,
       signal: controller.signal
     });
-    return normalizeGenerationText(result);
+    const request = {
+      ...requestDiagnostics.request,
+      userId
+    };
+    if (requestDiagnostics.request.type === "raw" && !spindle.generate?.raw) {
+      throw new Error("Lumiverse raw generation API is unavailable.");
+    }
+    if (requestDiagnostics.request.type === "quiet" && !spindle.generate?.quiet) {
+      throw new Error("Lumiverse quiet generation API is unavailable.");
+    }
+    internalTrackerGenerationDepth += 1;
+    const response = requestDiagnostics.request.type === "raw" ? await spindle.generate.raw(request) : await spindle.generate.quiet(request);
+    return {
+      text: normalizeGenerationText(response),
+      response,
+      requestDiagnostics
+    };
   } catch (error) {
     if (parentSignal.aborted) {
       throw new Error("Tracker generation was cancelled by a newer request.");
@@ -3464,11 +3916,18 @@ async function generateTracker(chatId, userId, trigger) {
     };
     await tryPersistDiagnostics(diagnostics, userId);
     stage = "generation";
-    const rawOutput = await runTrackerGeneration(promptMessages, userId, settings, job.controller.signal);
+    const generation = await runTrackerGeneration(promptMessages, userId, settings, job.controller.signal);
+    const rawOutput = generation.text;
     if (!isCurrentJob(jobKey, job.jobId)) return;
     diagnostics = {
       ...diagnostics,
-      lastRawOutput: settings.saveRawOutput ? rawOutput : "[Raw output saving disabled]"
+      lastRawOutput: settings.saveRawOutput ? rawOutput : "[Raw output saving disabled]",
+      lastGenerationConnectionModeUsed: generation.requestDiagnostics.modeUsed,
+      lastGenerationConnectionIdUsed: generation.requestDiagnostics.connectionIdUsed,
+      lastGenerationConnectionNameUsed: generation.requestDiagnostics.connectionNameUsed,
+      lastGenerationConnectionFallbackReason: generation.requestDiagnostics.fallbackReason,
+      lastGenerationParametersUsed: generation.requestDiagnostics.parametersUsed,
+      lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed
     };
     stage = "parse";
     const data = parseTrackerJson(rawOutput);
@@ -3983,6 +4442,97 @@ async function handleRefresh(payload, userId) {
   rememberActiveChat(userId, resolvedChatId);
   await sendState(resolvedChatId, userId, void 0, null);
 }
+async function handleConnectionRefresh(payload, userId) {
+  const resolvedChatId = payload.chatId ? payload.chatId : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
+  rememberActiveChat(userId, resolvedChatId);
+  try {
+    await refreshConnectionProfiles(userId, resolvedChatId);
+  } catch (error) {
+    spindle.log.warn(`LTracker connection refresh failed: ${errorMessage(error)}`);
+  }
+  await sendState(resolvedChatId, userId, void 0, null, payload.requestId);
+}
+async function testTrackerConnection(payload, userId) {
+  const resolvedChatId = payload.chatId ? payload.chatId : await resolveActiveChatId(payload.chatId, userId).catch(() => activeChatByUser.get(userId) ?? null);
+  rememberActiveChat(userId, resolvedChatId);
+  const existing = connectionTestJobs.get(userId);
+  existing?.controller.abort();
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
+  const job = {
+    controller: new AbortController(),
+    requestId: payload.requestId,
+    startedAtMs
+  };
+  connectionTestJobs.set(userId, job);
+  const settings = payload.settings ? await saveSettings(payload.settings, userId) : await getSettings(userId);
+  let diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastConnectionTestAt: startedAt,
+    lastConnectionTestStatus: "running",
+    lastConnectionTestDurationMs: null,
+    lastConnectionTestError: null,
+    lastConnectionTestOutputPreview: null,
+    lastConnectionTestFinishReason: null,
+    lastConnectionTestUsage: null,
+    connectionMode: settings.connection.mode,
+    selectedConnectionId: settings.connection.selectedConnectionId,
+    selectedConnectionName: settings.connection.selectedConnectionName
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, void 0, null, payload.requestId);
+  try {
+    const prompt = settings.connection.testPrompt.trim() || TRACKER_CONNECTION_DEFAULT_TEST_PROMPT;
+    const generation = await runTrackerGeneration([
+      {
+        role: "user",
+        content: prompt
+      }
+    ], userId, settings, job.controller.signal);
+    if (connectionTestJobs.get(userId) !== job) return;
+    const completedAtMs = Date.now();
+    diagnostics = {
+      ...diagnostics,
+      lastConnectionTestAt: new Date(completedAtMs).toISOString(),
+      lastConnectionTestStatus: "success",
+      lastConnectionTestDurationMs: completedAtMs - startedAtMs,
+      lastConnectionTestError: null,
+      lastConnectionTestOutputPreview: generation.text.slice(0, 500),
+      lastConnectionTestFinishReason: generationFinishReason(generation.response),
+      lastConnectionTestUsage: generationUsage(generation.response),
+      lastGenerationConnectionModeUsed: generation.requestDiagnostics.modeUsed,
+      lastGenerationConnectionIdUsed: generation.requestDiagnostics.connectionIdUsed,
+      lastGenerationConnectionNameUsed: generation.requestDiagnostics.connectionNameUsed,
+      lastGenerationConnectionFallbackReason: generation.requestDiagnostics.fallbackReason,
+      lastGenerationParametersUsed: generation.requestDiagnostics.parametersUsed,
+      lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed
+    };
+    await tryPersistDiagnostics(diagnostics, userId);
+    await sendState(resolvedChatId, userId, void 0, null, payload.requestId);
+  } catch (error) {
+    if (connectionTestJobs.get(userId) !== job) return;
+    const completedAtMs = Date.now();
+    const cancelled = job.controller.signal.aborted;
+    diagnostics = {
+      ...diagnostics,
+      lastConnectionTestAt: new Date(completedAtMs).toISOString(),
+      lastConnectionTestStatus: cancelled ? "cancelled" : "error",
+      lastConnectionTestDurationMs: completedAtMs - startedAtMs,
+      lastConnectionTestError: cancelled ? null : errorMessage(error)
+    };
+    await tryPersistDiagnostics(diagnostics, userId);
+    await sendState(resolvedChatId, userId, void 0, null, payload.requestId);
+  } finally {
+    if (connectionTestJobs.get(userId) === job) connectionTestJobs.delete(userId);
+  }
+}
+async function cancelConnectionTest(payload, userId) {
+  const resolvedChatId = payload.chatId ? payload.chatId : await resolveActiveChatId(payload.chatId, userId).catch(() => activeChatByUser.get(userId) ?? null);
+  rememberActiveChat(userId, resolvedChatId);
+  const job = connectionTestJobs.get(userId);
+  if (job) job.controller.abort();
+  await sendState(resolvedChatId, userId, void 0, null, payload.requestId);
+}
 async function regenerateMessageTracker(payload, userId) {
   const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
     stageError("active_chat", error);
@@ -4195,6 +4745,8 @@ function disposeBackend() {
   pendingAutoJobs.clear();
   for (const job of activeJobs.values()) job.controller.abort();
   activeJobs.clear();
+  for (const job of connectionTestJobs.values()) job.controller.abort();
+  connectionTestJobs.clear();
   for (const cleanup of eventCleanups.splice(0).reverse()) cleanup();
   autoSubscriptionsActive = false;
   contextHandlerRegistered = false;
@@ -4247,6 +4799,18 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "clear_snapshot") {
         await clearSnapshot(chatId, userId, payload.requestId);
+        return;
+      }
+      if (payload.type === "refresh_connections") {
+        await handleConnectionRefresh(payload, userId);
+        return;
+      }
+      if (payload.type === "test_tracker_connection") {
+        await testTrackerConnection(payload, userId);
+        return;
+      }
+      if (payload.type === "cancel_connection_test") {
+        await cancelConnectionTest(payload, userId);
         return;
       }
       if (payload.type === "save_settings") {

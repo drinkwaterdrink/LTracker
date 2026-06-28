@@ -1,6 +1,6 @@
 # LTracker
 
-Version: `0.12`
+Version: `0.13`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -9,7 +9,9 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Registers a Lumiverse drawer tab named `LTracker`.
 - Registers an input-bar action named `Generate Tracker`.
 - Reads recent chat messages with `spindle.chat.getMessages()`.
-- Generates tracker JSON with `spindle.generate.quiet()` using the user's active/default generation connection.
+- Generates tracker JSON with the active/default connection or a selected tracker connection in quiet/raw mode.
+- Lists Lumiverse connection profiles without exposing or storing API keys.
+- Adds tracker-specific generation parameters, reasoning overrides, safe fallback diagnostics, and a non-mutating connection test action.
 - Saves the latest per-chat tracker snapshot in user extension storage.
 - Supports manual tracker generation from the drawer or input-bar action.
 - Supports Auto Mode after assistant completions, including swipe/regenerate events when Lumiverse reports them.
@@ -23,9 +25,9 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Preserves sandboxed iframe message widgets as a fallback.
 - Supports optional embedded `<ltracker type="state">` tags in assistant message swipes, hidden by a Lumiverse tag interceptor and rendered from the intercepted exact payload.
 - Autosaves settings changes from the drawer; Reset Settings remains explicit.
-- Keeps prompt injection settings saved, but context-handler injection remains disabled in `0.12`.
+- Keeps prompt injection settings saved, but context-handler injection remains disabled in `0.13`.
 
-## Message Display In 0.12
+## Message Display
 
 LTracker now renders a tiny message-attached control pill instead of bulky status text like `LTracker generating swipe index-0`.
 
@@ -48,7 +50,7 @@ LTracker prefers official Lumiverse message-targeted DOM APIs:
 - `ctx.dom.getMessageId(target)` resolves message identity for injected controls.
 - `ctx.messages.registerTagInterceptor()` hides embedded tracker tags before normal message rendering.
 
-The inspected Lumiverse docs/types expose message DOM helpers, message widgets, message tags, `message_footer`, and context menus, but no official per-message toolbar action slot. Because of that, v0.12 uses a safe in-message control pill fallback instead of private host selectors. Iframe message widget fallback uses `ctx.messages.renderWidget()` and may render below messages.
+The inspected Lumiverse docs/types expose message DOM helpers, message widgets, message tags, `message_footer`, and context menus, but no official per-message toolbar action slot. Because of that, LTracker uses a safe in-message control pill fallback instead of private host selectors. Iframe message widget fallback uses `ctx.messages.renderWidget()` and may render below messages.
 
 Drawer history is the durable debug/audit surface. It can keep larger regenerate/edit/delete/copy actions because it is not the compact chat surface. Inline trackers keep the compact control pill and expanded header actions.
 
@@ -108,7 +110,7 @@ LTracker writes user-scoped extension storage only:
 
 ## Context Handler Injection
 
-Prompt injection is disabled in `0.12`. The `context_handler` permission remains absent from `spindle.json`, and LTracker does not call `spindle.registerContextHandler()`.
+Prompt injection is disabled in `0.13`. The `context_handler` permission remains absent from `spindle.json`, and LTracker does not call `spindle.registerContextHandler()`.
 
 ## Template Capability Model
 
@@ -154,13 +156,45 @@ Settings are stored in per-user extension storage at `settings.json` and repaire
 | `auto.attachSnapshotToMessage` | `true` | Saves auto snapshots under the triggering message/swipe and updates the index. | Keep enabled for message display and history. | Disable if only the latest chat snapshot matters. | Message-attached storage improves scrollback accuracy but stores more records. |
 | `auto.onlyWhenChatActive` | `true` | Ignores stale auto jobs if the user switches chats. | Keep enabled for safer multi-chat use. | Disable only if background chat tracking is intentionally desired later. | Safer active-chat behavior can skip background updates. |
 
-### Prompt Injection
+### Tracker Connection Settings
 
-Prompt injection is disabled in `0.12` unless a later version safely re-enables context-handler registration.
+LTracker 0.13 can use a dedicated tracker connection/profile instead of always using the active roleplay connection. API keys are never exposed to the extension, never displayed, and never stored; LTracker stores only the selected connection id and display name.
+
+Connection modes:
+
+- `active_quiet`: uses `spindle.generate.quiet()` with the user's active/default Lumiverse connection. This is the simple default.
+- `selected_connection_quiet`: uses quiet generation with `connection_id` when supported by the installed Lumiverse API.
+- `selected_connection_raw`: uses `spindle.generate.raw()` with `connection_id`, tracker parameters, and reasoning overrides.
+
+Recommended starting settings: `temperature` `0.2`, `max_tokens` `2000`, `top_p` blank/null, penalties blank/null, and reasoning `inherit`. Use reasoning `off` for cheap/fast tracker extraction, or low/medium custom effort when a complex schema misses details.
+
+The drawer's `Test Tracker Connection` button sends only the configured test prompt, records duration, output preview, finish reason, usage, mode, connection id/name, and fallback reason, and does not mutate chat messages, tracker snapshots, embedded tags, or message displays.
+
+If a selected connection is missing, stale, or not selected, LTracker falls back to `active_quiet` and records the fallback in diagnostics. `selected_connection_quiet` falls back to raw mode only if the installed Lumiverse API does not support `connection_id` on quiet requests.
 
 | Setting | Default | What it does | When to increase or enable | When to decrease or disable | Tradeoff |
 | --- | --- | --- | --- | --- | --- |
-| `injection.enabled` | `false` | User preference for cached tracker injection. In `0.12`, it is saved but inactive. | Enable only for future testing after context injection is restored. | Keep disabled for normal `0.12` use. | Stored preference is ready for later, but it does nothing now. |
+| `connection.mode` | `active_quiet` | Chooses active quiet, selected quiet, or selected raw tracker generation. | Use selected raw for a cheap/fast tracker profile. | Use active quiet for simplest setup. | Dedicated profiles are tunable but need a valid connection profile. |
+| `connection.selectedConnectionId` | `null` | Stores the selected tracker connection id. | Select a profile after refreshing connections. | Clear it to force active quiet fallback. | Stale ids are preserved for visibility but fall back safely. |
+| `connection.refreshConnectionsOnDrawerOpen` | `true` | Refreshes connection profile summaries when the drawer opens. | Keep enabled while switching provider profiles. | Disable if refresh is noisy or slow. | Fresher lists cost one lightweight profile-list call. |
+| `connection.parameters.temperature` | `0.2` | Tracker model randomness. | Increase for flexible extraction. | Lower for stricter JSON and stable summaries. | Lower is more reliable; higher can infer more. |
+| `connection.parameters.max_tokens` | `2000` | Maximum tracker response length. | Increase for large schemas. | Decrease for cheaper, faster trackers. | Too low can truncate JSON. |
+| `connection.parameters.top_p` | `null` | Optional nucleus sampling override. | Set only when tuning a provider. | Leave blank to omit. | Omitted values inherit provider/preset behavior. |
+| `connection.parameters.frequency_penalty` | `null` | Optional repetition penalty override. | Set only for provider-specific tuning. | Leave blank to omit. | Penalties can distort structured JSON if overused. |
+| `connection.parameters.presence_penalty` | `null` | Optional novelty penalty override. | Set only for provider-specific tuning. | Leave blank to omit. | Penalties can reduce faithful extraction. |
+| `connection.reasoning.source` | `inherit` | Chooses inherited reasoning, off, or custom override. | Use custom for complex schemas. | Use off for cheap/fast extraction. | Reasoning may improve detail but cost more. |
+| `connection.reasoning.apiReasoning` | `true` | Enables API reasoning in custom mode. | Enable when provider supports reasoning fields. | Disable for simple extraction. | Provider support varies. |
+| `connection.reasoning.effort` | `auto` | Custom reasoning effort. | Use low/medium for harder schemas. | Use none/minimal for speed. | Higher effort can cost more and take longer. |
+| `connection.reasoning.thinkingDisplay` | `auto` | Custom thinking display preference. | Use summarized for inspectable reasoning where supported. | Use omitted for cleaner responses. | Display support is provider-dependent. |
+| `connection.testPrompt` | compact JSON test prompt | Prompt used by `Test Tracker Connection`. | Customize while debugging provider behavior. | Keep default for quick smoke tests. | Long prompts make the test less tiny. |
+
+### Prompt Injection
+
+Prompt injection is disabled in `0.13` unless a later version safely re-enables context-handler registration.
+
+| Setting | Default | What it does | When to increase or enable | When to decrease or disable | Tradeoff |
+| --- | --- | --- | --- | --- | --- |
+| `injection.enabled` | `false` | User preference for cached tracker injection. In `0.13`, it is saved but inactive. | Enable only for future testing after context injection is restored. | Keep disabled for normal `0.13` use. | Stored preference is ready for later, but it does nothing now. |
 | `injection.mode` | `latest_chat_snapshot` | Chooses latest chat snapshot or latest message-attached snapshot as injection source. | Use message-attached snapshot when per-response state matters. | Use latest chat snapshot for broad current-state summaries. | Exact message state is precise; chat-wide state is simpler. |
 | `injection.format` | `compact` | Chooses `compact`, `minimal`, or `pretty_json` text. | Use `pretty_json` for debugging; use `compact` for readable continuity. | Use `minimal` to save context if injection returns later. | Richer formats are easier to inspect but consume more prompt space. |
 | `injection.maxInjectedChars` | `3000` | Character cap for injected text. | Increase if compact state is being truncated. | Decrease to reduce context size. | More injected state can help continuity but competes with chat context. |
@@ -201,7 +235,7 @@ The drawer renderer is separate from message display.
 | `messageDisplay.controlDensity` | `compact` | Chooses compact or comfortable sizing for message control icons. | Use comfortable on touch-heavy devices. | Use compact for dense chats. | Bigger targets are easier to tap but take more space. |
 | `messageDisplay.controlPlacement` | `message_header` | Chooses the preferred compact control placement model. | Use message header for zTracker-like attachment. | Use inside tracker header for quieter placement experiments. | Placement can affect visual density. |
 | `messageDisplay.showExpandedHeaderActions` | `true` | Shows regenerate/stop, edit/view, and delete in the expanded tracker header. | Keep enabled for quick per-message repairs. | Disable for display-only inline trackers. | Direct actions are faster but add controls. |
-| `messageDisplay.showBottomActionsInInlineTracker` | `false` | Restores large bottom inline actions. | Enable only for debugging old layouts. | Keep disabled for v0.12 compact UX. | Bottom actions are discoverable but bulky. |
+| `messageDisplay.showBottomActionsInInlineTracker` | `false` | Restores large bottom inline actions. | Enable only for debugging old layouts. | Keep disabled for compact UX. | Bottom actions are discoverable but bulky. |
 | `messageDisplay.collapsedByDefault` | `true` | Starts tracker blocks collapsed by default. | Enable for mobile or large trackers. | Disable when trackers should stay open while scrolling. | Collapsed by default saves space but requires one click to inspect. |
 | `messageDisplay.compactCollapsedHeader` | `true` | Keeps collapsed DOM trackers as a slim header bar. | Keep enabled to avoid empty vertical space. | Disable only for testing alternate layout. | Compact collapse is denser but shows less context at a glance. |
 | `messageDisplay.showTimestamp` | `true` | Shows snapshot timestamp in tracker/history headers. | Keep enabled to judge freshness. | Disable for a quieter header. | Timestamp clarity adds header text. |
@@ -217,7 +251,7 @@ The drawer renderer is separate from message display.
 
 ## Diagnostics
 
-v0.12 adds message-control diagnostics for the last compact-control render, exact message/swipe key, control state, generate-button click, inline action, native toolbar support, and native toolbar fallback reason.
+v0.13 adds connection diagnostics for profile refresh, selected connection availability, generation mode used, fallback reason, tracker parameters, reasoning override, and connection test status. Message-control diagnostics still track the last compact-control render, exact message/swipe key, control state, generate-button click, inline action, native toolbar support, and native toolbar fallback reason.
 
 ## Install And Development
 
@@ -240,23 +274,21 @@ Drawer tabs, input-bar actions, message-targeted DOM injection, message widgets,
 
 ## Known Limitations
 
-- Context-handler prompt injection is disabled in `0.12` to protect normal Lumiverse generation.
-- Connection settings are still not implemented.
+- Context-handler prompt injection is disabled in `0.13` to protect normal Lumiverse generation.
 - Sequential generation, partial regeneration, cleanup/repair mode, World Books, Memory Cortex, character-card context, and TOON/XML/native transform modes are future phases.
 - DOM injection only attaches immediately to mounted message bubbles; iframe fallback and drawer history cover unavailable bubbles.
-- There is no official per-message toolbar slot in the inspected docs/types, so v0.12 uses the safe in-message control pill fallback.
+- There is no official per-message toolbar slot in the inspected docs/types, so LTracker uses the safe in-message control pill fallback.
 - Embedded tracker tag mode only replaces or removes LTracker's own tag for the exact swipe key.
 - Diagnostics may contain sensitive chat-derived prompt and model output when raw/prompt saving is enabled.
 
 ## Roadmap
 
-1. `0.13 Connection Settings`
-2. `0.14 Power Template Engine`
-3. `0.15 Dev Mode Templates`
-4. `0.16 Sequential + Partial Regeneration`
-5. `0.17 Cleanup / Repair / Pending Fields`
-6. `0.18 World Books, Character Exclusions, Import/Export Polish`
+1. `0.14 Power Template Engine`
+2. `0.15 Dev Mode Templates`
+3. `0.16 Sequential + Partial Regeneration`
+4. `0.17 Cleanup / Repair / Pending Fields`
+5. `0.18 World Books, Character Exclusions, Import/Export Polish`
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.12`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.13`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

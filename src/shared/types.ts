@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.12";
+export const EXTENSION_VERSION = "0.13";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -20,6 +20,11 @@ export type LTrackerMessageControlDensity = "compact" | "comfortable";
 export type LTrackerMessageControlPlacement = "message_header" | "inside_tracker_header";
 export type LTrackerMessageControlGenerationStatus = "idle" | "generating" | "completed" | "cancelled" | "failed";
 export type LTrackerInlineAction = "generate" | "regenerate" | "cancel" | "edit" | "delete" | "toggle";
+export type LTrackerConnectionMode = "active_quiet" | "selected_connection_quiet" | "selected_connection_raw";
+export type LTrackerReasoningSource = "inherit" | "off" | "custom";
+export type LTrackerReasoningEffort = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh";
+export type LTrackerThinkingDisplay = "auto" | "summarized" | "omitted";
+export type LTrackerConnectionTestStatus = "idle" | "running" | "success" | "error" | "cancelled";
 export type LTrackerMessageDisplayMode = "dom_injection" | "message_widget" | "drawer_history" | "disabled";
 export type LTrackerMessageWidgetPlacementResolved = "top" | "bottom" | "host_default" | "unsupported";
 export type LTrackerMessageDisplayRenderer = "dom_injection" | "iframe_widget" | "drawer_history";
@@ -53,6 +58,17 @@ export interface TrackerPresetCapabilities {
   supportsSequentialGeneration?: boolean;
 }
 
+export interface TrackerPresetRecommendedConnection {
+  mode?: LTrackerConnectionMode;
+  temperature?: number;
+  max_tokens?: number;
+  reasoning?: {
+    source?: LTrackerReasoningSource;
+    effort?: string;
+  };
+  notes?: string;
+}
+
 export interface TrackerSchemaPreset {
   id: string;
   name: string;
@@ -66,6 +82,7 @@ export interface TrackerSchemaPreset {
   notes?: string;
   origin: TrackerPresetOrigin;
   capabilities?: TrackerPresetCapabilities;
+  recommendedConnection?: TrackerPresetRecommendedConnection;
 }
 
 export interface TrackerPresetDraft {
@@ -78,6 +95,7 @@ export interface TrackerPresetDraft {
   htmlTemplate?: string;
   notes?: string;
   capabilities?: TrackerPresetCapabilities;
+  recommendedConnection?: TrackerPresetRecommendedConnection;
 }
 
 export interface ActiveTrackerPresetState {
@@ -249,6 +267,42 @@ export interface LTrackerMessageDisplaySettings {
   maxRenderedChars: number;
 }
 
+export interface LTrackerConnectionParameters {
+  temperature: number | null;
+  max_tokens: number | null;
+  top_p: number | null;
+  frequency_penalty: number | null;
+  presence_penalty: number | null;
+}
+
+export interface LTrackerReasoningSettings {
+  source: LTrackerReasoningSource;
+  apiReasoning: boolean;
+  effort: LTrackerReasoningEffort;
+  thinkingDisplay: LTrackerThinkingDisplay;
+}
+
+export interface LTrackerConnectionSettings {
+  mode: LTrackerConnectionMode;
+  selectedConnectionId: string | null;
+  selectedConnectionName: string | null;
+  refreshConnectionsOnDrawerOpen: boolean;
+  parameters: LTrackerConnectionParameters;
+  reasoning: LTrackerReasoningSettings;
+  testPrompt: string;
+}
+
+export interface LTrackerConnectionProfileSummary {
+  id: string;
+  name: string;
+  provider: string | null;
+  model: string | null;
+  has_api_key: boolean | null;
+  is_default: boolean | null;
+  reasoning_bindings: Record<string, unknown> | null;
+  updated_at: string | null;
+}
+
 export interface LTrackerSettings {
   schemaVersion: typeof SETTINGS_SCHEMA_VERSION;
   recentMessageLimit: number;
@@ -260,6 +314,7 @@ export interface LTrackerSettings {
   injection: LTrackerInjectionSettings;
   renderer: LTrackerRendererSettings;
   messageDisplay: LTrackerMessageDisplaySettings;
+  connection: LTrackerConnectionSettings;
 }
 
 export interface LTrackerError {
@@ -401,6 +456,26 @@ export interface LTrackerDiagnostics {
   lastInlineActionError: string | null;
   nativeToolbarSupported: boolean;
   nativeToolbarFallbackReason: string | null;
+  connectionMode: string;
+  selectedConnectionId: string | null;
+  selectedConnectionName: string | null;
+  selectedConnectionAvailable: boolean;
+  connectionListCount: number;
+  lastConnectionRefreshAt: string | null;
+  lastConnectionRefreshError: string | null;
+  lastGenerationConnectionModeUsed: string | null;
+  lastGenerationConnectionIdUsed: string | null;
+  lastGenerationConnectionNameUsed: string | null;
+  lastGenerationConnectionFallbackReason: string | null;
+  lastGenerationParametersUsed: Record<string, unknown> | null;
+  lastReasoningOverrideUsed: Record<string, unknown> | null;
+  lastConnectionTestAt: string | null;
+  lastConnectionTestStatus: LTrackerConnectionTestStatus;
+  lastConnectionTestDurationMs: number | null;
+  lastConnectionTestError: string | null;
+  lastConnectionTestOutputPreview: string | null;
+  lastConnectionTestFinishReason: string | null;
+  lastConnectionTestUsage: Record<string, unknown> | null;
 }
 
 export interface PermissionState {
@@ -427,6 +502,7 @@ export interface FrontendState {
   permissions: PermissionState;
   settings: LTrackerSettings;
   diagnostics: LTrackerDiagnostics;
+  connectionProfiles: LTrackerConnectionProfileSummary[];
 }
 
 export interface RenderedTrackerPreview {
@@ -495,6 +571,9 @@ export type FrontendMessage =
   | { type: "ready"; chatId: string | null }
   | { type: "refresh_state"; chatId: string | null }
   | { type: "generate_tracker"; chatId: string | null; requestId: string }
+  | { type: "refresh_connections"; chatId: string | null; requestId: string }
+  | { type: "test_tracker_connection"; chatId: string | null; settings?: LTrackerSettings; requestId: string }
+  | { type: "cancel_connection_test"; chatId: string | null; requestId: string }
   | { type: "clear_snapshot"; chatId: string | null; requestId: string }
   | { type: "save_settings"; chatId: string | null; settings: LTrackerSettings; requestId: string }
   | { type: "reset_settings"; chatId: string | null; requestId: string }

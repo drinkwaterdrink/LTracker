@@ -1,7 +1,16 @@
 import {
   SETTINGS_SCHEMA_VERSION,
+  type LTrackerConnectionMode,
+  type LTrackerReasoningEffort,
+  type LTrackerReasoningSource,
   type LTrackerSettings,
+  type LTrackerThinkingDisplay,
 } from "./types";
+import {
+  DEFAULT_TRACKER_CONNECTION_PARAMETERS,
+  TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
+  TRACKER_CONNECTION_PARAMETER_LIMITS,
+} from "./generationRequest";
 
 export const SETTINGS_LIMITS = {
   recentMessageLimit: { min: 1, max: 200, default: 24 },
@@ -79,6 +88,20 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     minimizedMaxHeightPx: SETTINGS_LIMITS.minimizedMaxHeightPx.default,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
   },
+  connection: {
+    mode: "active_quiet",
+    selectedConnectionId: null,
+    selectedConnectionName: null,
+    refreshConnectionsOnDrawerOpen: true,
+    parameters: DEFAULT_TRACKER_CONNECTION_PARAMETERS,
+    reasoning: {
+      source: "inherit",
+      apiReasoning: true,
+      effort: "auto",
+      thinkingDisplay: "auto",
+    },
+    testPrompt: TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
+  },
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -98,12 +121,75 @@ function clampNumber(
   return Math.min(max, Math.max(min, Math.round(numeric)));
 }
 
+function hasOwn(source: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(source, key);
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function clampNullableNumber(
+  source: Record<string, unknown>,
+  key: string,
+  fallback: number | null,
+  min: number,
+  max: number,
+  integer = false,
+): number | null {
+  if (!hasOwn(source, key)) return fallback;
+  const value = source[key];
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = typeof value === "number" && Number.isFinite(value)
+    ? value
+    : typeof value === "string" && value.trim() ? Number(value) : null;
+  if (numeric === null || !Number.isFinite(numeric)) return null;
+  const clamped = Math.min(max, Math.max(min, numeric));
+  return integer ? Math.round(clamped) : clamped;
+}
+
+function connectionMode(value: unknown): LTrackerConnectionMode {
+  return value === "active_quiet"
+    || value === "selected_connection_quiet"
+    || value === "selected_connection_raw"
+    ? value
+    : DEFAULT_SETTINGS.connection.mode;
+}
+
+function reasoningSource(value: unknown): LTrackerReasoningSource {
+  return value === "inherit" || value === "off" || value === "custom"
+    ? value
+    : DEFAULT_SETTINGS.connection.reasoning.source;
+}
+
+function reasoningEffort(value: unknown): LTrackerReasoningEffort {
+  return value === "auto"
+    || value === "none"
+    || value === "minimal"
+    || value === "low"
+    || value === "medium"
+    || value === "high"
+    || value === "max"
+    || value === "xhigh"
+    ? value
+    : DEFAULT_SETTINGS.connection.reasoning.effort;
+}
+
+function thinkingDisplay(value: unknown): LTrackerThinkingDisplay {
+  return value === "auto" || value === "summarized" || value === "omitted"
+    ? value
+    : DEFAULT_SETTINGS.connection.reasoning.thinkingDisplay;
+}
+
 export function repairSettings(value: unknown): LTrackerSettings {
   const source = isRecord(value) ? value : {};
   const autoSource = isRecord(source.auto) ? source.auto : {};
   const injectionSource = isRecord(source.injection) ? source.injection : {};
   const rendererSource = isRecord(source.renderer) ? source.renderer : {};
   const messageDisplaySource = isRecord(source.messageDisplay) ? source.messageDisplay : {};
+  const connectionSource = isRecord(source.connection) ? source.connection : {};
+  const connectionParameterSource = isRecord(connectionSource.parameters) ? connectionSource.parameters : {};
+  const connectionReasoningSource = isRecord(connectionSource.reasoning) ? connectionSource.reasoning : {};
   const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot"
     ? injectionSource.mode
     : DEFAULT_SETTINGS.injection.mode;
@@ -322,6 +408,63 @@ export function repairSettings(value: unknown): LTrackerSettings {
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.min,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.max,
       ),
+    },
+    connection: {
+      mode: connectionMode(connectionSource.mode),
+      selectedConnectionId: stringOrNull(connectionSource.selectedConnectionId),
+      selectedConnectionName: stringOrNull(connectionSource.selectedConnectionName),
+      refreshConnectionsOnDrawerOpen: typeof connectionSource.refreshConnectionsOnDrawerOpen === "boolean"
+        ? connectionSource.refreshConnectionsOnDrawerOpen
+        : DEFAULT_SETTINGS.connection.refreshConnectionsOnDrawerOpen,
+      parameters: {
+        temperature: clampNullableNumber(
+          connectionParameterSource,
+          "temperature",
+          TRACKER_CONNECTION_PARAMETER_LIMITS.temperature.default,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.temperature.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.temperature.max,
+        ),
+        max_tokens: clampNullableNumber(
+          connectionParameterSource,
+          "max_tokens",
+          TRACKER_CONNECTION_PARAMETER_LIMITS.max_tokens.default,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.max_tokens.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.max_tokens.max,
+          true,
+        ),
+        top_p: clampNullableNumber(
+          connectionParameterSource,
+          "top_p",
+          null,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.top_p.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.top_p.max,
+        ),
+        frequency_penalty: clampNullableNumber(
+          connectionParameterSource,
+          "frequency_penalty",
+          null,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.frequency_penalty.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.frequency_penalty.max,
+        ),
+        presence_penalty: clampNullableNumber(
+          connectionParameterSource,
+          "presence_penalty",
+          null,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.presence_penalty.min,
+          TRACKER_CONNECTION_PARAMETER_LIMITS.presence_penalty.max,
+        ),
+      },
+      reasoning: {
+        source: reasoningSource(connectionReasoningSource.source),
+        apiReasoning: typeof connectionReasoningSource.apiReasoning === "boolean"
+          ? connectionReasoningSource.apiReasoning
+          : DEFAULT_SETTINGS.connection.reasoning.apiReasoning,
+        effort: reasoningEffort(connectionReasoningSource.effort),
+        thinkingDisplay: thinkingDisplay(connectionReasoningSource.thinkingDisplay),
+      },
+      testPrompt: typeof connectionSource.testPrompt === "string" && connectionSource.testPrompt.trim()
+        ? connectionSource.testPrompt
+        : TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
     },
   };
 }

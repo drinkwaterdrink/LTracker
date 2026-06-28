@@ -24,6 +24,11 @@ import {
   upsertLTrackerTag,
 } from "../src/shared/embeddedTrackerTag";
 import {
+  buildTrackerGenerationRequest,
+  buildTrackerReasoningOverride,
+  cleanTrackerGenerationParameters,
+} from "../src/shared/generationRequest";
+import {
   buildMessageTrackerHistory,
   claimMessageWidget,
   formatDurationMs,
@@ -79,7 +84,7 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.12",
+  extensionVersion: "0.13",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -116,7 +121,7 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.12",
+  extensionVersion: "0.13",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
@@ -222,6 +227,171 @@ test("repairSettings repairs auto mode settings with bounded values", () => {
   assert.equal(settings.auto.onlyWhenChatActive, false);
 });
 
+test("repairSettings adds and repairs connection settings", () => {
+  const migrated = repairSettings({
+    recentMessageLimit: 12,
+  });
+  assert.equal(migrated.connection.mode, "active_quiet");
+  assert.equal(migrated.connection.parameters.temperature, 0.2);
+  assert.equal(migrated.connection.parameters.max_tokens, 2000);
+  assert.equal(migrated.connection.reasoning.source, "inherit");
+
+  const settings = repairSettings({
+    ...DEFAULT_SETTINGS,
+    connection: {
+      mode: "selected_connection_raw",
+      selectedConnectionId: "conn-a",
+      selectedConnectionName: "Tracker Cheap",
+      refreshConnectionsOnDrawerOpen: false,
+      parameters: {
+        temperature: 5,
+        max_tokens: "999999",
+        top_p: null,
+        frequency_penalty: "bad",
+        presence_penalty: -7,
+      },
+      reasoning: {
+        source: "bogus",
+        apiReasoning: false,
+        effort: "xlarge",
+        thinkingDisplay: "visible",
+      },
+      testPrompt: "",
+    },
+  });
+
+  assert.equal(settings.connection.mode, "selected_connection_raw");
+  assert.equal(settings.connection.selectedConnectionId, "conn-a");
+  assert.equal(settings.connection.selectedConnectionName, "Tracker Cheap");
+  assert.equal(settings.connection.refreshConnectionsOnDrawerOpen, false);
+  assert.equal(settings.connection.parameters.temperature, 2);
+  assert.equal(settings.connection.parameters.max_tokens, 32_000);
+  assert.equal(settings.connection.parameters.top_p, null);
+  assert.equal(settings.connection.parameters.frequency_penalty, null);
+  assert.equal(settings.connection.parameters.presence_penalty, -2);
+  assert.equal(settings.connection.reasoning.source, "inherit");
+  assert.equal(settings.connection.reasoning.apiReasoning, false);
+  assert.equal(settings.connection.reasoning.effort, "auto");
+  assert.equal(settings.connection.reasoning.thinkingDisplay, "auto");
+  assert.match(settings.connection.testPrompt, /compact JSON object/);
+});
+
+test("tracker generation parameters clamp and omit nulls", () => {
+  assert.equal(cleanTrackerGenerationParameters({
+    temperature: null,
+    max_tokens: null,
+    top_p: null,
+    frequency_penalty: null,
+    presence_penalty: null,
+  }), null);
+
+  assert.deepEqual(cleanTrackerGenerationParameters({
+    temperature: 3,
+    max_tokens: 1,
+    top_p: 2,
+    frequency_penalty: -5,
+    presence_penalty: 5,
+  }), {
+    temperature: 2,
+    max_tokens: 256,
+    top_p: 1,
+    frequency_penalty: -2,
+    presence_penalty: 2,
+  });
+});
+
+test("tracker reasoning overrides support inherit off and custom", () => {
+  assert.equal(buildTrackerReasoningOverride(DEFAULT_SETTINGS.connection.reasoning), null);
+  assert.deepEqual(buildTrackerReasoningOverride({
+    ...DEFAULT_SETTINGS.connection.reasoning,
+    source: "off",
+  }), {
+    source: "off",
+    apiReasoning: false,
+  });
+  assert.deepEqual(buildTrackerReasoningOverride({
+    source: "custom",
+    apiReasoning: true,
+    effort: "low",
+    thinkingDisplay: "omitted",
+  }), {
+    source: "custom",
+    apiReasoning: true,
+    effort: "low",
+    thinkingDisplay: "omitted",
+  });
+});
+
+test("tracker generation request builder handles connection modes and fallbacks", () => {
+  const messages = [{ role: "user", content: "hello" }];
+  const selectedConnection = {
+    id: "conn-tracker",
+    name: "Tracker Profile",
+    provider: "openai",
+    model: "cheap-json",
+    has_api_key: true,
+    is_default: false,
+    reasoning_bindings: null,
+    updated_at: null,
+  };
+  const selectedRawSettings = repairSettings({
+    ...DEFAULT_SETTINGS,
+    connection: {
+      ...DEFAULT_SETTINGS.connection,
+      mode: "selected_connection_raw",
+      selectedConnectionId: "conn-tracker",
+      selectedConnectionName: "Tracker Profile",
+    },
+  });
+  const raw = buildTrackerGenerationRequest({
+    messages,
+    settings: selectedRawSettings,
+    selectedConnection,
+  });
+  assert.equal(raw.request.type, "raw");
+  assert.equal(raw.request.connection_id, "conn-tracker");
+  assert.equal(raw.modeUsed, "selected_connection_raw");
+  assert.equal(raw.fallbackReason, null);
+
+  const quietSettings = repairSettings({
+    ...DEFAULT_SETTINGS,
+    connection: {
+      ...DEFAULT_SETTINGS.connection,
+      mode: "selected_connection_quiet",
+      selectedConnectionId: "conn-tracker",
+      selectedConnectionName: "Tracker Profile",
+    },
+  });
+  const quiet = buildTrackerGenerationRequest({
+    messages,
+    settings: quietSettings,
+    selectedConnection,
+  });
+  assert.equal(quiet.request.type, "quiet");
+  assert.equal(quiet.request.connection_id, "conn-tracker");
+  assert.equal(quiet.modeUsed, "selected_connection_quiet");
+
+  const unsupportedQuiet = buildTrackerGenerationRequest({
+    messages,
+    settings: quietSettings,
+    selectedConnection,
+    quietSupportsConnectionId: false,
+  });
+  assert.equal(unsupportedQuiet.request.type, "raw");
+  assert.equal(unsupportedQuiet.modeUsed, "selected_connection_raw");
+  assert.match(unsupportedQuiet.fallbackReason ?? "", /Quiet generation does not support/);
+
+  const missingSelected = buildTrackerGenerationRequest({
+    messages,
+    settings: selectedRawSettings,
+    selectedConnection: null,
+  });
+  assert.equal(missingSelected.request.type, "quiet");
+  assert.equal(missingSelected.modeUsed, "active_quiet");
+  assert.equal(missingSelected.request.connection_id, undefined);
+  assert.match(missingSelected.fallbackReason ?? "", /missing or unavailable/);
+});
+
 test("shouldScheduleAutoTracker respects role triggers and active chat", () => {
   const settings = repairSettings({
     ...DEFAULT_SETTINGS,
@@ -315,7 +485,7 @@ test("messageSnapshotIndexPath stores the per-chat index under message-snapshots
 
 test("embedded tracker tags build, replace, and remove by exact swipe", () => {
   const first = buildLTrackerTag("{\"scene\":{\"time\":\"one\"}}", "index-0");
-  assert.match(first, /<ltracker type="state" version="0.12" swipe="index-0">/);
+  assert.match(first, /<ltracker type="state" version="0.13" swipe="index-0">/);
   const content = upsertLTrackerTag("Assistant reply.", "{\"a\":1}", "index-0");
   const withSecond = upsertLTrackerTag(content.content, "{\"b\":2}", "index-1");
   const replaced = upsertLTrackerTag(withSecond.content, "{\"a\":3}", "index-0");
@@ -1460,7 +1630,7 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
 
 test("context handler hotfix is disabled by default", () => {
   assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
-  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.12/);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.13/);
 });
 
 test("context handler guard never mutates a frozen context object when disabled", async () => {
@@ -1561,6 +1731,37 @@ test("normal generation can call the disabled context handler guard without thro
   });
 });
 
+test("backend tracker generation uses the shared connection helper", () => {
+  const backend = readFileSync("src/backend.ts", "utf8");
+  assert.match(backend, /buildTrackerGenerationRequest/);
+  assert.match(backend, /async function runTrackerGeneration[\s\S]*buildTrackerGenerationRequest/);
+  assert.match(backend, /const generation = await runTrackerGeneration/);
+  assert.match(backend, /await generateTracker\(pending\.chatId, pending\.userId, pending\.trigger\)/);
+  assert.match(backend, /async function regenerateMessageTracker[\s\S]*await generateTracker/);
+  assert.match(backend, /lastGenerationConnectionFallbackReason: generation\.requestDiagnostics\.fallbackReason/);
+  assert.match(backend, /lastGenerationParametersUsed: generation\.requestDiagnostics\.parametersUsed/);
+  assert.match(backend, /lastReasoningOverrideUsed: generation\.requestDiagnostics\.reasoningOverrideUsed/);
+});
+
+test("connection test path does not mutate tracker snapshots or chat tags", () => {
+  const backend = readFileSync("src/backend.ts", "utf8");
+  const match = /async function testTrackerConnection[\s\S]*?\n}\n\nasync function cancelConnectionTest/.exec(backend);
+  assert.ok(match, "testTrackerConnection function should be present");
+  const body = match[0];
+  for (const forbidden of [
+    "saveSnapshot(",
+    "saveMessageAttachedSnapshot",
+    "saveMessageAttachedSnapshotWithIndex",
+    "upsertLTrackerTag",
+    "updateMessage",
+    "removeEmbeddedTrackerTag",
+  ]) {
+    assert.doesNotMatch(body, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(body, /runTrackerGeneration/);
+  assert.match(body, /lastConnectionTestOutputPreview/);
+});
+
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
@@ -1577,6 +1778,25 @@ test("README settings reference covers the major setting groups", () => {
     "auto.triggerAfterUserMessages",
     "auto.attachSnapshotToMessage",
     "auto.onlyWhenChatActive",
+    "Tracker Connection Settings",
+    "active_quiet",
+    "selected_connection_quiet",
+    "selected_connection_raw",
+    "API keys are never exposed",
+    "Test Tracker Connection",
+    "connection.mode",
+    "connection.selectedConnectionId",
+    "connection.refreshConnectionsOnDrawerOpen",
+    "connection.parameters.temperature",
+    "connection.parameters.max_tokens",
+    "connection.parameters.top_p",
+    "connection.parameters.frequency_penalty",
+    "connection.parameters.presence_penalty",
+    "connection.reasoning.source",
+    "connection.reasoning.apiReasoning",
+    "connection.reasoning.effort",
+    "connection.reasoning.thinkingDisplay",
+    "connection.testPrompt",
     "injection.enabled",
     "injection.mode",
     "injection.format",
@@ -1642,7 +1862,6 @@ test("README settings reference covers the major setting groups", () => {
     "Default: Trusted Preset Mode",
     "Safe Mode",
     "Dev Mode",
-    "0.13 Connection Settings",
     "0.14 Power Template Engine",
     "0.15 Dev Mode Templates",
     "0.16 Sequential + Partial Regeneration",
@@ -1664,10 +1883,10 @@ test("drawer UI keeps detailed setting explanations out of the app surface", () 
     "When to increase",
     "When to decrease",
   ]) {
-    assert.doesNotMatch(frontend, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(frontend, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(frontend, /MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON/);
-  assert.match(frontend, /Context handler injection is disabled in 0\.12/);
+  assert.match(frontend, /Context handler injection is disabled in 0\.13/);
   assert.match(frontend, /registerTagInterceptor/);
   assert.match(frontend, /data-settings-save-status/);
   assert.match(frontend, /saveSettings\("settings-auto"\)/);

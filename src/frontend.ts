@@ -14,16 +14,24 @@ import {
 } from "./shared/messageDisplay";
 import { LTRACKER_TAG_NAME, LTRACKER_TAG_TYPE } from "./shared/embeddedTrackerTag";
 import { DEFAULT_SETTINGS } from "./shared/settings";
+import {
+  DEFAULT_TRACKER_CONNECTION_PARAMETERS,
+  TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
+} from "./shared/generationRequest";
 import type {
   BackendMessage,
   FrontendMessage,
   FrontendState,
   LTrackerError,
+  LTrackerConnectionMode,
+  LTrackerReasoningEffort,
+  LTrackerReasoningSource,
   LTrackerInlineAction,
   LTrackerMessageDisplayPlacement,
   LTrackerMountPointStrategy,
   LTrackerRenderSource,
   LTrackerSettings,
+  LTrackerThinkingDisplay,
   MessageTrackerHistoryEntry,
   MessageAttachedSnapshot,
   TrackerPresetDraft,
@@ -394,7 +402,7 @@ function emptyState(): FrontendState {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection is disabled in 0.12 while the Lumiverse context handler return contract is being verified.",
+      contextHandlerDisabledReason: "Context handler injection is disabled in 0.13 while the Lumiverse context handler return contract is being verified.",
       lastContextHandlerError: null,
       messageDisplayEnabled: false,
       messageDisplayMode: null,
@@ -452,6 +460,26 @@ function emptyState(): FrontendState {
       lastInlineActionError: null,
       nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
       nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+      connectionMode: DEFAULT_SETTINGS.connection.mode,
+      selectedConnectionId: null,
+      selectedConnectionName: null,
+      selectedConnectionAvailable: false,
+      connectionListCount: 0,
+      lastConnectionRefreshAt: null,
+      lastConnectionRefreshError: null,
+      lastGenerationConnectionModeUsed: null,
+      lastGenerationConnectionIdUsed: null,
+      lastGenerationConnectionNameUsed: null,
+      lastGenerationConnectionFallbackReason: null,
+      lastGenerationParametersUsed: null,
+      lastReasoningOverrideUsed: null,
+      lastConnectionTestAt: null,
+      lastConnectionTestStatus: "idle",
+      lastConnectionTestDurationMs: null,
+      lastConnectionTestError: null,
+      lastConnectionTestOutputPreview: null,
+      lastConnectionTestFinishReason: null,
+      lastConnectionTestUsage: null,
     },
     injectionPreview: null,
     renderPreview: null,
@@ -463,6 +491,7 @@ function emptyState(): FrontendState {
       selectedPresetId: DEFAULT_TRACKER_PRESET.id,
       selectedAt: new Date(0).toISOString(),
     },
+    connectionProfiles: [],
   };
 }
 
@@ -506,6 +535,15 @@ function renderRow(label: string, value: string | number | null): string {
     <div class="ltracker-key">${escapeHtml(label)}</div>
     <div class="ltracker-value">${escapeHtml(value === null || value === "" ? "None" : String(value))}</div>
   `;
+}
+
+function numberInputValue(value: number | null): string {
+  return value === null ? "" : String(value);
+}
+
+function compactRecord(value: Record<string, unknown> | null): string | null {
+  if (!value) return null;
+  return JSON.stringify(value);
 }
 
 function renderError(error: LTrackerError | null): string {
@@ -667,7 +705,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   function isSettingsControl(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
-    return Boolean(target.closest("[data-setting], [data-renderer-setting], [data-message-display-setting]"));
+    return Boolean(target.closest("[data-setting], [data-renderer-setting], [data-message-display-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning]"));
   }
 
   function localDiagnostics(update: Partial<FrontendState["diagnostics"]>): void {
@@ -1185,12 +1223,105 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     send({ type: "refresh_state", chatId: activeChatId() });
   }
 
+  function activateDrawer(): void {
+    if (state.settings.connection.refreshConnectionsOnDrawerOpen) {
+      refreshConnections();
+      return;
+    }
+    requestState();
+  }
+
   function generateTracker(): void {
     send({
       type: "generate_tracker",
       chatId: activeChatId(),
       requestId: requestId("generate"),
     });
+  }
+
+  function refreshConnections(): void {
+    send({
+      type: "refresh_connections",
+      chatId: activeChatId(),
+      requestId: requestId("connections-refresh"),
+    });
+  }
+
+  function testTrackerConnection(): void {
+    send({
+      type: "test_tracker_connection",
+      chatId: activeChatId(),
+      settings: readSettings(),
+      requestId: requestId("connection-test"),
+    });
+  }
+
+  function cancelConnectionTest(): void {
+    send({
+      type: "cancel_connection_test",
+      chatId: activeChatId(),
+      requestId: requestId("connection-test-cancel"),
+    });
+  }
+
+  function resetConnectionParameters(): void {
+    const current = readSettings();
+    state = {
+      ...state,
+      settings: {
+        ...current,
+        connection: {
+          ...current.connection,
+          parameters: DEFAULT_TRACKER_CONNECTION_PARAMETERS,
+        },
+      },
+    };
+    render();
+    scheduleSettingsAutosave();
+  }
+
+  function validReasoningEffort(value: string | undefined): LTrackerReasoningEffort | null {
+    return value === "auto"
+      || value === "none"
+      || value === "minimal"
+      || value === "low"
+      || value === "medium"
+      || value === "high"
+      || value === "max"
+      || value === "xhigh"
+      ? value
+      : null;
+  }
+
+  function applyPresetRecommendedConnection(): void {
+    const recommended = state.activePreset.recommendedConnection;
+    if (!recommended) return;
+    const current = readSettings();
+    const reasoningSource = recommended.reasoning?.source;
+    state = {
+      ...state,
+      settings: {
+        ...current,
+        connection: {
+          ...current.connection,
+          mode: recommended.mode ?? current.connection.mode,
+          parameters: {
+            ...current.connection.parameters,
+            temperature: recommended.temperature ?? current.connection.parameters.temperature,
+            max_tokens: recommended.max_tokens ?? current.connection.parameters.max_tokens,
+          },
+          reasoning: {
+            ...current.connection.reasoning,
+            source: reasoningSource === "inherit" || reasoningSource === "off" || reasoningSource === "custom"
+              ? reasoningSource
+              : current.connection.reasoning.source,
+            effort: validReasoningEffort(recommended.reasoning?.effort) ?? current.connection.reasoning.effort,
+          },
+        },
+      },
+    };
+    render();
+    scheduleSettingsAutosave();
   }
 
   function clearSnapshot(): void {
@@ -1285,6 +1416,36 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const input = tab.root.querySelector<HTMLSelectElement>(`[data-message-display-setting="${name}"]`);
       return input ? input.value as T : fallback;
     };
+    const connectionBooleanValue = (
+      name: keyof Pick<LTrackerSettings["connection"], "refreshConnectionsOnDrawerOpen">,
+    ): boolean => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-connection-setting="${name}"]`);
+      return input ? input.checked : state.settings.connection[name];
+    };
+    const connectionTextValue = (
+      name: keyof Pick<LTrackerSettings["connection"], "testPrompt">,
+    ): string => {
+      const input = tab.root.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-connection-setting="${name}"]`);
+      return input ? input.value : state.settings.connection[name];
+    };
+    const connectionSelectValue = <T extends string>(name: string, fallback: T): T => {
+      const input = tab.root.querySelector<HTMLSelectElement>(`[data-connection-setting="${name}"], [data-connection-reasoning="${name}"]`);
+      return input ? input.value as T : fallback;
+    };
+    const connectionParameterValue = (
+      name: keyof LTrackerSettings["connection"]["parameters"],
+    ): number | null => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-connection-parameter="${name}"]`);
+      if (!input) return state.settings.connection.parameters[name];
+      if (!input.value.trim()) return null;
+      const numeric = Number(input.value);
+      return Number.isFinite(numeric) ? numeric : null;
+    };
+    const selectedConnectionInput = tab.root.querySelector<HTMLSelectElement>("[data-connection-setting=\"selectedConnectionId\"]");
+    const selectedConnectionId = selectedConnectionInput?.value.trim() || null;
+    const selectedConnection = selectedConnectionId
+      ? state.connectionProfiles.find((profile) => profile.id === selectedConnectionId) ?? null
+      : null;
     return {
       schemaVersion: SETTINGS_SCHEMA_VERSION,
       recentMessageLimit: numberValue("recentMessageLimit"),
@@ -1348,6 +1509,28 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         showGenerationDuration: messageDisplayBooleanValue("showGenerationDuration"),
         minimizedMaxHeightPx: messageDisplayNumberValue("minimizedMaxHeightPx"),
         maxRenderedChars: messageDisplayNumberValue("maxRenderedChars"),
+      },
+      connection: {
+        mode: connectionSelectValue<LTrackerConnectionMode>("mode", state.settings.connection.mode),
+        selectedConnectionId,
+        selectedConnectionName: selectedConnection
+          ? selectedConnection.name
+          : selectedConnectionId ? state.settings.connection.selectedConnectionName : null,
+        refreshConnectionsOnDrawerOpen: connectionBooleanValue("refreshConnectionsOnDrawerOpen"),
+        parameters: {
+          temperature: connectionParameterValue("temperature"),
+          max_tokens: connectionParameterValue("max_tokens"),
+          top_p: connectionParameterValue("top_p"),
+          frequency_penalty: connectionParameterValue("frequency_penalty"),
+          presence_penalty: connectionParameterValue("presence_penalty"),
+        },
+        reasoning: {
+          source: connectionSelectValue<LTrackerReasoningSource>("source", state.settings.connection.reasoning.source),
+          apiReasoning: Boolean(tab.root.querySelector<HTMLInputElement>("[data-connection-reasoning=\"apiReasoning\"]")?.checked ?? state.settings.connection.reasoning.apiReasoning),
+          effort: connectionSelectValue<LTrackerReasoningEffort>("effort", state.settings.connection.reasoning.effort),
+          thinkingDisplay: connectionSelectValue<LTrackerThinkingDisplay>("thinkingDisplay", state.settings.connection.reasoning.thinkingDisplay),
+        },
+        testPrompt: connectionTextValue("testPrompt"),
       },
     };
   }
@@ -1783,6 +1966,76 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         ? "context_handler disabled by hotfix"
         : state.permissions.contextHandler ? "context_handler granted" : "context_handler missing",
     ].join(" / ");
+    const connectionSettings = state.settings.connection;
+    const selectedConnection = connectionSettings.selectedConnectionId
+      ? state.connectionProfiles.find((profile) => profile.id === connectionSettings.selectedConnectionId) ?? null
+      : null;
+    const connectionOptions = [
+      `<option value=""${selected(!connectionSettings.selectedConnectionId)}>None selected</option>`,
+      ...state.connectionProfiles.map((profile) => {
+        const label = [
+          profile.name,
+          profile.provider ? `provider ${profile.provider}` : null,
+          profile.model ? `model ${profile.model}` : null,
+          profile.is_default ? "default" : null,
+        ].filter((item): item is string => Boolean(item)).join(" / ");
+        return `<option value="${escapeHtml(profile.id)}"${selected(profile.id === connectionSettings.selectedConnectionId)}>${escapeHtml(label)}</option>`;
+      }),
+      connectionSettings.selectedConnectionId && !selectedConnection
+        ? `<option value="${escapeHtml(connectionSettings.selectedConnectionId)}" selected>${escapeHtml(connectionSettings.selectedConnectionName ?? connectionSettings.selectedConnectionId)} (missing)</option>`
+        : "",
+    ].join("");
+    const connectionWarning = connectionSettings.mode !== "active_quiet" && !connectionSettings.selectedConnectionId
+      ? "Selected connection mode needs a connection profile. LTracker will fall back to active quiet mode."
+      : connectionSettings.mode !== "active_quiet" && !selectedConnection
+        ? "Selected tracker connection is not in the current profile list. LTracker will fall back to active quiet mode."
+        : diagnostics.lastGenerationConnectionFallbackReason;
+    const reasoningControls = connectionSettings.reasoning.source === "custom"
+      ? `
+            <label class="ltracker-check">
+              <input type="checkbox" data-connection-reasoning="apiReasoning"${checked(connectionSettings.reasoning.apiReasoning)}>
+              API reasoning
+            </label>
+            <label class="ltracker-field">
+              Effort
+              <select data-connection-reasoning="effort">
+                <option value="auto"${selected(connectionSettings.reasoning.effort === "auto")}>Auto</option>
+                <option value="none"${selected(connectionSettings.reasoning.effort === "none")}>None</option>
+                <option value="minimal"${selected(connectionSettings.reasoning.effort === "minimal")}>Minimal</option>
+                <option value="low"${selected(connectionSettings.reasoning.effort === "low")}>Low</option>
+                <option value="medium"${selected(connectionSettings.reasoning.effort === "medium")}>Medium</option>
+                <option value="high"${selected(connectionSettings.reasoning.effort === "high")}>High</option>
+                <option value="max"${selected(connectionSettings.reasoning.effort === "max")}>Max</option>
+                <option value="xhigh"${selected(connectionSettings.reasoning.effort === "xhigh")}>XHigh</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Thinking display
+              <select data-connection-reasoning="thinkingDisplay">
+                <option value="auto"${selected(connectionSettings.reasoning.thinkingDisplay === "auto")}>Auto</option>
+                <option value="summarized"${selected(connectionSettings.reasoning.thinkingDisplay === "summarized")}>Summarized</option>
+                <option value="omitted"${selected(connectionSettings.reasoning.thinkingDisplay === "omitted")}>Omitted</option>
+              </select>
+            </label>
+        `
+      : "";
+    const connectionTestRunning = diagnostics.lastConnectionTestStatus === "running";
+    const connectionTestSummary = [
+      `status ${diagnostics.lastConnectionTestStatus}`,
+      diagnostics.lastConnectionTestDurationMs !== null ? `duration ${formatDurationMs(diagnostics.lastConnectionTestDurationMs)}` : null,
+      diagnostics.lastConnectionTestFinishReason ? `finish ${diagnostics.lastConnectionTestFinishReason}` : null,
+      diagnostics.lastConnectionTestError ? `error ${diagnostics.lastConnectionTestError}` : null,
+    ].filter((item): item is string => Boolean(item)).join(" / ");
+    const recommendedConnection = activePreset.recommendedConnection;
+    const recommendedConnectionText = recommendedConnection
+      ? [
+          recommendedConnection.notes ?? null,
+          recommendedConnection.mode ? `mode ${recommendedConnection.mode}` : null,
+          recommendedConnection.temperature !== undefined ? `temperature ${recommendedConnection.temperature}` : null,
+          recommendedConnection.max_tokens !== undefined ? `max_tokens ${recommendedConnection.max_tokens}` : null,
+          recommendedConnection.reasoning?.source ? `reasoning ${recommendedConnection.reasoning.source}` : null,
+        ].filter((item): item is string => Boolean(item)).join(" / ")
+      : null;
 
     tab.root.innerHTML = `
       <section class="ltracker-shell">
@@ -1861,6 +2114,104 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           <div class="ltracker-actions" style="margin-top: 10px;">
             <span class="ltracker-save-status" data-settings-save-status>${escapeHtml(settingsSaveStatusLabel())}</span>
             <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
+          </div>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Tracker Connection</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-field">
+              Mode
+              <select data-connection-setting="mode">
+                <option value="active_quiet"${selected(connectionSettings.mode === "active_quiet")}>Active chat connection</option>
+                <option value="selected_connection_quiet"${selected(connectionSettings.mode === "selected_connection_quiet")}>Selected connection, quiet mode</option>
+                <option value="selected_connection_raw"${selected(connectionSettings.mode === "selected_connection_raw")}>Selected connection, raw mode</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Profile
+              <select data-connection-setting="selectedConnectionId">
+                ${connectionOptions}
+              </select>
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-connection-setting="refreshConnectionsOnDrawerOpen"${checked(connectionSettings.refreshConnectionsOnDrawerOpen)}>
+              Refresh on drawer open
+            </label>
+            <label class="ltracker-field ltracker-field-wide">
+              Test prompt
+              <textarea data-connection-setting="testPrompt">${escapeHtml(connectionSettings.testPrompt || TRACKER_CONNECTION_DEFAULT_TEST_PROMPT)}</textarea>
+            </label>
+          </div>
+          ${connectionWarning ? `<p class="ltracker-note">${escapeHtml(connectionWarning)}</p>` : ""}
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="refresh-connections">Refresh Connections</button>
+            <button class="ltracker-button" type="button" data-action="test-connection" ${disabled(connectionTestRunning)}>Test Tracker Connection</button>
+            <button class="ltracker-button" type="button" data-action="cancel-connection-test" ${disabled(!connectionTestRunning)}>Cancel Test</button>
+          </div>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Selected name", selectedConnection?.name ?? connectionSettings.selectedConnectionName)}
+            ${renderRow("Selected id", connectionSettings.selectedConnectionId)}
+            ${renderRow("Provider", selectedConnection?.provider ?? null)}
+            ${renderRow("Model", selectedConnection?.model ?? null)}
+            ${renderRow("Has API key", selectedConnection?.has_api_key === null || selectedConnection?.has_api_key === undefined ? null : selectedConnection.has_api_key ? "yes" : "no")}
+            ${renderRow("Reasoning binding", compactRecord(selectedConnection?.reasoning_bindings ?? null))}
+            ${renderRow("Profiles loaded", state.connectionProfiles.length)}
+            ${renderRow("Last refresh", diagnostics.lastConnectionRefreshAt)}
+            ${renderRow("Refresh error", diagnostics.lastConnectionRefreshError)}
+            ${renderRow("Connection test", connectionTestSummary || null)}
+          </div>
+          <details class="ltracker-details">
+            <summary>Last connection test output</summary>
+            <pre class="ltracker-text">${escapeHtml(diagnostics.lastConnectionTestOutputPreview ?? "None")}</pre>
+          </details>
+          <details class="ltracker-details">
+            <summary>Last connection test usage</summary>
+            <pre class="ltracker-text">${escapeHtml(compactRecord(diagnostics.lastConnectionTestUsage) ?? "None")}</pre>
+          </details>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Tracker Generation Parameters</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-field">
+              Temperature
+              <input type="number" min="0" max="2" step="0.05" data-connection-parameter="temperature" value="${escapeHtml(numberInputValue(connectionSettings.parameters.temperature))}">
+            </label>
+            <label class="ltracker-field">
+              Max tokens
+              <input type="number" min="256" max="32000" step="256" data-connection-parameter="max_tokens" value="${escapeHtml(numberInputValue(connectionSettings.parameters.max_tokens))}">
+            </label>
+            <label class="ltracker-field">
+              Top p
+              <input type="number" min="0" max="1" step="0.05" data-connection-parameter="top_p" value="${escapeHtml(numberInputValue(connectionSettings.parameters.top_p))}">
+            </label>
+            <label class="ltracker-field">
+              Frequency penalty
+              <input type="number" min="-2" max="2" step="0.05" data-connection-parameter="frequency_penalty" value="${escapeHtml(numberInputValue(connectionSettings.parameters.frequency_penalty))}">
+            </label>
+            <label class="ltracker-field">
+              Presence penalty
+              <input type="number" min="-2" max="2" step="0.05" data-connection-parameter="presence_penalty" value="${escapeHtml(numberInputValue(connectionSettings.parameters.presence_penalty))}">
+            </label>
+          </div>
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="reset-connection-parameters">Reset Parameters</button>
+          </div>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Tracker Reasoning</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-field">
+              Source
+              <select data-connection-reasoning="source">
+                <option value="inherit"${selected(connectionSettings.reasoning.source === "inherit")}>Inherit</option>
+                <option value="off"${selected(connectionSettings.reasoning.source === "off")}>Off</option>
+                <option value="custom"${selected(connectionSettings.reasoning.source === "custom")}>Custom</option>
+              </select>
+            </label>
+            ${reasoningControls}
           </div>
         </section>
 
@@ -2183,9 +2534,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             </label>
           </div>
           ${presetHtmlWarning ? `<p class="ltracker-note">${escapeHtml(presetHtmlWarning)}</p>` : ""}
+          ${recommendedConnectionText ? `<p class="ltracker-note">${escapeHtml(recommendedConnectionText)}</p>` : ""}
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
               Render With Latest Snapshot
+            </button>
+            <button class="ltracker-button" type="button" data-action="apply-preset-connection" ${disabled(!recommendedConnection)}>
+              Apply Preset Recommended Tracker Settings
             </button>
             <button class="ltracker-button" type="button" data-action="save-preset-new">Save As New Preset</button>
             <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate Preset</button>
@@ -2206,6 +2561,25 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Current status", state.status)}
             ${renderRow("Auto mode", autoStatus)}
             ${renderRow("Permission status", permissionText)}
+            ${renderRow("Connection mode", diagnostics.connectionMode)}
+            ${renderRow("Selected connection id", diagnostics.selectedConnectionId)}
+            ${renderRow("Selected connection name", diagnostics.selectedConnectionName)}
+            ${renderRow("Selected connection available", diagnostics.selectedConnectionAvailable ? "yes" : "no")}
+            ${renderRow("Connection list count", diagnostics.connectionListCount)}
+            ${renderRow("Last connection refresh", diagnostics.lastConnectionRefreshAt)}
+            ${renderRow("Last connection refresh error", diagnostics.lastConnectionRefreshError)}
+            ${renderRow("Last generation connection mode", diagnostics.lastGenerationConnectionModeUsed)}
+            ${renderRow("Last generation connection id", diagnostics.lastGenerationConnectionIdUsed)}
+            ${renderRow("Last generation connection name", diagnostics.lastGenerationConnectionNameUsed)}
+            ${renderRow("Last generation connection fallback", diagnostics.lastGenerationConnectionFallbackReason)}
+            ${renderRow("Last generation parameters", compactRecord(diagnostics.lastGenerationParametersUsed))}
+            ${renderRow("Last reasoning override", compactRecord(diagnostics.lastReasoningOverrideUsed))}
+            ${renderRow("Last connection test at", diagnostics.lastConnectionTestAt)}
+            ${renderRow("Last connection test status", diagnostics.lastConnectionTestStatus)}
+            ${renderRow("Last connection test duration", diagnostics.lastConnectionTestDurationMs)}
+            ${renderRow("Last connection test error", diagnostics.lastConnectionTestError)}
+            ${renderRow("Last connection test finish", diagnostics.lastConnectionTestFinishReason)}
+            ${renderRow("Last connection test usage", compactRecord(diagnostics.lastConnectionTestUsage))}
             ${renderRow("Message display enabled", diagnostics.messageDisplayEnabled ? "yes" : "no")}
             ${renderRow("Message display mode", diagnostics.messageDisplayMode)}
             ${renderRow("Message display renderer", diagnostics.messageDisplayRenderer)}
@@ -2375,6 +2749,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const historyEntry = findHistoryEntry(target?.dataset.messageId, target?.dataset.swipeKey ?? null);
     if (action === "generate") generateTracker();
     if (action === "refresh") requestState();
+    if (action === "refresh-connections") refreshConnections();
+    if (action === "test-connection") testTrackerConnection();
+    if (action === "cancel-connection-test") cancelConnectionTest();
+    if (action === "reset-connection-parameters") resetConnectionParameters();
+    if (action === "apply-preset-connection") applyPresetRecommendedConnection();
     if (action === "clear-snapshot") clearSnapshot();
     if (action === "reset-settings") resetSettings();
     if (action === "copy-snapshot") {
@@ -2452,7 +2831,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     removeFromMessage: true,
   }, handleEmbeddedTrackerTag));
 
-  cleanups.push(tab.onActivate(requestState));
+  cleanups.push(tab.onActivate(activateDrawer));
   cleanups.push(inputAction.onClick(generateTracker));
   cleanups.push(ctx.onBackendMessage((payload) => {
     if (!isBackendMessage(payload)) return;

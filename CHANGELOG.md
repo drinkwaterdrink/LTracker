@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13 - Connection settings
+- Added tracker connection settings with active/default, selected quiet, and selected raw generation modes.
+- Added connection profile listing, refresh, and selected profile storage.
+- Added tracker-specific generation parameters.
+- Added tracker reasoning override controls.
+- Added Test Tracker Connection action with duration, output preview, finish reason, usage, and cancellation.
+- Applied connection settings to manual, auto, per-message generate, and per-message regenerate tracker jobs.
+- Added connection fallback diagnostics.
+- Added optional preset recommended connection metadata groundwork.
+- Updated README with tracker connection guidance and recommended starting settings.
+
 ## 0.12 - Message control bar and generation UX
 - Replaced bulky message tracker indicators with a compact message control pill.
 - Hid swipe key/index text by default behind a debug setting.

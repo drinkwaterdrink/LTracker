@@ -1,9 +1,12 @@
 import { DEFAULT_TRACKER_SCHEMA } from "./defaultSchema";
 import type {
+  LTrackerConnectionMode,
+  LTrackerReasoningSource,
   TrackerPresetCapabilities,
   TrackerPresetDraft,
   TrackerPresetExportEnvelope,
   TrackerPresetOrigin,
+  TrackerPresetRecommendedConnection,
   TrackerSchemaPreset,
 } from "./types";
 
@@ -34,6 +37,16 @@ export const DEFAULT_TRACKER_PRESET: TrackerSchemaPreset = {
     supportsPartialRegeneration: false,
     supportsSequentialGeneration: false,
   },
+  recommendedConnection: {
+    mode: "active_quiet",
+    temperature: 0.2,
+    max_tokens: 2000,
+    reasoning: {
+      source: "inherit",
+      effort: "auto",
+    },
+    notes: "Start with active quiet mode, low temperature, and inherited reasoning. Use a selected raw tracker profile after confirming it returns strict JSON.",
+  },
 };
 
 export interface PresetValidationResult {
@@ -63,12 +76,51 @@ function validOrigin(value: unknown): value is TrackerPresetOrigin {
   return value === "built_in" || value === "user_imported" || value === "user_created";
 }
 
+function recommendedMode(value: unknown): LTrackerConnectionMode | undefined {
+  return value === "active_quiet" || value === "selected_connection_quiet" || value === "selected_connection_raw"
+    ? value
+    : undefined;
+}
+
+function recommendedReasoningSource(value: unknown): LTrackerReasoningSource | undefined {
+  return value === "inherit" || value === "off" || value === "custom" ? value : undefined;
+}
+
+function boundedNumber(value: unknown, min: number, max: number): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.min(max, Math.max(min, value));
+}
+
 function repairCapabilities(value: unknown): TrackerPresetCapabilities | undefined {
   if (!isRecord(value)) return undefined;
   const result: TrackerPresetCapabilities = {};
   if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
   if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
   if (typeof value.supportsSequentialGeneration === "boolean") result.supportsSequentialGeneration = value.supportsSequentialGeneration;
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function repairRecommendedConnection(value: unknown): TrackerPresetRecommendedConnection | undefined {
+  if (!isRecord(value)) return undefined;
+  const result: TrackerPresetRecommendedConnection = {};
+  const mode = recommendedMode(value.mode);
+  if (mode) result.mode = mode;
+  const temperature = boundedNumber(value.temperature, 0, 2);
+  if (temperature !== undefined) result.temperature = temperature;
+  const maxTokens = boundedNumber(value.max_tokens, 256, 32_000);
+  if (maxTokens !== undefined) result.max_tokens = Math.round(maxTokens);
+  const reasoning = isRecord(value.reasoning) ? value.reasoning : null;
+  if (reasoning) {
+    const source = recommendedReasoningSource(reasoning.source);
+    const effort = typeof reasoning.effort === "string" ? reasoning.effort : undefined;
+    if (source || effort) {
+      result.reasoning = {};
+      if (source) result.reasoning.source = source;
+      if (effort) result.reasoning.effort = effort;
+    }
+  }
+  const notes = optionalString(value.notes);
+  if (notes !== undefined) result.notes = notes;
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
@@ -117,6 +169,9 @@ export function validateTrackerPreset(value: unknown): PresetValidationResult {
   if ("htmlTemplate" in value && typeof value.htmlTemplate !== "string") {
     return { ok: false, error: "HTML template must be text." };
   }
+  if ("recommendedConnection" in value && value.recommendedConnection !== undefined && !isRecord(value.recommendedConnection)) {
+    return { ok: false, error: "Recommended connection must be an object." };
+  }
   return { ok: true, error: null };
 }
 
@@ -141,6 +196,8 @@ export function repairTrackerPreset(value: unknown): TrackerSchemaPreset | null 
   if (notes !== undefined) preset.notes = notes;
   const capabilities = repairCapabilities(value.capabilities);
   if (capabilities) preset.capabilities = capabilities;
+  const recommendedConnection = repairRecommendedConnection(value.recommendedConnection);
+  if (recommendedConnection) preset.recommendedConnection = recommendedConnection;
   return validateTrackerPreset(preset).ok ? preset : null;
 }
 
@@ -167,6 +224,7 @@ export function draftToPreset(
   if (draft.htmlTemplate !== undefined) preset.htmlTemplate = draft.htmlTemplate;
   if (draft.notes !== undefined) preset.notes = draft.notes;
   if (draft.capabilities) preset.capabilities = draft.capabilities;
+  if (draft.recommendedConnection) preset.recommendedConnection = draft.recommendedConnection;
   return preset;
 }
 

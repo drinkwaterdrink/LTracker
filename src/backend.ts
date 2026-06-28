@@ -1,6 +1,8 @@
 import type {
   ChatMessageDTO,
+  ConnectionProfileDTO,
   GenerationEndedPayloadDTO,
+  GenerationRequestDTO,
   LlmMessageDTO,
   SpindleAPI,
 } from "lumiverse-spindle-types";
@@ -75,6 +77,11 @@ import {
   buildTrackerPrompt,
 } from "./shared/trackerPrompt";
 import {
+  buildTrackerGenerationRequest,
+  TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
+  type TrackerGenerationRequestBuildResult,
+} from "./shared/generationRequest";
+import {
   DEFAULT_SWIPE_KEY,
   defaultSwipeIdentity,
   deriveSwipeTrackerIdentity,
@@ -94,6 +101,8 @@ import {
   type FrontendState,
   type LTrackerBuildInfo,
   type LTrackerCancellation,
+  type LTrackerConnectionProfileSummary,
+  type LTrackerConnectionTestStatus,
   type LTrackerDiagnostics,
   type LTrackerError,
   type LTrackerErrorStage,
@@ -149,6 +158,24 @@ interface PendingAutoJob {
   scheduledAt: string;
 }
 
+interface ConnectionProfileCache {
+  profiles: LTrackerConnectionProfileSummary[];
+  refreshedAt: string | null;
+  error: string | null;
+}
+
+interface ConnectionTestJob {
+  controller: AbortController;
+  requestId: string;
+  startedAtMs: number;
+}
+
+interface TrackerGenerationResult {
+  text: string;
+  response: unknown;
+  requestDiagnostics: TrackerGenerationRequestBuildResult;
+}
+
 class LTrackerStageError extends Error {
   readonly stage: LTrackerErrorStage;
   readonly detail?: string;
@@ -171,6 +198,8 @@ const BUILD_INFO: LTrackerBuildInfo = {
 
 const activeJobs = new Map<string, ActiveJob>();
 const pendingAutoJobs = new Map<string, PendingAutoJob>();
+const connectionProfilesByUser = new Map<string, ConnectionProfileCache>();
+const connectionTestJobs = new Map<string, ConnectionTestJob>();
 const activeChatByUser = new Map<string, string | null>();
 const usersByChat = new Map<string, Set<string>>();
 const eventCleanups: Array<() => void> = [];
@@ -218,7 +247,10 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
   if (![
     "ready",
     "refresh_state",
+    "refresh_connections",
     "generate_tracker",
+    "test_tracker_connection",
+    "cancel_connection_test",
     "clear_snapshot",
     "save_settings",
     "reset_settings",
@@ -242,6 +274,9 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
   if (
     [
       "generate_tracker",
+      "refresh_connections",
+      "test_tracker_connection",
+      "cancel_connection_test",
       "clear_snapshot",
       "save_settings",
       "reset_settings",
@@ -264,6 +299,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     && typeof payload.requestId !== "string"
   ) return false;
   if (payload.type === "save_settings" && !isRecord(payload.settings)) return false;
+  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== undefined && !isRecord(payload.settings)) return false;
   if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
@@ -441,6 +477,26 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastInlineActionError: null,
     nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
     nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+    connectionMode: DEFAULT_SETTINGS.connection.mode,
+    selectedConnectionId: DEFAULT_SETTINGS.connection.selectedConnectionId,
+    selectedConnectionName: DEFAULT_SETTINGS.connection.selectedConnectionName,
+    selectedConnectionAvailable: false,
+    connectionListCount: 0,
+    lastConnectionRefreshAt: null,
+    lastConnectionRefreshError: null,
+    lastGenerationConnectionModeUsed: null,
+    lastGenerationConnectionIdUsed: null,
+    lastGenerationConnectionNameUsed: null,
+    lastGenerationConnectionFallbackReason: null,
+    lastGenerationParametersUsed: null,
+    lastReasoningOverrideUsed: null,
+    lastConnectionTestAt: null,
+    lastConnectionTestStatus: "idle",
+    lastConnectionTestDurationMs: null,
+    lastConnectionTestError: null,
+    lastConnectionTestOutputPreview: null,
+    lastConnectionTestFinishReason: null,
+    lastConnectionTestUsage: null,
   };
 }
 
@@ -533,6 +589,16 @@ function inlineActionOrNull(value: unknown): LTrackerDiagnostics["lastInlineActi
     || value === "toggle"
     ? value
     : null;
+}
+
+function connectionTestStatus(value: unknown): LTrackerConnectionTestStatus {
+  return value === "idle"
+    || value === "running"
+    || value === "success"
+    || value === "error"
+    || value === "cancelled"
+    ? value
+    : "idle";
 }
 
 function activeTrackerJobsOrEmpty(value: unknown): LTrackerDiagnostics["activeTrackerJobs"] {
@@ -708,6 +774,30 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastInlineActionError: stringOrNull(value.lastInlineActionError),
     nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
     nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+    connectionMode: typeof value.connectionMode === "string" ? value.connectionMode : base.connectionMode,
+    selectedConnectionId: stringOrNull(value.selectedConnectionId),
+    selectedConnectionName: stringOrNull(value.selectedConnectionName),
+    selectedConnectionAvailable: typeof value.selectedConnectionAvailable === "boolean"
+      ? value.selectedConnectionAvailable
+      : base.selectedConnectionAvailable,
+    connectionListCount: typeof value.connectionListCount === "number" && Number.isFinite(value.connectionListCount)
+      ? Math.max(0, Math.round(value.connectionListCount))
+      : 0,
+    lastConnectionRefreshAt: stringOrNull(value.lastConnectionRefreshAt),
+    lastConnectionRefreshError: stringOrNull(value.lastConnectionRefreshError),
+    lastGenerationConnectionModeUsed: stringOrNull(value.lastGenerationConnectionModeUsed),
+    lastGenerationConnectionIdUsed: stringOrNull(value.lastGenerationConnectionIdUsed),
+    lastGenerationConnectionNameUsed: stringOrNull(value.lastGenerationConnectionNameUsed),
+    lastGenerationConnectionFallbackReason: stringOrNull(value.lastGenerationConnectionFallbackReason),
+    lastGenerationParametersUsed: recordOrNull(value.lastGenerationParametersUsed),
+    lastReasoningOverrideUsed: recordOrNull(value.lastReasoningOverrideUsed),
+    lastConnectionTestAt: stringOrNull(value.lastConnectionTestAt),
+    lastConnectionTestStatus: connectionTestStatus(value.lastConnectionTestStatus),
+    lastConnectionTestDurationMs: numberOrNull(value.lastConnectionTestDurationMs),
+    lastConnectionTestError: stringOrNull(value.lastConnectionTestError),
+    lastConnectionTestOutputPreview: stringOrNull(value.lastConnectionTestOutputPreview),
+    lastConnectionTestFinishReason: stringOrNull(value.lastConnectionTestFinishReason),
+    lastConnectionTestUsage: recordOrNull(value.lastConnectionTestUsage),
   };
 }
 
@@ -1060,6 +1150,94 @@ async function tryPersistDiagnostics(diagnostics: LTrackerDiagnostics, userId: s
   }
 }
 
+function summarizeConnectionProfile(profile: ConnectionProfileDTO): LTrackerConnectionProfileSummary {
+  return {
+    id: profile.id,
+    name: profile.name,
+    provider: typeof profile.provider === "string" ? profile.provider : null,
+    model: typeof profile.model === "string" ? profile.model : null,
+    has_api_key: typeof profile.has_api_key === "boolean" ? profile.has_api_key : null,
+    is_default: typeof profile.is_default === "boolean" ? profile.is_default : null,
+    reasoning_bindings: recordOrNull(profile.reasoning_bindings),
+    updated_at: typeof profile.updated_at === "string" ? profile.updated_at : null,
+  };
+}
+
+function connectionCacheForUser(userId: string): ConnectionProfileCache {
+  return connectionProfilesByUser.get(userId) ?? {
+    profiles: [],
+    refreshedAt: null,
+    error: null,
+  };
+}
+
+async function refreshConnectionProfiles(
+  userId: string,
+  chatId: string | null,
+): Promise<LTrackerConnectionProfileSummary[]> {
+  ensurePermission("generation", "generation is required to list connection profiles");
+  if (!spindle.connections?.list) {
+    throw new Error("Lumiverse connection profile list API is unavailable.");
+  }
+  const refreshedAt = nowIso();
+  try {
+    const profiles = (await spindle.connections.list(userId)).map(summarizeConnectionProfile);
+    connectionProfilesByUser.set(userId, { profiles, refreshedAt, error: null });
+    if (chatId) {
+      const settings = await getSettings(userId);
+      const diagnostics = {
+        ...await loadDiagnostics(chatId, userId),
+        connectionMode: settings.connection.mode,
+        selectedConnectionId: settings.connection.selectedConnectionId,
+        selectedConnectionName: settings.connection.selectedConnectionName,
+        selectedConnectionAvailable: Boolean(settings.connection.selectedConnectionId && profiles.some((profile) => profile.id === settings.connection.selectedConnectionId)),
+        connectionListCount: profiles.length,
+        lastConnectionRefreshAt: refreshedAt,
+        lastConnectionRefreshError: null,
+      };
+      await tryPersistDiagnostics(diagnostics, userId);
+    }
+    return profiles;
+  } catch (error) {
+    const message = errorMessage(error);
+    const previous = connectionCacheForUser(userId);
+    connectionProfilesByUser.set(userId, { ...previous, refreshedAt, error: message });
+    if (chatId) {
+      const settings = await getSettings(userId);
+      const diagnostics = {
+        ...await loadDiagnostics(chatId, userId),
+        connectionMode: settings.connection.mode,
+        selectedConnectionId: settings.connection.selectedConnectionId,
+        selectedConnectionName: settings.connection.selectedConnectionName,
+        selectedConnectionAvailable: Boolean(settings.connection.selectedConnectionId && previous.profiles.some((profile) => profile.id === settings.connection.selectedConnectionId)),
+        connectionListCount: previous.profiles.length,
+        lastConnectionRefreshAt: refreshedAt,
+        lastConnectionRefreshError: message,
+      };
+      await tryPersistDiagnostics(diagnostics, userId);
+    }
+    throw error;
+  }
+}
+
+async function getSelectedConnectionProfile(
+  settings: LTrackerSettings,
+  userId: string,
+): Promise<LTrackerConnectionProfileSummary | null> {
+  const selectedId = settings.connection.selectedConnectionId;
+  if (!selectedId) return null;
+  const cached = connectionCacheForUser(userId).profiles.find((profile) => profile.id === selectedId);
+  if (cached) return cached;
+  if (!spindle.connections?.get) return null;
+  try {
+    const profile = await spindle.connections.get(selectedId, userId);
+    return profile ? summarizeConnectionProfile(profile) : null;
+  } catch (error) {
+    spindle.log.warn(`LTracker could not fetch selected tracker connection: ${errorMessage(error)}`);
+    return null;
+  }
+}
+
 async function buildState(
   chatId: string | null,
   userId: string,
@@ -1069,6 +1247,11 @@ async function buildState(
 ): Promise<FrontendState> {
   const settings = await getSettings(userId);
   const diagnostics = await loadDiagnostics(chatId, userId);
+  const connectionCache = connectionCacheForUser(userId);
+  const selectedConnectionAvailable = Boolean(
+    settings.connection.selectedConnectionId
+    && connectionCache.profiles.some((profile) => profile.id === settings.connection.selectedConnectionId),
+  );
   const presetState = await resolveActivePreset(chatId, userId);
   const snapshot = await loadSnapshot(chatId, userId);
   const activeWidgetJobs = activeWidgetJobsForChat(chatId);
@@ -1146,6 +1329,13 @@ async function buildState(
       ...diagnostics,
       status: status ?? diagnostics.status,
       lastError: stateError,
+      connectionMode: settings.connection.mode,
+      selectedConnectionId: settings.connection.selectedConnectionId,
+      selectedConnectionName: settings.connection.selectedConnectionName,
+      selectedConnectionAvailable,
+      connectionListCount: connectionCache.profiles.length,
+      lastConnectionRefreshAt: connectionCache.refreshedAt ?? diagnostics.lastConnectionRefreshAt,
+      lastConnectionRefreshError: connectionCache.error ?? diagnostics.lastConnectionRefreshError,
       autoSubscriptionActive: autoSubscriptionsActive,
       injectionEnabled: settings.injection.enabled && CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
       selectedPresetId: presetState.activePreset.id,
@@ -1174,6 +1364,7 @@ async function buildState(
       nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
       nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
     },
+    connectionProfiles: connectionCache.profiles,
   };
 }
 
@@ -1284,16 +1475,35 @@ function normalizeGenerationText(result: unknown): string {
   throw new Error("Lumiverse generation completed without textual content.");
 }
 
+function generationFinishReason(result: unknown): string | null {
+  if (!isRecord(result)) return null;
+  for (const key of ["finish_reason", "finishReason", "stop_reason", "stopReason"]) {
+    const value = result[key];
+    if (typeof value === "string") return value;
+  }
+  const choice = Array.isArray(result.choices) ? result.choices[0] : null;
+  if (isRecord(choice)) {
+    for (const key of ["finish_reason", "finishReason"]) {
+      const value = choice[key];
+      if (typeof value === "string") return value;
+    }
+  }
+  return null;
+}
+
+function generationUsage(result: unknown): Record<string, unknown> | null {
+  if (!isRecord(result)) return null;
+  const usage = result.usage ?? result.token_usage ?? result.tokenUsage;
+  return recordOrNull(usage);
+}
+
 async function runTrackerGeneration(
   messages: LlmMessageDTO[],
   userId: string,
   settings: LTrackerSettings,
   parentSignal: AbortSignal,
-): Promise<string> {
-  ensurePermission("generation", "generation is required to call the active/default model");
-  if (!spindle.generate?.quiet) {
-    throw new Error("Lumiverse quiet generation API is unavailable.");
-  }
+): Promise<TrackerGenerationResult> {
+  ensurePermission("generation", "generation is required to call the tracker model");
 
   const controller = new AbortController();
   const onParentAbort = () => controller.abort();
@@ -1307,15 +1517,34 @@ async function runTrackerGeneration(
   if (parentSignal.aborted) controller.abort();
 
   try {
-    internalTrackerGenerationDepth += 1;
-    const result = await spindle.generate.quiet({
-      type: "quiet",
+    const selectedConnection = await getSelectedConnectionProfile(settings, userId);
+    const requestDiagnostics = buildTrackerGenerationRequest({
       messages,
-      reasoning: { source: "off" },
-      userId,
+      settings,
+      selectedConnection,
+      quietSupportsConnectionId: true,
       signal: controller.signal,
     });
-    return normalizeGenerationText(result);
+    const request = {
+      ...requestDiagnostics.request,
+      userId,
+    } as GenerationRequestDTO;
+    if (requestDiagnostics.request.type === "raw" && !spindle.generate?.raw) {
+      throw new Error("Lumiverse raw generation API is unavailable.");
+    }
+    if (requestDiagnostics.request.type === "quiet" && !spindle.generate?.quiet) {
+      throw new Error("Lumiverse quiet generation API is unavailable.");
+    }
+
+    internalTrackerGenerationDepth += 1;
+    const response = requestDiagnostics.request.type === "raw"
+      ? await spindle.generate.raw(request)
+      : await spindle.generate.quiet(request);
+    return {
+      text: normalizeGenerationText(response),
+      response,
+      requestDiagnostics,
+    };
   } catch (error) {
     if (parentSignal.aborted) {
       throw new Error("Tracker generation was cancelled by a newer request.");
@@ -2196,12 +2425,19 @@ async function generateTracker(
     await tryPersistDiagnostics(diagnostics, userId);
 
     stage = "generation";
-    const rawOutput = await runTrackerGeneration(promptMessages, userId, settings, job.controller.signal);
+    const generation = await runTrackerGeneration(promptMessages, userId, settings, job.controller.signal);
+    const rawOutput = generation.text;
     if (!isCurrentJob(jobKey, job.jobId)) return;
 
     diagnostics = {
       ...diagnostics,
       lastRawOutput: settings.saveRawOutput ? rawOutput : "[Raw output saving disabled]",
+      lastGenerationConnectionModeUsed: generation.requestDiagnostics.modeUsed,
+      lastGenerationConnectionIdUsed: generation.requestDiagnostics.connectionIdUsed,
+      lastGenerationConnectionNameUsed: generation.requestDiagnostics.connectionNameUsed,
+      lastGenerationConnectionFallbackReason: generation.requestDiagnostics.fallbackReason,
+      lastGenerationParametersUsed: generation.requestDiagnostics.parametersUsed,
+      lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed,
     };
 
     stage = "parse";
@@ -2792,6 +3028,118 @@ async function handleRefresh(
   await sendState(resolvedChatId, userId, undefined, null);
 }
 
+async function handleConnectionRefresh(
+  payload: Extract<FrontendMessage, { type: "refresh_connections" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = payload.chatId
+    ? payload.chatId
+    : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
+  rememberActiveChat(userId, resolvedChatId);
+  try {
+    await refreshConnectionProfiles(userId, resolvedChatId);
+  } catch (error) {
+    spindle.log.warn(`LTracker connection refresh failed: ${errorMessage(error)}`);
+  }
+  await sendState(resolvedChatId, userId, undefined, null, payload.requestId);
+}
+
+async function testTrackerConnection(
+  payload: Extract<FrontendMessage, { type: "test_tracker_connection" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = payload.chatId
+    ? payload.chatId
+    : await resolveActiveChatId(payload.chatId, userId).catch(() => activeChatByUser.get(userId) ?? null);
+  rememberActiveChat(userId, resolvedChatId);
+  const existing = connectionTestJobs.get(userId);
+  existing?.controller.abort();
+
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
+  const job: ConnectionTestJob = {
+    controller: new AbortController(),
+    requestId: payload.requestId,
+    startedAtMs,
+  };
+  connectionTestJobs.set(userId, job);
+
+  const settings = payload.settings ? await saveSettings(payload.settings, userId) : await getSettings(userId);
+  let diagnostics: LTrackerDiagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastConnectionTestAt: startedAt,
+    lastConnectionTestStatus: "running",
+    lastConnectionTestDurationMs: null,
+    lastConnectionTestError: null,
+    lastConnectionTestOutputPreview: null,
+    lastConnectionTestFinishReason: null,
+    lastConnectionTestUsage: null,
+    connectionMode: settings.connection.mode,
+    selectedConnectionId: settings.connection.selectedConnectionId,
+    selectedConnectionName: settings.connection.selectedConnectionName,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, undefined, null, payload.requestId);
+
+  try {
+    const prompt = settings.connection.testPrompt.trim() || TRACKER_CONNECTION_DEFAULT_TEST_PROMPT;
+    const generation = await runTrackerGeneration([
+      {
+        role: "user",
+        content: prompt,
+      },
+    ] as LlmMessageDTO[], userId, settings, job.controller.signal);
+    if (connectionTestJobs.get(userId) !== job) return;
+    const completedAtMs = Date.now();
+    diagnostics = {
+      ...diagnostics,
+      lastConnectionTestAt: new Date(completedAtMs).toISOString(),
+      lastConnectionTestStatus: "success",
+      lastConnectionTestDurationMs: completedAtMs - startedAtMs,
+      lastConnectionTestError: null,
+      lastConnectionTestOutputPreview: generation.text.slice(0, 500),
+      lastConnectionTestFinishReason: generationFinishReason(generation.response),
+      lastConnectionTestUsage: generationUsage(generation.response),
+      lastGenerationConnectionModeUsed: generation.requestDiagnostics.modeUsed,
+      lastGenerationConnectionIdUsed: generation.requestDiagnostics.connectionIdUsed,
+      lastGenerationConnectionNameUsed: generation.requestDiagnostics.connectionNameUsed,
+      lastGenerationConnectionFallbackReason: generation.requestDiagnostics.fallbackReason,
+      lastGenerationParametersUsed: generation.requestDiagnostics.parametersUsed,
+      lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed,
+    };
+    await tryPersistDiagnostics(diagnostics, userId);
+    await sendState(resolvedChatId, userId, undefined, null, payload.requestId);
+  } catch (error) {
+    if (connectionTestJobs.get(userId) !== job) return;
+    const completedAtMs = Date.now();
+    const cancelled = job.controller.signal.aborted;
+    diagnostics = {
+      ...diagnostics,
+      lastConnectionTestAt: new Date(completedAtMs).toISOString(),
+      lastConnectionTestStatus: cancelled ? "cancelled" : "error",
+      lastConnectionTestDurationMs: completedAtMs - startedAtMs,
+      lastConnectionTestError: cancelled ? null : errorMessage(error),
+    };
+    await tryPersistDiagnostics(diagnostics, userId);
+    await sendState(resolvedChatId, userId, undefined, null, payload.requestId);
+  } finally {
+    if (connectionTestJobs.get(userId) === job) connectionTestJobs.delete(userId);
+  }
+}
+
+async function cancelConnectionTest(
+  payload: Extract<FrontendMessage, { type: "cancel_connection_test" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = payload.chatId
+    ? payload.chatId
+    : await resolveActiveChatId(payload.chatId, userId).catch(() => activeChatByUser.get(userId) ?? null);
+  rememberActiveChat(userId, resolvedChatId);
+  const job = connectionTestJobs.get(userId);
+  if (job) job.controller.abort();
+  await sendState(resolvedChatId, userId, undefined, null, payload.requestId);
+}
+
 async function regenerateMessageTracker(
   payload: Extract<FrontendMessage, { type: "generate_message_tracker" | "regenerate_message_tracker" }>,
   userId: string,
@@ -3028,6 +3376,8 @@ function disposeBackend(): void {
   pendingAutoJobs.clear();
   for (const job of activeJobs.values()) job.controller.abort();
   activeJobs.clear();
+  for (const job of connectionTestJobs.values()) job.controller.abort();
+  connectionTestJobs.clear();
   for (const cleanup of eventCleanups.splice(0).reverse()) cleanup();
   autoSubscriptionsActive = false;
   contextHandlerRegistered = false;
@@ -3086,6 +3436,18 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "clear_snapshot") {
         await clearSnapshot(chatId, userId, payload.requestId);
+        return;
+      }
+      if (payload.type === "refresh_connections") {
+        await handleConnectionRefresh(payload, userId);
+        return;
+      }
+      if (payload.type === "test_tracker_connection") {
+        await testTrackerConnection(payload, userId);
+        return;
+      }
+      if (payload.type === "cancel_connection_test") {
+        await cancelConnectionTest(payload, userId);
         return;
       }
       if (payload.type === "save_settings") {
