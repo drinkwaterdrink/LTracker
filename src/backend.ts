@@ -74,6 +74,7 @@ import {
   resolveSelectedPreset,
   validateJsonSchema,
   validateTrackerPreset,
+  estimatePresetStats,
 } from "./shared/presets";
 import {
   DEFAULT_SETTINGS,
@@ -1688,6 +1689,7 @@ async function buildState(
     && connectionCache.profiles.some((profile) => profile.id === settings.connection.selectedConnectionId),
   );
   const presetState = await resolveActivePreset(chatId, userId);
+  const presetStats = estimatePresetStats(presetState.activePreset);
   const snapshot = await loadSnapshot(chatId, userId);
   const activeWidgetJobs = activeWidgetJobsForChat(chatId);
   const messageSnapshotIndex = await loadMessageSnapshotIndex(chatId, userId);
@@ -1845,6 +1847,8 @@ async function buildState(
       ultraModeEnabled: settings.budget.ultraModeEnabled,
       iframeFallbackVisibleInMainUi: false,
       expandedWidthModeResolved: settings.expandedWidth.expandedWidthMode,
+      lastPresetEstimatedTokens: presetStats.estimatedTokens,
+      lastPresetEstimatedRenderedChars: presetStats.estimatedRenderedChars,
     },
     connectionProfiles: connectionCache.profiles,
   };
@@ -3901,6 +3905,15 @@ async function resetPreset(chatId: string | null, userId: string, requestId: str
 
 async function importPreset(chatId: string | null, userId: string, importText: string, requestId: string): Promise<void> {
   const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const settings = await getSettings(userId);
+  if (importText.length > settings.budget.presetImportMaxChars) {
+    const message = `Import payload size (${importText.length} characters) exceeds the size limit of ${settings.budget.presetImportMaxChars} characters.`;
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: message,
+      lastPresetFallbackReason: null,
+    });
+    throw new Error(message);
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(importText);

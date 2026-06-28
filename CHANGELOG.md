@@ -6,11 +6,11 @@
 - Added hard timeout and stale-job eviction for tracker generation jobs.
 - Moved static DOM tracker CSS toward a single global stylesheet injection to avoid duplicate style blocks per message.
 - Added delete confirmation for inline and drawer tracker deletion.
-- Added optional undo restore buffer.
+- Added optional undo restore only if implemented safely.
 - Hardened sanitizer and embedded LTracker tag parsing without disabling Trusted Preset Mode.
 - Added preset/import size guards with Ultra Mode-aware warnings.
-- Added history paging and storage maintenance scans.
-- Grouped diagnostics into readable collapsible details accordions.
+- Added history paging and storage maintenance groundwork.
+- Grouped diagnostics into readable categories.
 - Preserved 0.15 Trusted Preset, DOM injection, Ultra Mode, connection, memory, and prompt injection behavior.
 
 ## 0.15 - Auto timing, drawer UX, and power defaults

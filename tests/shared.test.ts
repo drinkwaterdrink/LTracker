@@ -2430,3 +2430,39 @@ test("0.16 performance, sanitation, nesting, and memory selection features", () 
   // targetRetain = 5 => Math.min(100, Math.max(5 * 6 + 10, 5 + 20)) = Math.min(100, Math.max(40, 25)) = 40
   assert.equal(candidates.length, 40);
 });
+
+test("v0.16 Release Completion Verification", () => {
+  // 1. Version consistency checks
+  const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+  const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
+  assert.equal(packageJson.version, "0.16");
+  assert.equal(spindleJson.version, "0.16");
+
+  // 2. Changelog check
+  const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.16 - Stabilization, performance, and safety hardening/);
+
+  // 3. README.md consistency check
+  const readme = readFileSync("README.md", "utf8");
+  assert.match(readme, /Version: `0\.16`/);
+  assert.match(readme, /Current release: `0\.16/);
+
+  // 4. Global stylesheet element presence check in frontend
+  const frontendSource = readFileSync("src/frontend.ts", "utf8");
+  assert.match(frontendSource, /ltracker-dom-style/);
+  assert.match(frontendSource, /LTRACKER_DOM_TRACKER_CSS/);
+
+  // 5. Check size guard validation in backend importPreset
+  const backendSource = readFileSync("src/backend.ts", "utf8");
+  assert.match(backendSource, /presetImportMaxChars/);
+  assert.match(backendSource, /JSON\.parse\(importText\)/);
+
+  // 6. Malformed and nested tag parsing checks
+  const normalTags = findLTrackerTags("<ltracker>content</ltracker>");
+  assert.equal(normalTags.length, 1);
+  assert.equal(normalTags[0].content, "content");
+
+  const malformedNestedTags = findLTrackerTags("Hello <ltracker>first <ltracker>second</ltracker> third</ltracker>");
+  assert.equal(malformedNestedTags.length, 0); // Nested tags are ignored/rejected
+});
+

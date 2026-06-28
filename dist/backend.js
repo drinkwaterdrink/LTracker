@@ -1842,6 +1842,15 @@ function resolveSelectedPreset(presets, selectedPresetId) {
     fallbackReason: `Selected preset ${selectedPresetId} was not found; using Default Scene Tracker.`
   };
 }
+function estimatePresetStats(preset) {
+  const schemaJson = JSON.stringify(preset.jsonSchema, null, 2);
+  const instructions = preset.promptInstructions ?? "";
+  const presetContentLength = schemaJson.length + instructions.length + preset.name.length + preset.id.length;
+  const estimatedTokens = Math.max(10, Math.ceil(presetContentLength / 4));
+  const templateLength = (preset.htmlTemplate ?? "").length;
+  const estimatedRenderedChars = templateLength > 0 ? templateLength + 4e3 : 1e4;
+  return { estimatedTokens, estimatedRenderedChars };
+}
 
 // src/shared/generationRequest.ts
 var TRACKER_CONNECTION_DEFAULT_TEST_PROMPT = "Return a compact JSON object with ok true and a short status.";
@@ -4237,6 +4246,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     settings.connection.selectedConnectionId && connectionCache.profiles.some((profile) => profile.id === settings.connection.selectedConnectionId)
   );
   const presetState = await resolveActivePreset(chatId, userId);
+  const presetStats = estimatePresetStats(presetState.activePreset);
   const snapshot = await loadSnapshot(chatId, userId);
   const activeWidgetJobs = activeWidgetJobsForChat(chatId);
   const messageSnapshotIndex = await loadMessageSnapshotIndex(chatId, userId);
@@ -4371,7 +4381,9 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       templateTrustMode: settings.renderer.templateTrustMode,
       ultraModeEnabled: settings.budget.ultraModeEnabled,
       iframeFallbackVisibleInMainUi: false,
-      expandedWidthModeResolved: settings.expandedWidth.expandedWidthMode
+      expandedWidthModeResolved: settings.expandedWidth.expandedWidthMode,
+      lastPresetEstimatedTokens: presetStats.estimatedTokens,
+      lastPresetEstimatedRenderedChars: presetStats.estimatedRenderedChars
     },
     connectionProfiles: connectionCache.profiles
   };
@@ -6043,6 +6055,15 @@ async function resetPreset(chatId, userId, requestId) {
 }
 async function importPreset(chatId, userId, importText, requestId) {
   const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const settings = await getSettings(userId);
+  if (importText.length > settings.budget.presetImportMaxChars) {
+    const message = `Import payload size (${importText.length} characters) exceeds the size limit of ${settings.budget.presetImportMaxChars} characters.`;
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: message,
+      lastPresetFallbackReason: null
+    });
+    throw new Error(message);
+  }
   let parsed;
   try {
     parsed = JSON.parse(importText);

@@ -284,3 +284,14 @@ export function resolveSelectedPreset(
     fallbackReason: `Selected preset ${selectedPresetId} was not found; using Default Scene Tracker.`,
   };
 }
+
+export function estimatePresetStats(preset: TrackerSchemaPreset): { estimatedTokens: number; estimatedRenderedChars: number } {
+  const schemaJson = JSON.stringify(preset.jsonSchema, null, 2);
+  const instructions = preset.promptInstructions ?? "";
+  const presetContentLength = schemaJson.length + instructions.length + preset.name.length + preset.id.length;
+  const estimatedTokens = Math.max(10, Math.ceil(presetContentLength / 4));
+  const templateLength = (preset.htmlTemplate ?? "").length;
+  const estimatedRenderedChars = templateLength > 0 ? templateLength + 4000 : 10000;
+  return { estimatedTokens, estimatedRenderedChars };
+}
+
