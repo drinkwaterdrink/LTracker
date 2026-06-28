@@ -44,9 +44,6 @@ function normalizeSnapshot(value) {
     sourceMessageId: null
   };
 }
-function sanitizePromptText(value) {
-  return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 function truncateSafe(value, maxChars) {
   const chars = Array.from(value);
   if (chars.length <= maxChars) return value;
@@ -127,15 +124,15 @@ function fallbackSummary(data) {
   }).filter((item) => Boolean(item));
   return fragments.slice(0, 6).join("\n");
 }
-function metadataLines(snapshot, sourceMessageId, settings) {
+function metadataLines(snapshot, sourceMessageId, _settings) {
   const lines = [];
-  if (settings.includeTimestamp) lines.push(`Generated: ${snapshot.createdAt}`);
-  if (settings.includeSourceMessageId && sourceMessageId) lines.push(`Source message: ${sourceMessageId}`);
+  lines.push(`Generated: ${snapshot.createdAt}`);
+  if (sourceMessageId) lines.push(`Source message: ${sourceMessageId}`);
   return lines;
 }
 function formatCompact(snapshot, sourceMessageId, settings) {
   const lines = [];
-  if (settings.includeHeader) lines.push("[LTracker Snapshot]");
+  if (settings.includeHeader) lines.push(`[${settings.header || "LTracker Snapshot"}]`);
   lines.push(...metadataLines(snapshot, sourceMessageId, settings));
   const scene = sceneLine(snapshot.data);
   if (scene) lines.push(`Scene: ${scene}`);
@@ -168,14 +165,14 @@ function formatPrettyJson(source, snapshot, sourceMessageId, settings) {
     data: snapshot.data
   };
   const lines = [];
-  if (settings.includeHeader) lines.push("[LTracker Snapshot JSON]");
+  if (settings.includeHeader) lines.push(`[${settings.header || "LTracker Snapshot JSON"}]`);
   lines.push(...metadataLines(snapshot, sourceMessageId, settings));
   lines.push(JSON.stringify(payload, null, 2));
   return lines.join("\n");
 }
 function formatMinimal(snapshot, sourceMessageId, settings) {
   const lines = [];
-  if (settings.includeHeader) lines.push("[LTracker Mini-State]");
+  if (settings.includeHeader) lines.push(`[${settings.header || "LTracker Mini-State"}]`);
   lines.push(...metadataLines(snapshot, sourceMessageId, settings));
   lines.push(`Location: ${stringAt(snapshot.data, ["scene", "location"]) ?? "Unknown"}`);
   const cast = characterNames(snapshot.data);
@@ -189,49 +186,49 @@ function formatMinimal(snapshot, sourceMessageId, settings) {
 }
 function formatSnapshotForInjection(source, settings) {
   const { snapshot, sourceMessageId } = normalizeSnapshot(source);
-  const raw = settings.format === "pretty_json" ? formatPrettyJson(source, snapshot, sourceMessageId, settings) : settings.format === "minimal" ? formatMinimal(snapshot, sourceMessageId, settings) : formatCompact(snapshot, sourceMessageId, settings);
-  return truncateSafe(sanitizePromptText(raw), settings.maxInjectedChars);
+  const raw = settings.format === "embedded_tag" ? `<ltracker type="state">
+${JSON.stringify(snapshot.data, null, 2)}
+</ltracker>` : settings.format === "pretty_json" ? formatPrettyJson(source, snapshot, sourceMessageId, settings) : settings.format === "minimal" ? formatMinimal(snapshot, sourceMessageId, settings) : formatCompact(snapshot, sourceMessageId, settings);
+  return truncateSafe(raw, settings.maxInjectedChars);
 }
 
 // src/shared/contextInjection.ts
-function buildInjectionDecision(input) {
-  if (input.internalTrackerGeneration) {
-    return emptyDecision("Internal LTracker tracker generation.");
-  }
-  if (!input.settings.injection.enabled) {
-    return emptyDecision("Injection is disabled.");
-  }
-  const selected = input.settings.injection.mode === "latest_message_snapshot" ? input.messageSnapshot : input.chatSnapshot;
-  if (!selected) {
-    return emptyDecision(input.settings.injection.onlyInjectWhenSnapshotExists ? "No cached tracker snapshot exists." : "No cached tracker snapshot exists.");
-  }
-  const text = formatSnapshotForInjection(selected, input.settings.injection);
-  const snapshotCreatedAt = "snapshot" in selected ? selected.snapshot.createdAt : selected.createdAt;
-  const sourceMessageId = "snapshot" in selected ? selected.messageId : null;
-  return {
-    text,
-    skippedReason: null,
-    snapshotCreatedAt,
-    sourceMessageId,
-    injectedChars: Array.from(text).length
-  };
+function shouldSkipContextForInternalGeneration(context, internalTrackerGeneration) {
+  if (internalTrackerGeneration) return true;
+  return pathMatches(context, [
+    ["type"],
+    ["generationType"],
+    ["request", "type"],
+    ["input", "type"],
+    ["generation", "type"],
+    ["generation", "generationType"]
+  ], "quiet") || pathMatches(context, [
+    ["source"],
+    ["metadata", "source"],
+    ["request", "source"],
+    ["request", "metadata", "source"],
+    ["input", "source"],
+    ["input", "metadata", "source"]
+  ], "ltracker");
 }
-function emptyDecision(skippedReason) {
-  return {
-    text: null,
-    skippedReason,
-    snapshotCreatedAt: null,
-    sourceMessageId: null,
-    injectedChars: 0
-  };
+function pathMatches(value, paths, expected) {
+  return paths.some((path) => stringAtPath(value, path)?.toLowerCase() === expected);
+}
+function stringAtPath(value, path) {
+  let current = value;
+  for (const segment of path) {
+    if (typeof current !== "object" || current === null || Array.isArray(current)) return null;
+    current = current[segment];
+  }
+  return typeof current === "string" ? current : null;
 }
 
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
-var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection is disabled in 0.13 while the Lumiverse context handler return contract is being verified.";
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.14; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.13";
+var EXTENSION_VERSION = "0.14";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -862,13 +859,15 @@ function generationMetadataFromSnapshot(snapshot, input) {
 function injectionSettings(settings) {
   return {
     enabled: true,
-    mode: "latest_message_snapshot",
-    format: "compact",
+    retainCount: 1,
+    format: "compact_text",
+    injectionPlacement: "append_to_last_assistant",
+    includeOnlyIfMissingFromPrompt: true,
+    stripOlderTrackerBlocks: true,
     maxInjectedChars: settings.maxRenderedChars,
+    roleFallback: "system",
     includeHeader: false,
-    includeTimestamp: false,
-    includeSourceMessageId: false,
-    onlyInjectWhenSnapshotExists: true
+    header: "LTracker Recent State"
   };
 }
 function displayJson(messageId, messageIndex, attachedSnapshot, snapshot, settings) {
@@ -1844,7 +1843,11 @@ var SETTINGS_LIMITS = {
   generationTimeoutMs: { min: 1e4, max: 18e4, default: 45e3 },
   autoDebounceMs: { min: 250, max: 3e4, default: 1500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
-  maxInjectedChars: { min: 500, max: 2e4, default: 3e3 },
+  memoryRetainCount: { min: 0, max: 10, default: 3 },
+  memoryFullSnapshotCount: { min: 0, max: 10, default: 3 },
+  maxMemoryChars: { min: 1e3, max: 5e4, default: 12e3 },
+  injectionRetainCount: { min: 0, max: 10, default: 3 },
+  maxInjectedChars: { min: 1e3, max: 5e4, default: 12e3 },
   maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
   maxMessageDisplayRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
   minimizedMaxHeightPx: { min: 0, max: 400, default: 0 }
@@ -1865,15 +1868,30 @@ var DEFAULT_SETTINGS = {
     attachSnapshotToMessage: true,
     onlyWhenChatActive: true
   },
+  memory: {
+    enabled: true,
+    includeInTrackerGeneration: true,
+    retainCount: SETTINGS_LIMITS.memoryRetainCount.default,
+    fullSnapshotCount: SETTINGS_LIMITS.memoryFullSnapshotCount.default,
+    compactOlderSnapshots: false,
+    maxMemoryChars: SETTINGS_LIMITS.maxMemoryChars.default,
+    source: "hybrid",
+    excludeTargetMessage: true,
+    order: "oldest_to_newest",
+    requireSamePreset: false,
+    requireSameSwipeWhenAvailable: false
+  },
   injection: {
     enabled: false,
-    mode: "latest_chat_snapshot",
-    format: "compact",
+    retainCount: SETTINGS_LIMITS.injectionRetainCount.default,
+    format: "embedded_tag",
+    injectionPlacement: "append_to_last_assistant",
+    includeOnlyIfMissingFromPrompt: true,
+    stripOlderTrackerBlocks: true,
     maxInjectedChars: SETTINGS_LIMITS.maxInjectedChars.default,
+    roleFallback: "system",
     includeHeader: true,
-    includeTimestamp: true,
-    includeSourceMessageId: false,
-    onlyInjectWhenSnapshotExists: true
+    header: "LTracker Recent State"
   },
   renderer: {
     enabled: true,
@@ -1939,6 +1957,22 @@ function clampNumber(value, fallback, min, max) {
 function hasOwn(source, key) {
   return Object.prototype.hasOwnProperty.call(source, key);
 }
+function memorySource(value) {
+  return value === "message_history" || value === "sidecar_index" || value === "embedded_tags" || value === "hybrid" ? value : DEFAULT_SETTINGS.memory.source;
+}
+function memoryOrder(value) {
+  return value === "oldest_to_newest" || value === "newest_to_oldest" ? value : DEFAULT_SETTINGS.memory.order;
+}
+function injectionFormat(value) {
+  if (value === "compact") return "compact_text";
+  return value === "embedded_tag" || value === "compact_text" || value === "pretty_json" || value === "minimal" ? value : DEFAULT_SETTINGS.injection.format;
+}
+function injectionPlacement(value) {
+  return value === "append_to_last_assistant" || value === "system_before_last" || value === "system_after_history" ? value : DEFAULT_SETTINGS.injection.injectionPlacement;
+}
+function injectionRoleFallback(value) {
+  return value === "system" || value === "assistant" ? value : DEFAULT_SETTINGS.injection.roleFallback;
+}
 function stringOrNull2(value) {
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -1966,14 +2000,13 @@ function thinkingDisplay(value) {
 function repairSettings(value) {
   const source = isRecord6(value) ? value : {};
   const autoSource = isRecord6(source.auto) ? source.auto : {};
+  const memorySourceObject = isRecord6(source.memory) ? source.memory : {};
   const injectionSource = isRecord6(source.injection) ? source.injection : {};
   const rendererSource = isRecord6(source.renderer) ? source.renderer : {};
   const messageDisplaySource = isRecord6(source.messageDisplay) ? source.messageDisplay : {};
   const connectionSource = isRecord6(source.connection) ? source.connection : {};
   const connectionParameterSource = isRecord6(connectionSource.parameters) ? connectionSource.parameters : {};
   const connectionReasoningSource = isRecord6(connectionSource.reasoning) ? connectionSource.reasoning : {};
-  const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot" ? injectionSource.mode : DEFAULT_SETTINGS.injection.mode;
-  const format = injectionSource.format === "pretty_json" || injectionSource.format === "minimal" || injectionSource.format === "compact" ? injectionSource.format : DEFAULT_SETTINGS.injection.format;
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot" ? rendererSource.previewSource : DEFAULT_SETTINGS.renderer.previewSource;
   const messageDisplayPlacement = messageDisplaySource.placement === "bottom" || messageDisplaySource.placement === "top" ? messageDisplaySource.placement : DEFAULT_SETTINGS.messageDisplay.placement;
   const messageDisplaySourceSetting = messageDisplaySource.source === "latest_chat_snapshot" || messageDisplaySource.source === "message_attached_snapshot" ? messageDisplaySource.source : DEFAULT_SETTINGS.messageDisplay.source;
@@ -2023,20 +2056,55 @@ function repairSettings(value) {
       attachSnapshotToMessage: typeof autoSource.attachSnapshotToMessage === "boolean" ? autoSource.attachSnapshotToMessage : DEFAULT_SETTINGS.auto.attachSnapshotToMessage,
       onlyWhenChatActive: typeof autoSource.onlyWhenChatActive === "boolean" ? autoSource.onlyWhenChatActive : DEFAULT_SETTINGS.auto.onlyWhenChatActive
     },
+    memory: {
+      enabled: typeof memorySourceObject.enabled === "boolean" ? memorySourceObject.enabled : DEFAULT_SETTINGS.memory.enabled,
+      includeInTrackerGeneration: typeof memorySourceObject.includeInTrackerGeneration === "boolean" ? memorySourceObject.includeInTrackerGeneration : DEFAULT_SETTINGS.memory.includeInTrackerGeneration,
+      retainCount: clampNumber(
+        memorySourceObject.retainCount,
+        SETTINGS_LIMITS.memoryRetainCount.default,
+        SETTINGS_LIMITS.memoryRetainCount.min,
+        SETTINGS_LIMITS.memoryRetainCount.max
+      ),
+      fullSnapshotCount: clampNumber(
+        memorySourceObject.fullSnapshotCount,
+        SETTINGS_LIMITS.memoryFullSnapshotCount.default,
+        SETTINGS_LIMITS.memoryFullSnapshotCount.min,
+        SETTINGS_LIMITS.memoryFullSnapshotCount.max
+      ),
+      compactOlderSnapshots: typeof memorySourceObject.compactOlderSnapshots === "boolean" ? memorySourceObject.compactOlderSnapshots : DEFAULT_SETTINGS.memory.compactOlderSnapshots,
+      maxMemoryChars: clampNumber(
+        memorySourceObject.maxMemoryChars,
+        SETTINGS_LIMITS.maxMemoryChars.default,
+        SETTINGS_LIMITS.maxMemoryChars.min,
+        SETTINGS_LIMITS.maxMemoryChars.max
+      ),
+      source: memorySource(memorySourceObject.source),
+      excludeTargetMessage: typeof memorySourceObject.excludeTargetMessage === "boolean" ? memorySourceObject.excludeTargetMessage : DEFAULT_SETTINGS.memory.excludeTargetMessage,
+      order: memoryOrder(memorySourceObject.order),
+      requireSamePreset: typeof memorySourceObject.requireSamePreset === "boolean" ? memorySourceObject.requireSamePreset : DEFAULT_SETTINGS.memory.requireSamePreset,
+      requireSameSwipeWhenAvailable: typeof memorySourceObject.requireSameSwipeWhenAvailable === "boolean" ? memorySourceObject.requireSameSwipeWhenAvailable : DEFAULT_SETTINGS.memory.requireSameSwipeWhenAvailable
+    },
     injection: {
       enabled: typeof injectionSource.enabled === "boolean" ? injectionSource.enabled : DEFAULT_SETTINGS.injection.enabled,
-      mode,
-      format,
+      retainCount: clampNumber(
+        injectionSource.retainCount,
+        SETTINGS_LIMITS.injectionRetainCount.default,
+        SETTINGS_LIMITS.injectionRetainCount.min,
+        SETTINGS_LIMITS.injectionRetainCount.max
+      ),
+      format: injectionFormat(injectionSource.format),
+      injectionPlacement: injectionPlacement(injectionSource.injectionPlacement),
+      includeOnlyIfMissingFromPrompt: typeof injectionSource.includeOnlyIfMissingFromPrompt === "boolean" ? injectionSource.includeOnlyIfMissingFromPrompt : DEFAULT_SETTINGS.injection.includeOnlyIfMissingFromPrompt,
+      stripOlderTrackerBlocks: typeof injectionSource.stripOlderTrackerBlocks === "boolean" ? injectionSource.stripOlderTrackerBlocks : DEFAULT_SETTINGS.injection.stripOlderTrackerBlocks,
       maxInjectedChars: clampNumber(
         injectionSource.maxInjectedChars,
         SETTINGS_LIMITS.maxInjectedChars.default,
         SETTINGS_LIMITS.maxInjectedChars.min,
         SETTINGS_LIMITS.maxInjectedChars.max
       ),
+      roleFallback: injectionRoleFallback(injectionSource.roleFallback),
       includeHeader: typeof injectionSource.includeHeader === "boolean" ? injectionSource.includeHeader : DEFAULT_SETTINGS.injection.includeHeader,
-      includeTimestamp: typeof injectionSource.includeTimestamp === "boolean" ? injectionSource.includeTimestamp : DEFAULT_SETTINGS.injection.includeTimestamp,
-      includeSourceMessageId: typeof injectionSource.includeSourceMessageId === "boolean" ? injectionSource.includeSourceMessageId : DEFAULT_SETTINGS.injection.includeSourceMessageId,
-      onlyInjectWhenSnapshotExists: typeof injectionSource.onlyInjectWhenSnapshotExists === "boolean" ? injectionSource.onlyInjectWhenSnapshotExists : DEFAULT_SETTINGS.injection.onlyInjectWhenSnapshotExists
+      header: typeof injectionSource.header === "string" && injectionSource.header.trim() ? injectionSource.header.trim().slice(0, 120) : DEFAULT_SETTINGS.injection.header
     },
     renderer: {
       enabled: typeof rendererSource.enabled === "boolean" ? rendererSource.enabled : DEFAULT_SETTINGS.renderer.enabled,
@@ -2145,6 +2213,253 @@ function repairSettings(value) {
   };
 }
 
+// src/shared/promptInjection.ts
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function cloneMessages(messages) {
+  return messages.map((message) => ({ ...message }));
+}
+function stringContent(message) {
+  return typeof message.content === "string" ? message.content : null;
+}
+function countTrackerBlocks(messages) {
+  return messages.reduce((count, message) => {
+    const content = stringContent(message);
+    return content ? count + findLTrackerTags(content).length : count;
+  }, 0);
+}
+function trackerBlockRanges(messages) {
+  const ranges = [];
+  messages.forEach((message, messageIndex) => {
+    const content = stringContent(message);
+    if (!content) return;
+    for (const tag of findLTrackerTags(content)) {
+      ranges.push({ messageIndex, start: tag.start, end: tag.end });
+    }
+  });
+  return ranges.sort((left, right) => {
+    if (left.messageIndex !== right.messageIndex) return left.messageIndex - right.messageIndex;
+    return left.start - right.start;
+  });
+}
+function stripTrackerBlocks(messages, retainCount) {
+  const ranges = trackerBlockRanges(messages);
+  if (ranges.length === 0) return { messages, strippedCount: 0 };
+  const keepCount = Math.max(0, retainCount);
+  const removeCount = Math.max(0, ranges.length - keepCount);
+  if (removeCount === 0) return { messages, strippedCount: 0 };
+  const remove = ranges.slice(0, removeCount);
+  const byMessage = /* @__PURE__ */ new Map();
+  for (const range of remove) {
+    const list = byMessage.get(range.messageIndex) ?? [];
+    list.push(range);
+    byMessage.set(range.messageIndex, list);
+  }
+  const next = cloneMessages(messages);
+  for (const [messageIndex, messageRanges] of byMessage.entries()) {
+    const current = next[messageIndex];
+    if (!current) continue;
+    const content = stringContent(current);
+    if (content === null) continue;
+    let output = "";
+    let cursor = 0;
+    for (const range of messageRanges.sort((left, right) => left.start - right.start)) {
+      output += content.slice(cursor, range.start);
+      cursor = range.end;
+    }
+    output += content.slice(cursor);
+    next[messageIndex] = {
+      ...current,
+      content: output.replace(/\n{3,}/g, "\n\n").trimEnd()
+    };
+  }
+  return { messages: next, strippedCount: removeCount };
+}
+function compactPayload(payload) {
+  const scene = payload.scene && typeof payload.scene === "object" && !Array.isArray(payload.scene) ? payload.scene : {};
+  const location = typeof scene.location === "string" ? scene.location : null;
+  const time = typeof scene.time === "string" ? scene.time : typeof scene.date === "string" ? scene.date : null;
+  const cast = Array.isArray(payload.characters_present) ? payload.characters_present.map((item) => {
+    if (typeof item === "string") return item;
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      const name = item.name;
+      return typeof name === "string" ? name : null;
+    }
+    return null;
+  }).filter((item) => Boolean(item)).slice(0, 6).join("; ") : null;
+  const threads = Array.isArray(payload.active_threads) ? payload.active_threads.filter((item) => typeof item === "string").slice(0, 4).join("; ") : null;
+  return [
+    location ? `Location: ${location}` : null,
+    time ? `Time: ${time}` : null,
+    cast ? `Present: ${cast}` : null,
+    threads ? `Threads: ${threads}` : null
+  ].filter((item) => Boolean(item)).join("\n") || JSON.stringify(payload).slice(0, 500);
+}
+function minimalPayload(payload) {
+  const compact = compactPayload(payload).replace(/\n/g, "; ");
+  return compact || "Tracker state available.";
+}
+function formatEntry(entry, settings) {
+  if (settings.format === "embedded_tag") {
+    return `<${LTRACKER_TAG_NAME} type="${LTRACKER_TAG_TYPE}">
+${JSON.stringify(entry.payload, null, 2)}
+</${LTRACKER_TAG_NAME}>`;
+  }
+  if (settings.format === "pretty_json") {
+    return JSON.stringify({
+      messageId: entry.messageId,
+      messageIndex: entry.messageIndex,
+      swipeKey: entry.swipeKey,
+      presetId: entry.presetId,
+      createdAt: entry.createdAt,
+      data: entry.payload
+    }, null, 2);
+  }
+  if (settings.format === "minimal") return minimalPayload(entry.payload);
+  return compactPayload(entry.payload);
+}
+function formatTrackerInjectionBlock(entries, settings) {
+  const retained = entries.slice(-settings.retainCount);
+  const body = retained.map((entry, index) => {
+    const label = index === retained.length - 1 ? "Most recent" : `${retained.length - index} turns ago`;
+    return `--- ${label} ---
+${formatEntry(entry, settings)}`;
+  }).join("\n\n");
+  const header = settings.includeHeader ? `${settings.header || "LTracker Recent State"}
+` : "";
+  return truncateSafe(`${header}${body}`.trim(), settings.maxInjectedChars);
+}
+function insertSystemMessage(messages, content, placement, fallbackRole) {
+  const role = fallbackRole;
+  const injected = { role, content };
+  const next = cloneMessages(messages);
+  if (placement === "system_before_last" && next.length > 0) {
+    const index = Math.max(0, next.length - 1);
+    next.splice(index, 0, injected);
+    return { messages: next, messageIndex: index };
+  }
+  if (placement === "system_after_history") {
+    const lastHistoryIndex = next.reduce((last, message, index2) => message.__isChatHistory ? index2 : last, -1);
+    const index = lastHistoryIndex >= 0 ? lastHistoryIndex + 1 : next.length;
+    next.splice(index, 0, injected);
+    return { messages: next, messageIndex: index };
+  }
+  next.push(injected);
+  return { messages: next, messageIndex: next.length - 1 };
+}
+function appendToLastAssistant(messages, content, fallbackRole) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant" || typeof message.content !== "string") continue;
+    const next = cloneMessages(messages);
+    const existing = message.content.trimEnd();
+    next[index] = {
+      ...message,
+      content: `${existing}${existing ? "\n\n" : ""}${content}`
+    };
+    return { messages: next, messageIndex: index };
+  }
+  return insertSystemMessage(messages, content, "system_after_history", fallbackRole);
+}
+function applyPromptInjectionUnsafe(input) {
+  if (input.simulateError) throw new Error("Simulated interceptor failure.");
+  const before = countTrackerBlocks(input.messages);
+  if (!input.settings.enabled) {
+    return {
+      messages: input.messages,
+      breakdown: [],
+      injectedCount: 0,
+      injectedChars: 0,
+      strippedCount: 0,
+      skippedReason: "Prompt injection is disabled.",
+      error: null,
+      promptTrackerCountBefore: before,
+      promptTrackerCountAfter: before
+    };
+  }
+  let working = cloneMessages(input.messages);
+  let strippedCount = 0;
+  if (input.settings.stripOlderTrackerBlocks) {
+    const stripped = stripTrackerBlocks(working, input.settings.retainCount);
+    working = stripped.messages;
+    strippedCount = stripped.strippedCount;
+  }
+  const afterStripCount = countTrackerBlocks(working);
+  if (input.settings.retainCount <= 0) {
+    return {
+      messages: working,
+      breakdown: [],
+      injectedCount: 0,
+      injectedChars: 0,
+      strippedCount,
+      skippedReason: "Prompt injection retain count is 0.",
+      error: null,
+      promptTrackerCountBefore: before,
+      promptTrackerCountAfter: afterStripCount
+    };
+  }
+  if (input.settings.includeOnlyIfMissingFromPrompt && afterStripCount >= input.settings.retainCount) {
+    return {
+      messages: working,
+      breakdown: [],
+      injectedCount: 0,
+      injectedChars: 0,
+      strippedCount,
+      skippedReason: "Prompt already contains retained tracker blocks.",
+      error: null,
+      promptTrackerCountBefore: before,
+      promptTrackerCountAfter: afterStripCount
+    };
+  }
+  const entries = input.entries.slice(-input.settings.retainCount);
+  if (entries.length === 0) {
+    return {
+      messages: working,
+      breakdown: [],
+      injectedCount: 0,
+      injectedChars: 0,
+      strippedCount,
+      skippedReason: "No tracker memory entries available for injection.",
+      error: null,
+      promptTrackerCountBefore: before,
+      promptTrackerCountAfter: afterStripCount
+    };
+  }
+  const block = formatTrackerInjectionBlock(entries, input.settings);
+  const inserted = input.settings.injectionPlacement === "append_to_last_assistant" ? appendToLastAssistant(working, block, input.settings.roleFallback) : insertSystemMessage(working, block, input.settings.injectionPlacement, input.settings.roleFallback);
+  const after = countTrackerBlocks(inserted.messages);
+  return {
+    messages: inserted.messages,
+    breakdown: [{ messageIndex: inserted.messageIndex, name: input.settings.header || "LTracker Recent State" }],
+    injectedCount: entries.length,
+    injectedChars: Array.from(block).length,
+    strippedCount,
+    skippedReason: null,
+    error: null,
+    promptTrackerCountBefore: before,
+    promptTrackerCountAfter: after
+  };
+}
+function applyPromptInjection(input) {
+  try {
+    return applyPromptInjectionUnsafe(input);
+  } catch (error) {
+    const before = countTrackerBlocks(input.messages);
+    return {
+      messages: input.messages,
+      breakdown: [],
+      injectedCount: 0,
+      injectedChars: 0,
+      strippedCount: 0,
+      skippedReason: "Prompt injection failed safely.",
+      error: errorMessage(error),
+      promptTrackerCountBefore: before,
+      promptTrackerCountAfter: before
+    };
+  }
+}
+
 // src/shared/storageKeys.ts
 function encodeStorageSegment(value) {
   return encodeURIComponent(value).replace(/[!'()*]/g, (char) => {
@@ -2189,7 +2504,8 @@ function buildCompactTranscript(messages, maxMessageChars = DEFAULT_MAX_MESSAGE_
 ${content}`;
   }).join("\n\n");
 }
-function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET) {
+function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET, memory = null) {
+  const hasMemory = Boolean(memory?.renderedText.trim());
   return [
     {
       role: "system",
@@ -2197,11 +2513,15 @@ function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET) {
         "You extract the current state of an ongoing roleplay or story chat.",
         "Return JSON only. Do not wrap the JSON in Markdown.",
         "Do not invent facts unsupported by the transcript.",
+        "The current transcript has higher priority than any prior tracker memory.",
+        "If prior tracker memory contradicts the current transcript, the current transcript wins.",
+        hasMemory ? "Use the most recent prior tracker state as the baseline. Mutate only fields that the new transcript actually changes. Preserve stable identity anchors, names, ongoing threads, counters, and continuity fields unless the current transcript clearly updates them." : null,
+        hasMemory ? "Do not resurrect characters who left the immediate scene unless the current transcript brings them back. Preserve arrays/items by stable id/name where possible." : null,
         "Preset prompt instructions are lower priority than these safety and integrity requirements.",
         "Preserve character names exactly when possible.",
         "Summarize only the current and relevant state, not every past event.",
         'Use empty strings, empty arrays, or "unknown" for unknown fields.'
-      ].join("\n")
+      ].filter(Boolean).join("\n")
     },
     {
       role: "user",
@@ -2214,14 +2534,194 @@ function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET) {
         "Tracker JSON schema:",
         JSON.stringify(preset.jsonSchema, null, 2),
         "",
-        "Transcript:",
+        hasMemory ? memory?.renderedText ?? "" : null,
+        hasMemory ? "" : null,
+        "Recent conversation:",
         transcript,
         "",
         "Return only a JSON object matching the selected schema shape.",
         "Never include Markdown, commentary, or HTML."
-      ].join("\n")
+      ].filter((part) => typeof part === "string").join("\n")
     }
   ];
+}
+
+// src/shared/trackerMemory.ts
+var EMPTY_MEMORY = {
+  entries: [],
+  renderedText: "",
+  totalChars: 0,
+  truncated: false,
+  skippedReason: null
+};
+function isRecord7(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function primitiveToString3(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return null;
+}
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (isRecord7(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+function hashPayload(payload) {
+  const value = stableJson(payload);
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function entrySort(left, right) {
+  if (left.messageIndex !== null && right.messageIndex !== null && left.messageIndex !== right.messageIndex) {
+    return left.messageIndex - right.messageIndex;
+  }
+  if (left.messageIndex !== null && right.messageIndex === null) return -1;
+  if (left.messageIndex === null && right.messageIndex !== null) return 1;
+  const created = left.createdAt.localeCompare(right.createdAt);
+  if (created !== 0) return created;
+  const leftMessage = left.messageId ?? "";
+  const rightMessage = right.messageId ?? "";
+  if (leftMessage !== rightMessage) return leftMessage.localeCompare(rightMessage);
+  return (left.swipeKey ?? "").localeCompare(right.swipeKey ?? "");
+}
+function sourceAllowed(source, setting) {
+  if (setting === "hybrid") return true;
+  if (setting === "sidecar_index") return source === "sidecar_snapshot" || source === "latest_chat_snapshot";
+  if (setting === "embedded_tags") return source === "embedded_tag";
+  return source === "history_scan";
+}
+function shouldExcludeTarget(entry, options) {
+  if (!options.targetMessageId) return false;
+  if (entry.messageId !== options.targetMessageId) return false;
+  if (!options.targetSwipeKey) return true;
+  return (entry.swipeKey ?? "default") === options.targetSwipeKey;
+}
+function compactValue(value) {
+  const primitive = primitiveToString3(value);
+  if (primitive) return primitive;
+  if (Array.isArray(value)) {
+    const rendered = value.map((item) => {
+      const itemPrimitive = primitiveToString3(item);
+      if (itemPrimitive) return itemPrimitive;
+      if (isRecord7(item)) {
+        return primitiveToString3(item.name) ?? primitiveToString3(item.title) ?? primitiveToString3(item.id);
+      }
+      return null;
+    }).filter((item) => Boolean(item));
+    return rendered.length > 0 ? rendered.slice(0, 5).join("; ") : null;
+  }
+  if (isRecord7(value)) {
+    for (const key of ["location", "time", "date", "mood", "status", "name", "title", "summary"]) {
+      const rendered = primitiveToString3(value[key]);
+      if (rendered) return rendered;
+    }
+  }
+  return null;
+}
+function compactPayloadSummary(payload) {
+  const scene = isRecord7(payload.scene) ? payload.scene : null;
+  const sceneParts = [
+    scene ? compactValue(scene.location) : null,
+    scene ? compactValue(scene.time) ?? compactValue(scene.date) : null,
+    scene ? compactValue(scene.mood) : null
+  ].filter((item) => Boolean(item));
+  const characters = compactValue(payload.characters_present ?? payload.characters ?? payload.present_characters);
+  const threads = compactValue(payload.active_threads ?? payload.unresolved_continuity ?? payload.important_facts);
+  const parts = [
+    sceneParts.length > 0 ? `scene ${sceneParts.join(", ")}` : null,
+    characters ? `present ${characters}` : null,
+    threads ? `threads ${threads}` : null
+  ].filter((item) => Boolean(item));
+  return parts.length > 0 ? parts.join(" | ") : JSON.stringify(payload).slice(0, 240);
+}
+function entryText(entry, compact) {
+  if (compact) return compactPayloadSummary(entry.payload);
+  if (entry.text.trim()) return entry.text.trim();
+  return JSON.stringify(entry.payload, null, 2);
+}
+function labelForEntry(index, total) {
+  if (index === total - 1) return "Most recent";
+  const turnsAgo = total - index;
+  return `${turnsAgo} turns ago`;
+}
+function buildTrackerMemoryResult(rawEntries, settings, options = {}) {
+  if (!settings.enabled) return { ...EMPTY_MEMORY, skippedReason: "Tracker memory is disabled." };
+  if (settings.retainCount <= 0) return { ...EMPTY_MEMORY, skippedReason: "Tracker memory retain count is 0." };
+  let candidates = rawEntries.filter((entry) => sourceAllowed(entry.source, settings.source)).filter((entry) => !settings.excludeTargetMessage || !shouldExcludeTarget(entry, options));
+  if (settings.requireSamePreset && options.activePreset) {
+    candidates = candidates.filter((entry) => entry.presetId === options.activePreset?.id);
+  }
+  if (settings.requireSameSwipeWhenAvailable && options.targetSwipeKey) {
+    const sameSwipe = candidates.filter((entry) => (entry.swipeKey ?? "default") === options.targetSwipeKey);
+    if (sameSwipe.length > 0) candidates = sameSwipe;
+  }
+  const deduped = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const entry of candidates.sort(entrySort)) {
+    const key = hashPayload(entry.payload);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(entry);
+  }
+  if (deduped.length === 0) return { ...EMPTY_MEMORY, skippedReason: "No prior tracker snapshots found." };
+  const retained = deduped.slice(-settings.retainCount);
+  const oldestToNewest = retained.sort(entrySort);
+  const renderOrder = settings.order === "newest_to_oldest" ? [...oldestToNewest].reverse() : oldestToNewest;
+  const fullCount = Math.min(settings.fullSnapshotCount, renderOrder.length);
+  const fullStart = Math.max(0, renderOrder.length - fullCount);
+  const renderedEntries = [];
+  const blocks = [];
+  let omittedOlder = 0;
+  renderOrder.forEach((entry, index) => {
+    const isFull = index >= fullStart;
+    if (!isFull && !settings.compactOlderSnapshots) {
+      omittedOlder += 1;
+      return;
+    }
+    renderedEntries.push(entry);
+    blocks.push(`--- ${labelForEntry(index, renderOrder.length)} ---
+${entryText(entry, !isFull)}`);
+  });
+  if (blocks.length === 0) {
+    return { ...EMPTY_MEMORY, skippedReason: "Tracker memory sunset omitted all retained entries." };
+  }
+  const warning = omittedOlder > 0 ? `
+[${omittedOlder} older tracker snapshot${omittedOlder === 1 ? "" : "s"} omitted by sunset settings.]` : "";
+  const rawText = `Previous tracker states:
+${blocks.join("\n\n")}${warning}`;
+  const renderedText = truncateSafe(rawText, settings.maxMemoryChars);
+  return {
+    entries: renderedEntries,
+    renderedText,
+    totalChars: Array.from(renderedText).length,
+    truncated: renderedText !== rawText,
+    skippedReason: null
+  };
+}
+function trackerMemorySourceSummary(entries) {
+  if (entries.length === 0) return null;
+  const counts = /* @__PURE__ */ new Map();
+  for (const entry of entries) counts.set(entry.source, (counts.get(entry.source) ?? 0) + 1);
+  return [...counts.entries()].map(([source, count]) => `${source}:${count}`).join(", ");
+}
+function memoryOptionsFromTrigger(trigger, activePreset) {
+  if (trigger.kind === "manual") {
+    return { activePreset };
+  }
+  return {
+    activePreset,
+    targetMessageId: trigger.sourceMessageId,
+    targetMessageIndex: trigger.sourceMessageIndex,
+    targetSwipeKey: trigger.swipeKey
+  };
 }
 
 // src/backend.ts
@@ -2251,15 +2751,16 @@ var usersByChat = /* @__PURE__ */ new Map();
 var eventCleanups = [];
 var autoSubscriptionsActive = false;
 var contextHandlerRegistered = false;
+var interceptorRegistered = false;
 var internalTrackerGenerationDepth = 0;
 var disposed = false;
-function isRecord7(value) {
+function isRecord8(value) {
   return typeof value === "object" && value !== null;
 }
 function nowIso() {
   return (/* @__PURE__ */ new Date()).toISOString();
 }
-function errorMessage(error) {
+function errorMessage2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function errorDetail(error) {
@@ -2268,21 +2769,21 @@ function errorDetail(error) {
 }
 function stageError(stage, error) {
   if (error instanceof LTrackerStageError) throw error;
-  throw new LTrackerStageError(stage, errorMessage(error), errorDetail(error));
+  throw new LTrackerStageError(stage, errorMessage2(error), errorDetail(error));
 }
 function diagnosticError(error, fallbackStage) {
   const stage = error instanceof LTrackerStageError ? error.stage : fallbackStage;
   const detail = error instanceof LTrackerStageError ? error.detail : errorDetail(error);
   const result = {
     stage,
-    message: errorMessage(error),
+    message: errorMessage2(error),
     createdAt: nowIso()
   };
   if (detail) result.detail = detail;
   return result;
 }
 function isFrontendMessage(payload) {
-  if (!isRecord7(payload) || typeof payload.type !== "string") return false;
+  if (!isRecord8(payload) || typeof payload.type !== "string") return false;
   if (![
     "ready",
     "refresh_state",
@@ -2334,9 +2835,9 @@ function isFrontendMessage(payload) {
     "save_edited_message_tracker",
     "embedded_tracker_tag_intercepted"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
-  if (payload.type === "save_settings" && !isRecord7(payload.settings)) return false;
-  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord7(payload.settings)) return false;
-  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord7(payload.preset)) return false;
+  if (payload.type === "save_settings" && !isRecord8(payload.settings)) return false;
+  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord8(payload.settings)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord8(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
   if (payload.type === "regenerate_message_tracker" && (typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
@@ -2355,7 +2856,8 @@ function permissionState() {
     generation: spindle.permissions.has("generation"),
     chats: spindle.permissions.has("chats"),
     chatMutation: spindle.permissions.has("chat_mutation"),
-    contextHandler: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED && spindle.permissions.has("context_handler")
+    contextHandler: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED && spindle.permissions.has("context_handler"),
+    interceptor: spindle.permissions.has("interceptor")
   };
 }
 function send(payload, userId) {
@@ -2404,6 +2906,21 @@ function defaultDiagnostics(chatId) {
     lastInjectionSkippedReason: null,
     lastInjectionSnapshotCreatedAt: null,
     lastInjectionSourceMessageId: null,
+    lastMemoryEntryCount: 0,
+    lastMemoryChars: 0,
+    lastMemoryTruncated: false,
+    lastMemorySourceSummary: null,
+    lastMemorySkippedReason: null,
+    lastPromptIncludedMemory: false,
+    interceptorRegistered,
+    lastInterceptorAt: null,
+    lastInterceptorInjectedCount: 0,
+    lastInterceptorInjectedChars: 0,
+    lastInterceptorStrippedCount: 0,
+    lastInterceptorSkippedReason: null,
+    lastInterceptorError: null,
+    lastInterceptorPromptTrackerCountBefore: 0,
+    lastInterceptorPromptTrackerCountAfter: 0,
     selectedPresetId: null,
     selectedPresetName: null,
     lastPresetFallbackReason: null,
@@ -2514,7 +3031,7 @@ function stringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 function recordOrNull(value) {
-  return isRecord7(value) && !Array.isArray(value) ? value : null;
+  return isRecord8(value) && !Array.isArray(value) ? value : null;
 }
 function sourceKindOrNull(value) {
   return value === "manual" || value === "auto" || value === "widget" ? value : null;
@@ -2526,7 +3043,7 @@ function injectionModeOrNull(value) {
   return value === "latest_chat_snapshot" || value === "latest_message_snapshot" ? value : null;
 }
 function injectionFormatOrNull(value) {
-  return value === "compact" || value === "pretty_json" || value === "minimal" ? value : null;
+  return value === "embedded_tag" || value === "compact_text" || value === "pretty_json" || value === "minimal" ? value : null;
 }
 function renderSourceOrNull(value) {
   return value === "latest_chat_snapshot" || value === "latest_message_snapshot" ? value : null;
@@ -2558,11 +3075,11 @@ function connectionTestStatus(value) {
 function activeTrackerJobsOrEmpty(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => {
-    return isRecord7(item) && typeof item.jobId === "string" && typeof item.messageId === "string" && typeof item.swipeKey === "string" && typeof item.startedAt === "string";
+    return isRecord8(item) && typeof item.jobId === "string" && typeof item.messageId === "string" && typeof item.swipeKey === "string" && typeof item.startedAt === "string";
   });
 }
 function errorOrNull(value) {
-  if (!isRecord7(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
+  if (!isRecord8(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
   const error = {
     stage: value.stage,
     message: value.message,
@@ -2572,7 +3089,7 @@ function errorOrNull(value) {
   return error;
 }
 function cancellationOrNull(value) {
-  if (!isRecord7(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
+  if (!isRecord8(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
   return {
     jobId: value.jobId,
     requestId: value.requestId,
@@ -2582,7 +3099,7 @@ function cancellationOrNull(value) {
 }
 function repairDiagnostics(value, chatId) {
   const base = defaultDiagnostics(chatId);
-  if (!isRecord7(value)) return base;
+  if (!isRecord8(value)) return base;
   return {
     ...base,
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
@@ -2621,6 +3138,21 @@ function repairDiagnostics(value, chatId) {
     lastInjectionSkippedReason: stringOrNull3(value.lastInjectionSkippedReason),
     lastInjectionSnapshotCreatedAt: stringOrNull3(value.lastInjectionSnapshotCreatedAt),
     lastInjectionSourceMessageId: stringOrNull3(value.lastInjectionSourceMessageId),
+    lastMemoryEntryCount: typeof value.lastMemoryEntryCount === "number" && Number.isFinite(value.lastMemoryEntryCount) ? Math.max(0, Math.round(value.lastMemoryEntryCount)) : 0,
+    lastMemoryChars: typeof value.lastMemoryChars === "number" && Number.isFinite(value.lastMemoryChars) ? Math.max(0, Math.round(value.lastMemoryChars)) : 0,
+    lastMemoryTruncated: typeof value.lastMemoryTruncated === "boolean" ? value.lastMemoryTruncated : false,
+    lastMemorySourceSummary: stringOrNull3(value.lastMemorySourceSummary),
+    lastMemorySkippedReason: stringOrNull3(value.lastMemorySkippedReason),
+    lastPromptIncludedMemory: typeof value.lastPromptIncludedMemory === "boolean" ? value.lastPromptIncludedMemory : false,
+    interceptorRegistered,
+    lastInterceptorAt: stringOrNull3(value.lastInterceptorAt),
+    lastInterceptorInjectedCount: typeof value.lastInterceptorInjectedCount === "number" && Number.isFinite(value.lastInterceptorInjectedCount) ? Math.max(0, Math.round(value.lastInterceptorInjectedCount)) : 0,
+    lastInterceptorInjectedChars: typeof value.lastInterceptorInjectedChars === "number" && Number.isFinite(value.lastInterceptorInjectedChars) ? Math.max(0, Math.round(value.lastInterceptorInjectedChars)) : 0,
+    lastInterceptorStrippedCount: typeof value.lastInterceptorStrippedCount === "number" && Number.isFinite(value.lastInterceptorStrippedCount) ? Math.max(0, Math.round(value.lastInterceptorStrippedCount)) : 0,
+    lastInterceptorSkippedReason: stringOrNull3(value.lastInterceptorSkippedReason),
+    lastInterceptorError: stringOrNull3(value.lastInterceptorError),
+    lastInterceptorPromptTrackerCountBefore: typeof value.lastInterceptorPromptTrackerCountBefore === "number" && Number.isFinite(value.lastInterceptorPromptTrackerCountBefore) ? Math.max(0, Math.round(value.lastInterceptorPromptTrackerCountBefore)) : 0,
+    lastInterceptorPromptTrackerCountAfter: typeof value.lastInterceptorPromptTrackerCountAfter === "number" && Number.isFinite(value.lastInterceptorPromptTrackerCountAfter) ? Math.max(0, Math.round(value.lastInterceptorPromptTrackerCountAfter)) : 0,
     selectedPresetId: stringOrNull3(value.selectedPresetId),
     selectedPresetName: stringOrNull3(value.selectedPresetName),
     lastPresetFallbackReason: stringOrNull3(value.lastPresetFallbackReason),
@@ -2782,7 +3314,7 @@ async function loadActivePresetState(chatId, userId) {
     fallback: null,
     userId
   });
-  if (!isRecord7(raw) || typeof raw.selectedPresetId !== "string") {
+  if (!isRecord8(raw) || typeof raw.selectedPresetId !== "string") {
     return defaultActivePresetState();
   }
   return {
@@ -2870,6 +3402,104 @@ async function saveMessageSnapshotIndex(chatId, index, userId) {
     indent: 2,
     userId
   });
+}
+function messageIndexFromChatMessage(message) {
+  return typeof message.index_in_chat === "number" && Number.isFinite(message.index_in_chat) ? Math.max(0, Math.round(message.index_in_chat)) : null;
+}
+function trackerPayloadText(payload) {
+  return JSON.stringify(payload, null, 2);
+}
+function memoryEntryFromAttachedSnapshot(snapshot, source = "sidecar_snapshot") {
+  return {
+    messageId: snapshot.messageId,
+    messageIndex: snapshot.messageIndex,
+    swipeKey: snapshot.swipeKey,
+    presetId: snapshot.presetId ?? snapshot.snapshot.presetId,
+    presetName: snapshot.presetName ?? snapshot.snapshot.presetName,
+    createdAt: snapshot.snapshot.createdAt || snapshot.attachedAt,
+    source,
+    payload: snapshot.snapshot.data,
+    text: trackerPayloadText(snapshot.snapshot.data)
+  };
+}
+function memoryEntryFromChatSnapshot(snapshot) {
+  return {
+    messageId: null,
+    messageIndex: null,
+    swipeKey: null,
+    presetId: snapshot.presetId,
+    presetName: snapshot.presetName,
+    createdAt: snapshot.createdAt,
+    source: "latest_chat_snapshot",
+    payload: snapshot.data,
+    text: trackerPayloadText(snapshot.data)
+  };
+}
+function parseEmbeddedMemoryEntriesFromContent(content, message, source) {
+  const tags = findLTrackerTags(content);
+  const entries = [];
+  for (const tag of tags) {
+    try {
+      const payload = parseTrackerJson(tag.content);
+      entries.push({
+        messageId: message.id,
+        messageIndex: messageIndexFromChatMessage(message),
+        swipeKey: tag.attrs.swipe || null,
+        presetId: null,
+        presetName: null,
+        createdAt: nowIso(),
+        source,
+        payload,
+        text: trackerPayloadText(payload)
+      });
+    } catch {
+    }
+  }
+  return entries;
+}
+async function embeddedMemoryEntriesFromMessages(chatId, settings) {
+  if (settings.memory.source !== "hybrid" && settings.memory.source !== "embedded_tags" && settings.memory.source !== "message_history") return [];
+  const messages = await readChatMessages(chatId).catch(() => []);
+  const source = settings.memory.source === "message_history" ? "history_scan" : "embedded_tag";
+  const entries = [];
+  for (const message of messages.slice(-Math.max(settings.recentMessageLimit, 24))) {
+    if (typeof message.content === "string") {
+      entries.push(...parseEmbeddedMemoryEntriesFromContent(message.content, message, source));
+    }
+    const swipes = Array.isArray(message.swipes) ? message.swipes : [];
+    for (const swipeContent of swipes) {
+      if (typeof swipeContent !== "string" || swipeContent === message.content) continue;
+      entries.push(...parseEmbeddedMemoryEntriesFromContent(swipeContent, message, source));
+    }
+  }
+  return entries;
+}
+async function sidecarMemoryEntriesFromIndex(chatId, userId, index) {
+  const entries = [];
+  for (const indexEntry of index) {
+    const attached = await loadMessageSnapshot(chatId, indexEntry.messageId, userId, indexEntry.swipeKey);
+    if (!attached) continue;
+    entries.push(memoryEntryFromAttachedSnapshot(attached));
+  }
+  return entries;
+}
+async function collectTrackerMemory(chatId, userId, settings, activePreset, trigger) {
+  if (!settings.memory.enabled || settings.memory.retainCount <= 0) {
+    return buildTrackerMemoryResult([], settings.memory, trigger ? memoryOptionsFromTrigger(trigger, activePreset) : { activePreset });
+  }
+  const entries = [];
+  const index = await loadMessageSnapshotIndex(chatId, userId);
+  if (settings.memory.source === "hybrid" || settings.memory.source === "sidecar_index") {
+    entries.push(...await sidecarMemoryEntriesFromIndex(chatId, userId, index));
+  }
+  if (settings.memory.source === "hybrid" || settings.memory.source === "embedded_tags" || settings.memory.source === "message_history") {
+    entries.push(...await embeddedMemoryEntriesFromMessages(chatId, settings));
+  }
+  if (entries.length === 0 && (settings.memory.source === "hybrid" || settings.memory.source === "sidecar_index")) {
+    const latestSnapshot = await loadSnapshot(chatId, userId);
+    if (latestSnapshot) entries.push(memoryEntryFromChatSnapshot(latestSnapshot));
+  }
+  return buildTrackerMemoryResult(entries, settings.memory, trigger ? memoryOptionsFromTrigger(trigger, activePreset) : { activePreset });
 }
 function chatJobKey(chatId) {
   return `chat:${chatId}`;
@@ -2992,7 +3622,7 @@ async function tryPersistDiagnostics(diagnostics, userId) {
   try {
     await persistDiagnostics(diagnostics, userId);
   } catch (error) {
-    spindle.log.warn(`LTracker could not save diagnostics: ${errorMessage(error)}`);
+    spindle.log.warn(`LTracker could not save diagnostics: ${errorMessage2(error)}`);
   }
 }
 function summarizeConnectionProfile(profile) {
@@ -3039,7 +3669,7 @@ async function refreshConnectionProfiles(userId, chatId) {
     }
     return profiles;
   } catch (error) {
-    const message = errorMessage(error);
+    const message = errorMessage2(error);
     const previous = connectionCacheForUser(userId);
     connectionProfilesByUser.set(userId, { ...previous, refreshedAt, error: message });
     if (chatId) {
@@ -3069,7 +3699,7 @@ async function getSelectedConnectionProfile(settings, userId) {
     const profile = await spindle.connections.get(selectedId, userId);
     return profile ? summarizeConnectionProfile(profile) : null;
   } catch (error) {
-    spindle.log.warn(`LTracker could not fetch selected tracker connection: ${errorMessage(error)}`);
+    spindle.log.warn(`LTracker could not fetch selected tracker connection: ${errorMessage2(error)}`);
     return null;
   }
 }
@@ -3106,7 +3736,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     activeWidgetJobs,
     selectedSwipeIdentities
   ).catch((error2) => {
-    spindle.log.warn(`LTracker could not build message control candidates: ${errorMessage(error2)}`);
+    spindle.log.warn(`LTracker could not build message control candidates: ${errorMessage2(error2)}`);
     return [];
   });
   const latestMessageSnapshot = await loadMessageSnapshot(
@@ -3120,12 +3750,12 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
   const messageDisplayHydratedCount = settings.messageDisplay.enabled ? messageSnapshotHistory.filter((entry) => entry.snapshot !== null).length : 0;
   const placement = resolveMessageWidgetPlacement(settings.messageDisplay.placement, settings);
   const activeWidgetRegenerationCount = Object.keys(activeWidgetJobs).length;
-  const injectionPreview = CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? buildInjectionDecision({
-    settings,
-    chatSnapshot: snapshot,
-    messageSnapshot: latestMessageSnapshot,
-    internalTrackerGeneration: false
-  }).text : null;
+  const memoryPreviewResult = chatId ? await collectTrackerMemory(chatId, userId, settings, presetState.activePreset).catch((error2) => {
+    spindle.log.warn(`LTracker could not build tracker memory preview: ${errorMessage2(error2)}`);
+    return null;
+  }) : null;
+  const memoryPreview = memoryPreviewResult?.renderedText.trim() ? memoryPreviewResult.renderedText : null;
+  const injectionPreview = memoryPreviewResult?.entries.length ? formatTrackerInjectionBlock(memoryPreviewResult.entries, settings.injection) : null;
   const stateError = error ?? diagnostics.lastError;
   return {
     version: EXTENSION_VERSION,
@@ -3133,6 +3763,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     chatId,
     snapshot,
     latestMessageSnapshot,
+    memoryPreview,
     injectionPreview,
     renderPreview,
     messageSnapshotHistory,
@@ -3155,11 +3786,17 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       lastConnectionRefreshAt: connectionCache.refreshedAt ?? diagnostics.lastConnectionRefreshAt,
       lastConnectionRefreshError: connectionCache.error ?? diagnostics.lastConnectionRefreshError,
       autoSubscriptionActive: autoSubscriptionsActive,
-      injectionEnabled: settings.injection.enabled && CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
+      injectionEnabled: settings.injection.enabled && interceptorRegistered,
+      lastMemoryEntryCount: memoryPreviewResult?.entries.length ?? diagnostics.lastMemoryEntryCount,
+      lastMemoryChars: memoryPreviewResult?.totalChars ?? diagnostics.lastMemoryChars,
+      lastMemoryTruncated: memoryPreviewResult?.truncated ?? diagnostics.lastMemoryTruncated,
+      lastMemorySourceSummary: memoryPreviewResult ? trackerMemorySourceSummary(memoryPreviewResult.entries) : diagnostics.lastMemorySourceSummary,
+      lastMemorySkippedReason: memoryPreviewResult?.skippedReason ?? diagnostics.lastMemorySkippedReason,
       selectedPresetId: presetState.activePreset.id,
       selectedPresetName: presetState.activePreset.name,
       lastPresetFallbackReason: presetState.fallbackReason ?? diagnostics.lastPresetFallbackReason,
       contextHandlerRegistered,
+      interceptorRegistered,
       contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED ? diagnostics.contextHandlerDisabledReason : CONTEXT_HANDLER_DISABLED_REASON,
       messageDisplayEnabled: settings.messageDisplay.enabled,
       messageDisplayMode,
@@ -3226,7 +3863,7 @@ async function selectedSwipeIdentitiesForChat(chatId) {
     }
     return result;
   } catch (error) {
-    spindle.log.warn(`LTracker could not read selected swipes: ${errorMessage(error)}`);
+    spindle.log.warn(`LTracker could not read selected swipes: ${errorMessage2(error)}`);
     return {};
   }
 }
@@ -3249,7 +3886,7 @@ function normalizeMessages(messages) {
 }
 function normalizeGenerationText(result) {
   if (typeof result === "string" && result.trim()) return result;
-  if (!isRecord7(result)) {
+  if (!isRecord8(result)) {
     throw new Error("Lumiverse generation returned an unsupported response.");
   }
   for (const key of ["content", "text", "output", "response"]) {
@@ -3258,19 +3895,19 @@ function normalizeGenerationText(result) {
   }
   const message = result.message;
   if (typeof message === "string" && message.trim()) return message;
-  if (isRecord7(message) && typeof message.content === "string" && message.content.trim()) {
+  if (isRecord8(message) && typeof message.content === "string" && message.content.trim()) {
     return message.content;
   }
   throw new Error("Lumiverse generation completed without textual content.");
 }
 function generationFinishReason(result) {
-  if (!isRecord7(result)) return null;
+  if (!isRecord8(result)) return null;
   for (const key of ["finish_reason", "finishReason", "stop_reason", "stopReason"]) {
     const value = result[key];
     if (typeof value === "string") return value;
   }
   const choice = Array.isArray(result.choices) ? result.choices[0] : null;
-  if (isRecord7(choice)) {
+  if (isRecord8(choice)) {
     for (const key of ["finish_reason", "finishReason"]) {
       const value = choice[key];
       if (typeof value === "string") return value;
@@ -3279,7 +3916,7 @@ function generationFinishReason(result) {
   return null;
 }
 function generationUsage(result) {
-  if (!isRecord7(result)) return null;
+  if (!isRecord8(result)) return null;
   const usage = result.usage ?? result.token_usage ?? result.tokenUsage;
   return recordOrNull(usage);
 }
@@ -3527,7 +4164,7 @@ function cancelPendingAutoForChat(chatId, userId, reason) {
     if (userId && pending.userId !== userId) continue;
     clearTimeout(pending.timer);
     pendingAutoJobs.delete(key);
-    void markAutoSkipped(pending.chatId, pending.userId, pending.trigger, reason, pending.scheduledAt).catch((error) => spindle.log.warn(`LTracker could not record auto cancellation: ${errorMessage(error)}`));
+    void markAutoSkipped(pending.chatId, pending.userId, pending.trigger, reason, pending.scheduledAt).catch((error) => spindle.log.warn(`LTracker could not record auto cancellation: ${errorMessage2(error)}`));
   }
 }
 function abortAutoJobForChat(chatId, reason) {
@@ -3561,11 +4198,11 @@ function targetUsersForChat(chatId, userId) {
   return [...usersByChat.get(chatId) ?? []];
 }
 function isChatMessage(value) {
-  return isRecord7(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
+  return isRecord8(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
 }
 function messageFromEventPayload(payload) {
   if (isChatMessage(payload)) return payload;
-  if (isRecord7(payload) && isChatMessage(payload.message)) return payload.message;
+  if (isRecord8(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
 }
 async function scheduleAutoForMessage(input) {
@@ -3602,7 +4239,7 @@ async function scheduleAutoForMessage(input) {
   const scheduledAt = nowIso();
   const timer = setTimeout(() => {
     void runPendingAuto(key).catch((error) => {
-      spindle.log.warn(`LTracker auto job failed: ${errorMessage(error)}`);
+      spindle.log.warn(`LTracker auto job failed: ${errorMessage2(error)}`);
     });
   }, settings.auto.autoDebounceMs);
   pendingAutoJobs.set(key, {
@@ -3727,7 +4364,7 @@ async function handleMessageSent(payload, userId) {
   }
 }
 async function handleMessageSwiped(payload, userId) {
-  if (!isRecord7(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  if (!isRecord8(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
   const message = payload.message;
   const identity = deriveSwipeTrackerIdentity(payload.chatId, message);
   const users = targetUsersForChat(payload.chatId, userId);
@@ -3757,7 +4394,7 @@ async function handleMessageSwiped(payload, userId) {
   }
 }
 async function handleSwipeEdited(payload, userId) {
-  if (!isRecord7(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  if (!isRecord8(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
   await handleMessageSwiped({
     chatId: payload.chatId,
     message: payload.message,
@@ -3765,9 +4402,196 @@ async function handleSwipeEdited(payload, userId) {
   }, userId);
 }
 function handleChatSwitched(payload, userId) {
-  if (!userId || !isRecord7(payload)) return;
+  if (!userId || !isRecord8(payload)) return;
   const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
   rememberActiveChat(userId, chatId);
+}
+function stringAtPath2(value, path) {
+  let current = value;
+  for (const segment of path) {
+    if (!isRecord8(current)) return null;
+    current = current[segment];
+  }
+  return typeof current === "string" && current.trim() ? current : null;
+}
+function firstStringAtPath(value, paths) {
+  for (const path of paths) {
+    const result = stringAtPath2(value, path);
+    if (result) return result;
+  }
+  return null;
+}
+function contextChatId(context) {
+  return firstStringAtPath(context, [
+    ["chatId"],
+    ["chat_id"],
+    ["chat", "id"],
+    ["request", "chatId"],
+    ["request", "chat_id"],
+    ["request", "chat", "id"],
+    ["input", "chatId"],
+    ["input", "chat_id"],
+    ["generation", "chatId"],
+    ["generation", "chat_id"],
+    ["metadata", "chatId"]
+  ]);
+}
+function contextUserId(context) {
+  return firstStringAtPath(context, [
+    ["userId"],
+    ["user_id"],
+    ["operatorUserId"],
+    ["request", "userId"],
+    ["request", "user_id"],
+    ["input", "userId"],
+    ["generation", "userId"],
+    ["metadata", "userId"]
+  ]);
+}
+function knownUserForContext(userId, chatId) {
+  if (userId) return userId;
+  if (chatId) {
+    const users = targetUsersForChat(chatId);
+    if (users.length === 1) return users[0] ?? null;
+  }
+  if (activeChatByUser.size === 1) {
+    return activeChatByUser.keys().next().value ?? null;
+  }
+  return null;
+}
+async function resolveContextChatId(context, userId) {
+  const fromContext = contextChatId(context);
+  if (fromContext) return fromContext;
+  return resolveActiveChatId(null, userId).catch(() => null);
+}
+async function withContextTimeout(operation, timeoutMs) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      operation.then((value) => ({ timedOut: false, value })),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ timedOut: true, value: null }), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+async function recordInterceptorDiagnostics(chatId, userId, settings, result) {
+  const currentDiagnostics = await loadDiagnostics(chatId, userId);
+  await tryPersistDiagnostics({
+    ...currentDiagnostics,
+    injectionEnabled: settings.injection.enabled,
+    lastInjectionAt: result.injectedCount > 0 ? nowIso() : currentDiagnostics.lastInjectionAt,
+    lastInjectionMode: null,
+    lastInjectionFormat: settings.injection.format,
+    lastInjectedChars: result.injectedChars,
+    lastInjectionSkippedReason: result.skippedReason,
+    interceptorRegistered,
+    lastInterceptorAt: nowIso(),
+    lastInterceptorInjectedCount: result.injectedCount,
+    lastInterceptorInjectedChars: result.injectedChars,
+    lastInterceptorStrippedCount: result.strippedCount,
+    lastInterceptorSkippedReason: result.skippedReason,
+    lastInterceptorError: result.error,
+    lastInterceptorPromptTrackerCountBefore: result.promptTrackerCountBefore,
+    lastInterceptorPromptTrackerCountAfter: result.promptTrackerCountAfter
+  }, userId);
+}
+async function recordInterceptorSkipped(chatId, userId, reason, error = null) {
+  if (!chatId || !userId) return;
+  const currentDiagnostics = await loadDiagnostics(chatId, userId);
+  await tryPersistDiagnostics({
+    ...currentDiagnostics,
+    interceptorRegistered,
+    lastInterceptorAt: nowIso(),
+    lastInterceptorInjectedCount: 0,
+    lastInterceptorInjectedChars: 0,
+    lastInterceptorStrippedCount: 0,
+    lastInterceptorSkippedReason: reason,
+    lastInterceptorError: error
+  }, userId);
+}
+function promptMessagesForInjection(messages) {
+  return messages.map((message) => ({ ...message }));
+}
+function ltrackerMessagesFromPrompt(messages) {
+  return messages.map((message) => ({ ...message }));
+}
+function injectionMemorySettings(settings) {
+  return {
+    ...settings,
+    memory: {
+      ...settings.memory,
+      enabled: true,
+      includeInTrackerGeneration: true,
+      retainCount: settings.injection.retainCount,
+      fullSnapshotCount: settings.injection.retainCount,
+      compactOlderSnapshots: false,
+      maxMemoryChars: settings.injection.maxInjectedChars,
+      source: settings.memory.source,
+      order: "oldest_to_newest"
+    }
+  };
+}
+async function handlePromptInterceptor(messages, context) {
+  if (disposed) return messages;
+  if (shouldSkipContextForInternalGeneration(context, internalTrackerGenerationDepth > 0)) {
+    const contextUser2 = contextUserId(context);
+    const contextChat2 = contextChatId(context);
+    await recordInterceptorSkipped(contextChat2, knownUserForContext(contextUser2, contextChat2), "Skipped quiet or internal LTracker generation.");
+    return messages;
+  }
+  const contextUser = contextUserId(context);
+  const contextChat = contextChatId(context);
+  const userId = knownUserForContext(contextUser, contextChat);
+  if (!userId) return messages;
+  const chatId = await resolveContextChatId(context, userId);
+  if (!chatId) return messages;
+  rememberActiveChat(userId, chatId);
+  try {
+    const settings = await getSettings(userId);
+    const presetState = await resolveActivePreset(chatId, userId);
+    if (!settings.injection.enabled) {
+      const result2 = applyPromptInjection({
+        messages: promptMessagesForInjection(messages),
+        entries: [],
+        settings: settings.injection
+      });
+      await recordInterceptorDiagnostics(chatId, userId, settings, result2);
+      return messages;
+    }
+    const memorySettings = injectionMemorySettings(settings);
+    const memory = await collectTrackerMemory(chatId, userId, memorySettings, presetState.activePreset);
+    const result = applyPromptInjection({
+      messages: promptMessagesForInjection(messages),
+      entries: memory.entries,
+      settings: settings.injection
+    });
+    await recordInterceptorDiagnostics(chatId, userId, settings, result);
+    if (result.error) return messages;
+    const response = {
+      messages: ltrackerMessagesFromPrompt(result.messages)
+    };
+    if (result.breakdown.length > 0) response.breakdown = result.breakdown;
+    return response;
+  } catch (error) {
+    await recordInterceptorSkipped(chatId, userId, "Prompt injection failed safely.", errorMessage2(error));
+    return messages;
+  }
+}
+async function handlePromptInterceptorFailSafe(messages, context) {
+  try {
+    const result = await withContextTimeout(handlePromptInterceptor(messages, context), 750);
+    if (!result.timedOut) return result.value;
+    const contextUser = contextUserId(context);
+    const contextChat = contextChatId(context);
+    await recordInterceptorSkipped(contextChat, knownUserForContext(contextUser, contextChat), "Prompt injection timed out.");
+    return messages;
+  } catch (error) {
+    spindle.log.warn(`LTracker prompt interceptor failed safely: ${errorMessage2(error)}`);
+    return messages;
+  }
 }
 async function generateTracker(chatId, userId, trigger) {
   let stage = "active_chat";
@@ -3907,11 +4731,28 @@ async function generateTracker(chatId, userId, trigger) {
     };
     stage = "prompt";
     const transcript = buildCompactTranscript(transcriptMessages, settings.maxMessageChars);
-    const promptMessages = buildTrackerPrompt(transcript, presetState.activePreset);
+    const memory = settings.memory.enabled && settings.memory.includeInTrackerGeneration ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger) : {
+      entries: [],
+      renderedText: "",
+      totalChars: 0,
+      truncated: false,
+      skippedReason: settings.memory.enabled ? "Tracker memory is not included in tracker generation." : "Tracker memory is disabled."
+    };
+    const promptMessages = buildTrackerPrompt(
+      transcript,
+      presetState.activePreset,
+      memory.renderedText ? memory : null
+    );
     diagnostics = {
       ...diagnostics,
       lastPromptUsedPresetId: presetState.activePreset.id,
       lastPromptUsedPresetName: presetState.activePreset.name,
+      lastMemoryEntryCount: memory.entries.length,
+      lastMemoryChars: memory.totalChars,
+      lastMemoryTruncated: memory.truncated,
+      lastMemorySourceSummary: trackerMemorySourceSummary(memory.entries),
+      lastMemorySkippedReason: memory.skippedReason,
+      lastPromptIncludedMemory: Boolean(memory.renderedText),
       lastPromptPreview: settings.savePromptPreview ? promptPreview(promptMessages) : "[Prompt preview saving disabled]"
     };
     await tryPersistDiagnostics(diagnostics, userId);
@@ -4012,7 +4853,7 @@ async function generateTracker(chatId, userId, trigger) {
         } catch (error) {
           diagnostics = {
             ...diagnostics,
-            lastEmbeddedTagError: errorMessage(error)
+            lastEmbeddedTagError: errorMessage2(error)
           };
         }
       }
@@ -4258,13 +5099,13 @@ function normalizePresetDraft(value) {
     name: typeof value.name === "string" ? value.name : "",
     description: typeof value.description === "string" ? value.description : "",
     version: typeof value.version === "string" ? value.version : "1.0",
-    jsonSchema: isRecord7(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord8(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: typeof value.promptInstructions === "string" ? value.promptInstructions : ""
   };
   if (typeof value.id === "string") draft.id = value.id;
   if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
   if (typeof value.notes === "string") draft.notes = value.notes;
-  if (isRecord7(value.capabilities)) {
+  if (isRecord8(value.capabilities)) {
     const capabilities = {};
     if (typeof value.capabilities.supportsHtmlTemplate === "boolean") {
       capabilities.supportsHtmlTemplate = value.capabilities.supportsHtmlTemplate;
@@ -4377,7 +5218,7 @@ async function importPreset(chatId, userId, importText, requestId) {
   try {
     parsed = JSON.parse(importText);
   } catch (error) {
-    const message = `Import JSON is invalid: ${errorMessage(error)}`;
+    const message = `Import JSON is invalid: ${errorMessage2(error)}`;
     await recordPresetDiagnostic(resolvedChatId, userId, {
       lastPresetValidationError: message,
       lastPresetFallbackReason: null
@@ -4448,7 +5289,7 @@ async function handleConnectionRefresh(payload, userId) {
   try {
     await refreshConnectionProfiles(userId, resolvedChatId);
   } catch (error) {
-    spindle.log.warn(`LTracker connection refresh failed: ${errorMessage(error)}`);
+    spindle.log.warn(`LTracker connection refresh failed: ${errorMessage2(error)}`);
   }
   await sendState(resolvedChatId, userId, void 0, null, payload.requestId);
 }
@@ -4518,7 +5359,7 @@ async function testTrackerConnection(payload, userId) {
       lastConnectionTestAt: new Date(completedAtMs).toISOString(),
       lastConnectionTestStatus: cancelled ? "cancelled" : "error",
       lastConnectionTestDurationMs: completedAtMs - startedAtMs,
-      lastConnectionTestError: cancelled ? null : errorMessage(error)
+      lastConnectionTestError: cancelled ? null : errorMessage2(error)
     };
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, void 0, null, payload.requestId);
@@ -4577,7 +5418,7 @@ async function deleteMessageTracker(payload, userId) {
     } catch (error) {
       await tryPersistDiagnostics({
         ...await loadDiagnostics(resolvedChatId, userId),
-        lastEmbeddedTagError: errorMessage(error)
+        lastEmbeddedTagError: errorMessage2(error)
       }, userId);
     }
   }
@@ -4623,7 +5464,7 @@ async function saveEditedMessageTracker(payload, userId) {
     } catch (error) {
       await tryPersistDiagnostics({
         ...await loadDiagnostics(resolvedChatId, userId),
-        lastEmbeddedTagError: errorMessage(error)
+        lastEmbeddedTagError: errorMessage2(error)
       }, userId);
     }
   }
@@ -4676,7 +5517,7 @@ async function handleEmbeddedTrackerTagIntercepted(payload, userId) {
         lastTagInterceptAt: nowIso(),
         lastTagInterceptMessageId: messageId,
         lastTagInterceptSwipeKey: swipeKey,
-        lastTagInterceptError: errorMessage(error)
+        lastTagInterceptError: errorMessage2(error)
       }, userId);
     }
     return;
@@ -4750,26 +5591,27 @@ function disposeBackend() {
   for (const cleanup of eventCleanups.splice(0).reverse()) cleanup();
   autoSubscriptionsActive = false;
   contextHandlerRegistered = false;
+  interceptorRegistered = false;
 }
 function registerEventListeners() {
   eventCleanups.push(spindle.on("GENERATION_ENDED", (payload, userId) => {
     void handleGenerationEnded(payload, userId).catch((error) => {
-      spindle.log.warn(`LTracker generation-ended handler failed: ${errorMessage(error)}`);
+      spindle.log.warn(`LTracker generation-ended handler failed: ${errorMessage2(error)}`);
     });
   }));
   eventCleanups.push(spindle.on("MESSAGE_SENT", (payload, userId) => {
     void handleMessageSent(payload, userId).catch((error) => {
-      spindle.log.warn(`LTracker message-sent handler failed: ${errorMessage(error)}`);
+      spindle.log.warn(`LTracker message-sent handler failed: ${errorMessage2(error)}`);
     });
   }));
   eventCleanups.push(spindle.on("MESSAGE_SWIPED", (payload, userId) => {
     void handleMessageSwiped(payload, userId).catch((error) => {
-      spindle.log.warn(`LTracker message-swiped handler failed: ${errorMessage(error)}`);
+      spindle.log.warn(`LTracker message-swiped handler failed: ${errorMessage2(error)}`);
     });
   }));
   eventCleanups.push(spindle.on("SWIPE_EDITED", (payload, userId) => {
     void handleSwipeEdited(payload, userId).catch((error) => {
-      spindle.log.warn(`LTracker swipe-edited handler failed: ${errorMessage(error)}`);
+      spindle.log.warn(`LTracker swipe-edited handler failed: ${errorMessage2(error)}`);
     });
   }));
   eventCleanups.push(spindle.on("CHAT_SWITCHED", handleChatSwitched));
@@ -4784,7 +5626,21 @@ function registerContextInjection() {
   }
   spindle.log.warn("LTracker context injection stayed disabled because no verified Lumiverse context handler DTO is available.");
 }
+function registerSafePromptInterceptor() {
+  if (interceptorRegistered) return;
+  if (!spindle.permissions.has("interceptor")) {
+    spindle.log.warn("LTracker prompt injection is unavailable until the interceptor permission is granted.");
+    return;
+  }
+  if (!spindle.registerInterceptor) {
+    spindle.log.warn("LTracker prompt injection is unavailable because registerInterceptor is missing.");
+    return;
+  }
+  spindle.registerInterceptor(async (messages, context) => handlePromptInterceptorFailSafe(messages, context), 0);
+  interceptorRegistered = true;
+}
 registerEventListeners();
+registerSafePromptInterceptor();
 registerContextInjection();
 spindle.onFrontendMessage((payload, userId) => {
   if (!isFrontendMessage(payload)) return;

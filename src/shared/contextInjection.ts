@@ -47,14 +47,10 @@ export function buildInjectionDecision(input: InjectionDecisionInput): Injection
     return emptyDecision("Injection is disabled.");
   }
 
-  const selected = input.settings.injection.mode === "latest_message_snapshot"
-    ? input.messageSnapshot
-    : input.chatSnapshot;
+  const selected = input.messageSnapshot ?? input.chatSnapshot;
 
   if (!selected) {
-    return emptyDecision(input.settings.injection.onlyInjectWhenSnapshotExists
-      ? "No cached tracker snapshot exists."
-      : "No cached tracker snapshot exists.");
+    return emptyDecision("No cached tracker snapshot exists.");
   }
 
   const text = formatSnapshotForInjection(selected, input.settings.injection);

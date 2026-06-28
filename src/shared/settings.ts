@@ -1,6 +1,11 @@
 import {
   SETTINGS_SCHEMA_VERSION,
+  type LTrackerInjectionFormat,
+  type LTrackerInjectionPlacement,
+  type LTrackerInjectionRoleFallback,
   type LTrackerConnectionMode,
+  type LTrackerMemoryOrder,
+  type LTrackerMemorySource,
   type LTrackerReasoningEffort,
   type LTrackerReasoningSource,
   type LTrackerSettings,
@@ -18,7 +23,11 @@ export const SETTINGS_LIMITS = {
   generationTimeoutMs: { min: 10_000, max: 180_000, default: 45_000 },
   autoDebounceMs: { min: 250, max: 30_000, default: 1_500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
-  maxInjectedChars: { min: 500, max: 20_000, default: 3_000 },
+  memoryRetainCount: { min: 0, max: 10, default: 3 },
+  memoryFullSnapshotCount: { min: 0, max: 10, default: 3 },
+  maxMemoryChars: { min: 1_000, max: 50_000, default: 12_000 },
+  injectionRetainCount: { min: 0, max: 10, default: 3 },
+  maxInjectedChars: { min: 1_000, max: 50_000, default: 12_000 },
   maxRenderedChars: { min: 1_000, max: 200_000, default: 50_000 },
   maxMessageDisplayRenderedChars: { min: 1_000, max: 200_000, default: 50_000 },
   minimizedMaxHeightPx: { min: 0, max: 400, default: 0 },
@@ -40,15 +49,30 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     attachSnapshotToMessage: true,
     onlyWhenChatActive: true,
   },
+  memory: {
+    enabled: true,
+    includeInTrackerGeneration: true,
+    retainCount: SETTINGS_LIMITS.memoryRetainCount.default,
+    fullSnapshotCount: SETTINGS_LIMITS.memoryFullSnapshotCount.default,
+    compactOlderSnapshots: false,
+    maxMemoryChars: SETTINGS_LIMITS.maxMemoryChars.default,
+    source: "hybrid",
+    excludeTargetMessage: true,
+    order: "oldest_to_newest",
+    requireSamePreset: false,
+    requireSameSwipeWhenAvailable: false,
+  },
   injection: {
     enabled: false,
-    mode: "latest_chat_snapshot",
-    format: "compact",
+    retainCount: SETTINGS_LIMITS.injectionRetainCount.default,
+    format: "embedded_tag",
+    injectionPlacement: "append_to_last_assistant",
+    includeOnlyIfMissingFromPrompt: true,
+    stripOlderTrackerBlocks: true,
     maxInjectedChars: SETTINGS_LIMITS.maxInjectedChars.default,
+    roleFallback: "system",
     includeHeader: true,
-    includeTimestamp: true,
-    includeSourceMessageId: false,
-    onlyInjectWhenSnapshotExists: true,
+    header: "LTracker Recent State",
   },
   renderer: {
     enabled: true,
@@ -125,6 +149,45 @@ function hasOwn(source: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(source, key);
 }
 
+function memorySource(value: unknown): LTrackerMemorySource {
+  return value === "message_history"
+    || value === "sidecar_index"
+    || value === "embedded_tags"
+    || value === "hybrid"
+    ? value
+    : DEFAULT_SETTINGS.memory.source;
+}
+
+function memoryOrder(value: unknown): LTrackerMemoryOrder {
+  return value === "oldest_to_newest" || value === "newest_to_oldest"
+    ? value
+    : DEFAULT_SETTINGS.memory.order;
+}
+
+function injectionFormat(value: unknown): LTrackerInjectionFormat {
+  if (value === "compact") return "compact_text";
+  return value === "embedded_tag"
+    || value === "compact_text"
+    || value === "pretty_json"
+    || value === "minimal"
+    ? value
+    : DEFAULT_SETTINGS.injection.format;
+}
+
+function injectionPlacement(value: unknown): LTrackerInjectionPlacement {
+  return value === "append_to_last_assistant"
+    || value === "system_before_last"
+    || value === "system_after_history"
+    ? value
+    : DEFAULT_SETTINGS.injection.injectionPlacement;
+}
+
+function injectionRoleFallback(value: unknown): LTrackerInjectionRoleFallback {
+  return value === "system" || value === "assistant"
+    ? value
+    : DEFAULT_SETTINGS.injection.roleFallback;
+}
+
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -184,18 +247,13 @@ function thinkingDisplay(value: unknown): LTrackerThinkingDisplay {
 export function repairSettings(value: unknown): LTrackerSettings {
   const source = isRecord(value) ? value : {};
   const autoSource = isRecord(source.auto) ? source.auto : {};
+  const memorySourceObject = isRecord(source.memory) ? source.memory : {};
   const injectionSource = isRecord(source.injection) ? source.injection : {};
   const rendererSource = isRecord(source.renderer) ? source.renderer : {};
   const messageDisplaySource = isRecord(source.messageDisplay) ? source.messageDisplay : {};
   const connectionSource = isRecord(source.connection) ? source.connection : {};
   const connectionParameterSource = isRecord(connectionSource.parameters) ? connectionSource.parameters : {};
   const connectionReasoningSource = isRecord(connectionSource.reasoning) ? connectionSource.reasoning : {};
-  const mode = injectionSource.mode === "latest_message_snapshot" || injectionSource.mode === "latest_chat_snapshot"
-    ? injectionSource.mode
-    : DEFAULT_SETTINGS.injection.mode;
-  const format = injectionSource.format === "pretty_json" || injectionSource.format === "minimal" || injectionSource.format === "compact"
-    ? injectionSource.format
-    : DEFAULT_SETTINGS.injection.format;
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot"
     ? rendererSource.previewSource
     : DEFAULT_SETTINGS.renderer.previewSource;
@@ -283,30 +341,77 @@ export function repairSettings(value: unknown): LTrackerSettings {
         ? autoSource.onlyWhenChatActive
         : DEFAULT_SETTINGS.auto.onlyWhenChatActive,
     },
+    memory: {
+      enabled: typeof memorySourceObject.enabled === "boolean"
+        ? memorySourceObject.enabled
+        : DEFAULT_SETTINGS.memory.enabled,
+      includeInTrackerGeneration: typeof memorySourceObject.includeInTrackerGeneration === "boolean"
+        ? memorySourceObject.includeInTrackerGeneration
+        : DEFAULT_SETTINGS.memory.includeInTrackerGeneration,
+      retainCount: clampNumber(
+        memorySourceObject.retainCount,
+        SETTINGS_LIMITS.memoryRetainCount.default,
+        SETTINGS_LIMITS.memoryRetainCount.min,
+        SETTINGS_LIMITS.memoryRetainCount.max,
+      ),
+      fullSnapshotCount: clampNumber(
+        memorySourceObject.fullSnapshotCount,
+        SETTINGS_LIMITS.memoryFullSnapshotCount.default,
+        SETTINGS_LIMITS.memoryFullSnapshotCount.min,
+        SETTINGS_LIMITS.memoryFullSnapshotCount.max,
+      ),
+      compactOlderSnapshots: typeof memorySourceObject.compactOlderSnapshots === "boolean"
+        ? memorySourceObject.compactOlderSnapshots
+        : DEFAULT_SETTINGS.memory.compactOlderSnapshots,
+      maxMemoryChars: clampNumber(
+        memorySourceObject.maxMemoryChars,
+        SETTINGS_LIMITS.maxMemoryChars.default,
+        SETTINGS_LIMITS.maxMemoryChars.min,
+        SETTINGS_LIMITS.maxMemoryChars.max,
+      ),
+      source: memorySource(memorySourceObject.source),
+      excludeTargetMessage: typeof memorySourceObject.excludeTargetMessage === "boolean"
+        ? memorySourceObject.excludeTargetMessage
+        : DEFAULT_SETTINGS.memory.excludeTargetMessage,
+      order: memoryOrder(memorySourceObject.order),
+      requireSamePreset: typeof memorySourceObject.requireSamePreset === "boolean"
+        ? memorySourceObject.requireSamePreset
+        : DEFAULT_SETTINGS.memory.requireSamePreset,
+      requireSameSwipeWhenAvailable: typeof memorySourceObject.requireSameSwipeWhenAvailable === "boolean"
+        ? memorySourceObject.requireSameSwipeWhenAvailable
+        : DEFAULT_SETTINGS.memory.requireSameSwipeWhenAvailable,
+    },
     injection: {
       enabled: typeof injectionSource.enabled === "boolean"
         ? injectionSource.enabled
         : DEFAULT_SETTINGS.injection.enabled,
-      mode,
-      format,
+      retainCount: clampNumber(
+        injectionSource.retainCount,
+        SETTINGS_LIMITS.injectionRetainCount.default,
+        SETTINGS_LIMITS.injectionRetainCount.min,
+        SETTINGS_LIMITS.injectionRetainCount.max,
+      ),
+      format: injectionFormat(injectionSource.format),
+      injectionPlacement: injectionPlacement(injectionSource.injectionPlacement),
+      includeOnlyIfMissingFromPrompt: typeof injectionSource.includeOnlyIfMissingFromPrompt === "boolean"
+        ? injectionSource.includeOnlyIfMissingFromPrompt
+        : DEFAULT_SETTINGS.injection.includeOnlyIfMissingFromPrompt,
+      stripOlderTrackerBlocks: typeof injectionSource.stripOlderTrackerBlocks === "boolean"
+        ? injectionSource.stripOlderTrackerBlocks
+        : DEFAULT_SETTINGS.injection.stripOlderTrackerBlocks,
       maxInjectedChars: clampNumber(
         injectionSource.maxInjectedChars,
         SETTINGS_LIMITS.maxInjectedChars.default,
         SETTINGS_LIMITS.maxInjectedChars.min,
         SETTINGS_LIMITS.maxInjectedChars.max,
       ),
+      roleFallback: injectionRoleFallback(injectionSource.roleFallback),
       includeHeader: typeof injectionSource.includeHeader === "boolean"
         ? injectionSource.includeHeader
         : DEFAULT_SETTINGS.injection.includeHeader,
-      includeTimestamp: typeof injectionSource.includeTimestamp === "boolean"
-        ? injectionSource.includeTimestamp
-        : DEFAULT_SETTINGS.injection.includeTimestamp,
-      includeSourceMessageId: typeof injectionSource.includeSourceMessageId === "boolean"
-        ? injectionSource.includeSourceMessageId
-        : DEFAULT_SETTINGS.injection.includeSourceMessageId,
-      onlyInjectWhenSnapshotExists: typeof injectionSource.onlyInjectWhenSnapshotExists === "boolean"
-        ? injectionSource.onlyInjectWhenSnapshotExists
-        : DEFAULT_SETTINGS.injection.onlyInjectWhenSnapshotExists,
+      header: typeof injectionSource.header === "string" && injectionSource.header.trim()
+        ? injectionSource.header.trim().slice(0, 120)
+        : DEFAULT_SETTINGS.injection.header,
     },
     renderer: {
       enabled: typeof rendererSource.enabled === "boolean"

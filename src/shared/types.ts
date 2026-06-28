@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.13";
+export const EXTENSION_VERSION = "0.14";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -8,7 +8,11 @@ export type TranscriptRole = "user" | "assistant";
 export type TrackerGenerationSourceKind = "manual" | "auto" | "widget";
 export type AutoTriggerEventType = "GENERATION_ENDED" | "MESSAGE_SENT";
 export type LTrackerInjectionMode = "latest_chat_snapshot" | "latest_message_snapshot";
-export type LTrackerInjectionFormat = "compact" | "pretty_json" | "minimal";
+export type LTrackerInjectionFormat = "embedded_tag" | "compact_text" | "pretty_json" | "minimal";
+export type LTrackerInjectionPlacement = "append_to_last_assistant" | "system_before_last" | "system_after_history";
+export type LTrackerInjectionRoleFallback = "system" | "assistant";
+export type LTrackerMemorySource = "message_history" | "sidecar_index" | "embedded_tags" | "hybrid";
+export type LTrackerMemoryOrder = "oldest_to_newest" | "newest_to_oldest";
 export type LTrackerRenderSource = "latest_chat_snapshot" | "latest_message_snapshot";
 export type LTrackerRenderStatus = "rendered" | "fallback" | "no_template" | "no_snapshot" | "error";
 export type LTrackerMessageDisplayPlacement = "top" | "bottom";
@@ -216,15 +220,31 @@ export interface LTrackerAutoSettings {
   onlyWhenChatActive: boolean;
 }
 
+export interface LTrackerMemorySettings {
+  enabled: boolean;
+  includeInTrackerGeneration: boolean;
+  retainCount: number;
+  fullSnapshotCount: number;
+  compactOlderSnapshots: boolean;
+  maxMemoryChars: number;
+  source: LTrackerMemorySource;
+  excludeTargetMessage: boolean;
+  order: LTrackerMemoryOrder;
+  requireSamePreset: boolean;
+  requireSameSwipeWhenAvailable: boolean;
+}
+
 export interface LTrackerInjectionSettings {
   enabled: boolean;
-  mode: LTrackerInjectionMode;
   format: LTrackerInjectionFormat;
+  retainCount: number;
+  injectionPlacement: LTrackerInjectionPlacement;
+  includeOnlyIfMissingFromPrompt: boolean;
+  stripOlderTrackerBlocks: boolean;
   maxInjectedChars: number;
+  roleFallback: LTrackerInjectionRoleFallback;
   includeHeader: boolean;
-  includeTimestamp: boolean;
-  includeSourceMessageId: boolean;
-  onlyInjectWhenSnapshotExists: boolean;
+  header: string;
 }
 
 export interface LTrackerRendererSettings {
@@ -311,6 +331,7 @@ export interface LTrackerSettings {
   saveRawOutput: boolean;
   savePromptPreview: boolean;
   auto: LTrackerAutoSettings;
+  memory: LTrackerMemorySettings;
   injection: LTrackerInjectionSettings;
   renderer: LTrackerRendererSettings;
   messageDisplay: LTrackerMessageDisplaySettings;
@@ -381,6 +402,21 @@ export interface LTrackerDiagnostics {
   lastInjectionSkippedReason: string | null;
   lastInjectionSnapshotCreatedAt: string | null;
   lastInjectionSourceMessageId: string | null;
+  lastMemoryEntryCount: number;
+  lastMemoryChars: number;
+  lastMemoryTruncated: boolean;
+  lastMemorySourceSummary: string | null;
+  lastMemorySkippedReason: string | null;
+  lastPromptIncludedMemory: boolean;
+  interceptorRegistered: boolean;
+  lastInterceptorAt: string | null;
+  lastInterceptorInjectedCount: number;
+  lastInterceptorInjectedChars: number;
+  lastInterceptorStrippedCount: number;
+  lastInterceptorSkippedReason: string | null;
+  lastInterceptorError: string | null;
+  lastInterceptorPromptTrackerCountBefore: number;
+  lastInterceptorPromptTrackerCountAfter: number;
   selectedPresetId: string | null;
   selectedPresetName: string | null;
   lastPresetFallbackReason: string | null;
@@ -483,6 +519,7 @@ export interface PermissionState {
   chats: boolean;
   chatMutation: boolean;
   contextHandler: boolean;
+  interceptor: boolean;
 }
 
 export interface FrontendState {
@@ -491,6 +528,7 @@ export interface FrontendState {
   chatId: string | null;
   snapshot: TrackerSnapshot | null;
   latestMessageSnapshot: MessageAttachedSnapshot | null;
+  memoryPreview: string | null;
   injectionPreview: string | null;
   renderPreview: RenderedTrackerPreview | null;
   messageSnapshotHistory: MessageTrackerHistoryEntry[];

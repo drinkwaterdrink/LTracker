@@ -119,13 +119,15 @@ function generationMetadataFromSnapshot(
 function injectionSettings(settings: LTrackerMessageDisplaySettings): LTrackerInjectionSettings {
   return {
     enabled: true,
-    mode: "latest_message_snapshot",
-    format: "compact",
+    retainCount: 1,
+    format: "compact_text",
+    injectionPlacement: "append_to_last_assistant",
+    includeOnlyIfMissingFromPrompt: true,
+    stripOlderTrackerBlocks: true,
     maxInjectedChars: settings.maxRenderedChars,
+    roleFallback: "system",
     includeHeader: false,
-    includeTimestamp: false,
-    includeSourceMessageId: false,
-    onlyInjectWhenSnapshotExists: true,
+    header: "LTracker Recent State",
   };
 }
 

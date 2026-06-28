@@ -29,6 +29,11 @@ import {
   cleanTrackerGenerationParameters,
 } from "../src/shared/generationRequest";
 import {
+  applyPromptInjection,
+  countTrackerBlocks,
+  formatTrackerInjectionBlock,
+} from "../src/shared/promptInjection";
+import {
   buildMessageTrackerHistory,
   claimMessageWidget,
   formatDurationMs,
@@ -77,6 +82,10 @@ import {
   buildCompactTranscript,
   buildTrackerPrompt,
 } from "../src/shared/trackerPrompt";
+import {
+  buildTrackerMemoryResult,
+  type TrackerMemoryEntry,
+} from "../src/shared/trackerMemory";
 import type {
   MessageAttachedSnapshot,
   TrackerSnapshot,
@@ -84,7 +93,7 @@ import type {
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.13",
+  extensionVersion: "0.14",
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -121,7 +130,7 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.13",
+  extensionVersion: "0.14",
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
@@ -485,7 +494,7 @@ test("messageSnapshotIndexPath stores the per-chat index under message-snapshots
 
 test("embedded tracker tags build, replace, and remove by exact swipe", () => {
   const first = buildLTrackerTag("{\"scene\":{\"time\":\"one\"}}", "index-0");
-  assert.match(first, /<ltracker type="state" version="0.13" swipe="index-0">/);
+  assert.match(first, /<ltracker type="state" version="0.14" swipe="index-0">/);
   const content = upsertLTrackerTag("Assistant reply.", "{\"a\":1}", "index-0");
   const withSecond = upsertLTrackerTag(content.content, "{\"b\":2}", "index-1");
   const replaced = upsertLTrackerTag(withSecond.content, "{\"a\":3}", "index-0");
@@ -691,34 +700,74 @@ test("snapshots preserve preset metadata and older snapshots normalize missing m
   assert.equal(olderAttached.swipeKeySource, "unknown");
 });
 
-test("repairSettings repairs injection settings with defaults and clamping", () => {
+test("repairSettings repairs memory and prompt injection settings with defaults and clamping", () => {
+  const migrated = repairSettings({ recentMessageLimit: 8 });
+  assert.equal(migrated.memory.enabled, true);
+  assert.equal(migrated.memory.includeInTrackerGeneration, true);
+  assert.equal(migrated.memory.retainCount, 3);
+  assert.equal(migrated.memory.fullSnapshotCount, 3);
+  assert.equal(migrated.memory.maxMemoryChars, 12_000);
+  assert.equal(migrated.memory.source, "hybrid");
+  assert.equal(migrated.injection.enabled, false);
+  assert.equal(migrated.injection.retainCount, 3);
+  assert.equal(migrated.injection.format, "embedded_tag");
+  assert.equal(migrated.injection.injectionPlacement, "append_to_last_assistant");
+
   const settings = repairSettings({
     ...DEFAULT_SETTINGS,
+    memory: {
+      enabled: false,
+      includeInTrackerGeneration: false,
+      retainCount: 999,
+      fullSnapshotCount: -5,
+      compactOlderSnapshots: true,
+      maxMemoryChars: 999999,
+      source: "embedded_tags",
+      excludeTargetMessage: false,
+      order: "newest_to_oldest",
+      requireSamePreset: true,
+      requireSameSwipeWhenAvailable: true,
+    },
     injection: {
       enabled: true,
-      mode: "latest_message_snapshot",
-      format: "minimal",
+      retainCount: 999,
+      format: "compact",
+      injectionPlacement: "system_before_last",
+      includeOnlyIfMissingFromPrompt: false,
+      stripOlderTrackerBlocks: false,
       maxInjectedChars: "999999",
+      roleFallback: "assistant",
       includeHeader: false,
-      includeTimestamp: false,
-      includeSourceMessageId: true,
-      onlyInjectWhenSnapshotExists: false,
+      header: "  Custom Tracker Header  ",
     },
   });
 
+  assert.equal(settings.memory.enabled, false);
+  assert.equal(settings.memory.includeInTrackerGeneration, false);
+  assert.equal(settings.memory.retainCount, 10);
+  assert.equal(settings.memory.fullSnapshotCount, 0);
+  assert.equal(settings.memory.compactOlderSnapshots, true);
+  assert.equal(settings.memory.maxMemoryChars, 50_000);
+  assert.equal(settings.memory.source, "embedded_tags");
+  assert.equal(settings.memory.excludeTargetMessage, false);
+  assert.equal(settings.memory.order, "newest_to_oldest");
+  assert.equal(settings.memory.requireSamePreset, true);
+  assert.equal(settings.memory.requireSameSwipeWhenAvailable, true);
   assert.equal(settings.injection.enabled, true);
-  assert.equal(settings.injection.mode, "latest_message_snapshot");
-  assert.equal(settings.injection.format, "minimal");
-  assert.equal(settings.injection.maxInjectedChars, 20_000);
+  assert.equal(settings.injection.retainCount, 10);
+  assert.equal(settings.injection.format, "compact_text");
+  assert.equal(settings.injection.injectionPlacement, "system_before_last");
+  assert.equal(settings.injection.includeOnlyIfMissingFromPrompt, false);
+  assert.equal(settings.injection.stripOlderTrackerBlocks, false);
+  assert.equal(settings.injection.maxInjectedChars, 50_000);
+  assert.equal(settings.injection.roleFallback, "assistant");
   assert.equal(settings.injection.includeHeader, false);
-  assert.equal(settings.injection.includeTimestamp, false);
-  assert.equal(settings.injection.includeSourceMessageId, true);
-  assert.equal(settings.injection.onlyInjectWhenSnapshotExists, false);
+  assert.equal(settings.injection.header, "Custom Tracker Header");
 
-  const repaired = repairSettings({ injection: { mode: "bad", format: "bad", maxInjectedChars: 10 } });
-  assert.equal(repaired.injection.mode, DEFAULT_SETTINGS.injection.mode);
+  const repaired = repairSettings({ injection: { format: "bad", maxInjectedChars: 10, retainCount: -5 } });
   assert.equal(repaired.injection.format, DEFAULT_SETTINGS.injection.format);
-  assert.equal(repaired.injection.maxInjectedChars, 500);
+  assert.equal(repaired.injection.maxInjectedChars, 1_000);
+  assert.equal(repaired.injection.retainCount, 0);
 });
 
 test("formatSnapshotForInjection renders compact snapshots", () => {
@@ -727,12 +776,12 @@ test("formatSnapshotForInjection renders compact snapshots", () => {
     injection: {
       ...DEFAULT_SETTINGS.injection,
       enabled: true,
-      format: "compact",
+      format: "compact_text",
     },
   });
 
   const text = formatSnapshotForInjection(sampleSnapshot, settings.injection);
-  assert.match(text, /\[LTracker Snapshot\]/);
+  assert.match(text, /\[LTracker Recent State\]/);
   assert.match(text, /Grand Meridian Court/);
   assert.match(text, /Aleister Crowley; Sable Mareth/);
   assert.match(text, /Scholarship packet/);
@@ -744,14 +793,12 @@ test("formatSnapshotForInjection renders pretty JSON with source message ids", (
     injection: {
       ...DEFAULT_SETTINGS.injection,
       enabled: true,
-      mode: "latest_message_snapshot",
       format: "pretty_json",
-      includeSourceMessageId: true,
     },
   });
 
   const text = formatSnapshotForInjection(sampleMessageSnapshot, settings.injection);
-  assert.match(text, /\[LTracker Snapshot JSON\]/);
+  assert.match(text, /\[LTracker Recent State\]/);
   assert.match(text, /Source message: m2/);
   assert.match(text, /"messageId": "m2"/);
   assert.match(text, /"Grand Meridian Court"/);
@@ -768,35 +815,26 @@ test("formatSnapshotForInjection renders minimal snapshots", () => {
   });
 
   const text = formatSnapshotForInjection(sampleSnapshot, settings.injection);
-  assert.match(text, /\[LTracker Mini-State\]/);
+  assert.match(text, /\[LTracker Recent State\]/);
   assert.match(text, /Location: Grand Meridian Court/);
   assert.match(text, /Cast: Aleister Crowley; Sable Mareth/);
   assert.match(text, /Continuity:/);
 });
 
-test("formatSnapshotForInjection strips unsafe control characters and escapes HTML", () => {
-  const snapshot: TrackerSnapshot = {
-    ...sampleSnapshot,
-    presetId: sampleSnapshot.presetId,
-    presetName: sampleSnapshot.presetName,
-    presetVersion: sampleSnapshot.presetVersion,
-    data: {
-      ...sampleSnapshot.data,
-      important_facts: ["<script>alert(1)</script>\u0007"],
-    },
-  };
+test("formatSnapshotForInjection renders embedded tracker tags", () => {
   const settings = repairSettings({
     ...DEFAULT_SETTINGS,
     injection: {
       ...DEFAULT_SETTINGS.injection,
       enabled: true,
+      format: "embedded_tag",
     },
   });
 
-  const text = formatSnapshotForInjection(snapshot, settings.injection);
-  assert.doesNotMatch(text, /<script>/);
-  assert.match(text, /&lt;script&gt;/);
-  assert.doesNotMatch(text, /\u0007/);
+  const text = formatSnapshotForInjection(sampleSnapshot, settings.injection);
+  assert.match(text, /<ltracker type="state">/);
+  assert.match(text, /"Grand Meridian Court"/);
+  assert.match(text, /<\/ltracker>/);
 });
 
 test("truncateSafe respects maxInjectedChars without splitting Unicode code points", () => {
@@ -838,8 +876,7 @@ test("buildInjectionDecision injects message snapshots when selected", () => {
     injection: {
       ...DEFAULT_SETTINGS.injection,
       enabled: true,
-      mode: "latest_message_snapshot",
-      includeSourceMessageId: true,
+      format: "pretty_json",
     },
   });
   const decision = buildInjectionDecision({
@@ -851,6 +888,178 @@ test("buildInjectionDecision injects message snapshots when selected", () => {
   assert.match(decision.text ?? "", /Source message: m2/);
   assert.equal(decision.sourceMessageId, "m2");
   assert.equal(decision.snapshotCreatedAt, sampleSnapshot.createdAt);
+});
+
+function memoryEntry(
+  messageId: string,
+  messageIndex: number,
+  payload: Record<string, unknown>,
+  extras: Partial<TrackerMemoryEntry> = {},
+): TrackerMemoryEntry {
+  return {
+    messageId,
+    messageIndex,
+    swipeKey: extras.swipeKey ?? "index-0",
+    presetId: extras.presetId ?? DEFAULT_TRACKER_PRESET.id,
+    presetName: extras.presetName ?? DEFAULT_TRACKER_PRESET.name,
+    createdAt: extras.createdAt ?? `2003-09-22T16:${String(messageIndex).padStart(2, "0")}:00.000Z`,
+    source: extras.source ?? "sidecar_snapshot",
+    payload,
+    text: extras.text ?? JSON.stringify(payload, null, 2),
+  };
+}
+
+test("tracker memory retains last three, excludes target, dedupes, and sorts oldest to newest", () => {
+  const entries = [
+    memoryEntry("m1", 1, { scene: { location: "One" } }),
+    memoryEntry("m2", 2, { scene: { location: "Two" } }),
+    memoryEntry("m3", 3, { scene: { location: "Three" } }),
+    memoryEntry("m3-dupe", 4, { scene: { location: "Three" } }),
+    memoryEntry("m4", 5, { scene: { location: "Current" } }),
+  ];
+  const result = buildTrackerMemoryResult(entries, DEFAULT_SETTINGS.memory, {
+    targetMessageId: "m4",
+    targetSwipeKey: "index-0",
+    activePreset: DEFAULT_TRACKER_PRESET,
+  });
+  assert.equal(result.entries.length, 3);
+  assert.deepEqual(result.entries.map((entry) => entry.messageId), ["m1", "m2", "m3"]);
+  assert.match(result.renderedText, /Previous tracker states/);
+  assert.match(result.renderedText, /--- 3 turns ago ---/);
+  assert.match(result.renderedText, /--- Most recent ---/);
+  assert.doesNotMatch(result.renderedText, /Current/);
+});
+
+test("tracker memory handles retain zero, sunset, and max char truncation", () => {
+  const entries = [
+    memoryEntry("m1", 1, { scene: { location: "One" } }),
+    memoryEntry("m2", 2, { scene: { location: "Two" } }),
+    memoryEntry("m3", 3, { scene: { location: "Three" }, important_facts: ["x".repeat(2000)] }),
+  ];
+  const none = buildTrackerMemoryResult(entries, { ...DEFAULT_SETTINGS.memory, retainCount: 0 });
+  assert.equal(none.entries.length, 0);
+  assert.equal(none.skippedReason, "Tracker memory retain count is 0.");
+
+  const sunset = buildTrackerMemoryResult(entries, {
+    ...DEFAULT_SETTINGS.memory,
+    retainCount: 3,
+    fullSnapshotCount: 1,
+    maxMemoryChars: 5000,
+  });
+  assert.equal(sunset.entries.length, 1);
+  assert.match(sunset.renderedText, /older tracker snapshots omitted/);
+
+  const truncated = buildTrackerMemoryResult(entries, {
+    ...DEFAULT_SETTINGS.memory,
+    maxMemoryChars: 1000,
+  });
+  assert.equal(truncated.truncated, true);
+  assert.ok(truncated.totalChars <= 1000);
+});
+
+test("buildTrackerPrompt includes prior memory and baseline instructions", () => {
+  const memory = buildTrackerMemoryResult([
+    memoryEntry("m1", 1, { scene: { location: "Old Hall" }, characters_present: ["Ari"] }),
+    memoryEntry("m2", 2, { scene: { location: "New Hall" }, characters_present: ["Ari", "Bea"] }),
+  ], DEFAULT_SETTINGS.memory);
+  const prompt = buildTrackerPrompt("[3 USER Trent]\nThey move to the garden.", DEFAULT_TRACKER_PRESET, memory);
+  const joined = prompt.map((message) => message.content).join("\n");
+  assert.match(joined, /Previous tracker states/);
+  assert.match(joined, /Use the most recent prior tracker state as the baseline/);
+  assert.match(joined, /current transcript wins/i);
+  assert.match(joined, /Recent conversation:/);
+});
+
+test("prompt interceptor disabled returns the original frozen messages unchanged", () => {
+  const frozenMessage = Object.freeze({ role: "user" as const, content: "hello" });
+  const messages = Object.freeze([frozenMessage]);
+  const result = applyPromptInjection({
+    messages,
+    entries: [],
+    settings: DEFAULT_SETTINGS.injection,
+  });
+  assert.equal(result.messages, messages);
+  assert.equal(result.skippedReason, "Prompt injection is disabled.");
+  assert.deepEqual(messages[0], { role: "user", content: "hello" });
+});
+
+test("prompt interceptor clones frozen messages, strips older blocks, and injects retained memory", () => {
+  const settings = repairSettings({
+    ...DEFAULT_SETTINGS,
+    injection: {
+      ...DEFAULT_SETTINGS.injection,
+      enabled: true,
+      retainCount: 1,
+      format: "embedded_tag",
+      stripOlderTrackerBlocks: true,
+      includeOnlyIfMissingFromPrompt: false,
+    },
+  }).injection;
+  const olderBlock = buildLTrackerTag("{\"older\":true}", "index-0");
+  const keptBlock = buildLTrackerTag("{\"kept\":true}", "index-1");
+  const frozenAssistant = Object.freeze({ role: "assistant" as const, content: `reply\n\n${olderBlock}\n\n${keptBlock}` });
+  const messages = Object.freeze([
+    Object.freeze({ role: "user" as const, content: "hello" }),
+    frozenAssistant,
+  ]);
+  const result = applyPromptInjection({
+    messages,
+    entries: [memoryEntry("m2", 2, { scene: { location: "Fresh" } })],
+    settings,
+  });
+  assert.notEqual(result.messages, messages);
+  assert.equal(result.injectedCount, 1);
+  assert.equal(result.strippedCount, 1);
+  assert.equal(countTrackerBlocks(result.messages), 2);
+  assert.match(String(result.messages[1]?.content), /Fresh/);
+  assert.match(String(result.messages[1]?.content), /kept/);
+  assert.doesNotMatch(String(result.messages[1]?.content), /older/);
+  assert.equal(frozenAssistant.content, `reply\n\n${olderBlock}\n\n${keptBlock}`);
+});
+
+test("prompt interceptor skips when enough tracker blocks already exist and catches errors", () => {
+  const settings = repairSettings({
+    ...DEFAULT_SETTINGS,
+    injection: {
+      ...DEFAULT_SETTINGS.injection,
+      enabled: true,
+      retainCount: 1,
+    },
+  }).injection;
+  const existing = [{ role: "assistant" as const, content: buildLTrackerTag("{\"ok\":true}", "index-0") }];
+  const skipped = applyPromptInjection({
+    messages: existing,
+    entries: [memoryEntry("m1", 1, { scene: { location: "Fresh" } })],
+    settings,
+  });
+  assert.equal(skipped.injectedCount, 0);
+  assert.equal(skipped.skippedReason, "Prompt already contains retained tracker blocks.");
+
+  const failed = applyPromptInjection({
+    messages: existing,
+    entries: [],
+    settings,
+    simulateError: true,
+  });
+  assert.equal(failed.messages, existing);
+  assert.equal(failed.error, "Simulated interceptor failure.");
+  assert.equal(failed.skippedReason, "Prompt injection failed safely.");
+});
+
+test("prompt injection supports embedded tag, compact text, pretty JSON, and minimal formats", () => {
+  const entry = memoryEntry("m1", 1, { scene: { location: "Arcade", time: "night" }, characters_present: ["Ari"] });
+  for (const format of ["embedded_tag", "compact_text", "pretty_json", "minimal"] as const) {
+    const settings = repairSettings({
+      ...DEFAULT_SETTINGS,
+      injection: {
+        ...DEFAULT_SETTINGS.injection,
+        enabled: true,
+        format,
+      },
+    }).injection;
+    const text = formatTrackerInjectionBlock([entry], settings);
+    assert.match(text, /Arcade/);
+  }
 });
 
 test("context injection helper skips internal tracker generation", () => {
@@ -1630,7 +1839,7 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
 
 test("context handler hotfix is disabled by default", () => {
   assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
-  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.13/);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.14|remains disabled in 0\.14/);
 });
 
 test("context handler guard never mutates a frozen context object when disabled", async () => {
@@ -1743,6 +1952,13 @@ test("backend tracker generation uses the shared connection helper", () => {
   assert.match(backend, /lastReasoningOverrideUsed: generation\.requestDiagnostics\.reasoningOverrideUsed/);
 });
 
+test("backend tracker generation uses tracker memory before prompt building", () => {
+  const backend = readFileSync("src/backend.ts", "utf8");
+  assert.match(backend, /async function generateTracker[\s\S]*const memory = settings\.memory\.enabled/);
+  assert.match(backend, /async function generateTracker[\s\S]*collectTrackerMemory\(resolvedChatId, userId, settings, presetState\.activePreset, trigger\)/);
+  assert.match(backend, /async function generateTracker[\s\S]*buildTrackerPrompt\([\s\S]*memory\.renderedText \? memory : null/);
+});
+
 test("connection test path does not mutate tracker snapshots or chat tags", () => {
   const backend = readFileSync("src/backend.ts", "utf8");
   const match = /async function testTrackerConnection[\s\S]*?\n}\n\nasync function cancelConnectionTest/.exec(backend);
@@ -1797,14 +2013,31 @@ test("README settings reference covers the major setting groups", () => {
     "connection.reasoning.effort",
     "connection.reasoning.thinkingDisplay",
     "connection.testPrompt",
+    "Tracker Memory",
+    "memory.enabled",
+    "memory.includeInTrackerGeneration",
+    "memory.retainCount",
+    "memory.fullSnapshotCount",
+    "memory.compactOlderSnapshots",
+    "memory.maxMemoryChars",
+    "memory.source",
+    "memory.excludeTargetMessage",
+    "memory.order",
+    "memory.requireSamePreset",
+    "memory.requireSameSwipeWhenAvailable",
+    "Safe Prompt Injection",
+    "spindle.registerInterceptor",
+    "context_handler",
     "injection.enabled",
-    "injection.mode",
+    "injection.retainCount",
     "injection.format",
+    "injection.injectionPlacement",
+    "injection.includeOnlyIfMissingFromPrompt",
+    "injection.stripOlderTrackerBlocks",
     "injection.maxInjectedChars",
+    "injection.roleFallback",
     "injection.includeHeader",
-    "injection.includeTimestamp",
-    "injection.includeSourceMessageId",
-    "injection.onlyInjectWhenSnapshotExists",
+    "injection.header",
     "renderer.enabled",
     "renderer.previewSource",
     "renderer.missingValuePlaceholder",
@@ -1841,7 +2074,7 @@ test("README settings reference covers the major setting groups", () => {
     "messageDisplay.maxRenderedChars",
     "debounce",
     "missing value placeholder",
-    "include header",
+    "includeHeader",
     "compact",
     "minimal",
     "pretty_json",
@@ -1862,11 +2095,12 @@ test("README settings reference covers the major setting groups", () => {
     "Default: Trusted Preset Mode",
     "Safe Mode",
     "Dev Mode",
-    "0.14 Power Template Engine",
-    "0.15 Dev Mode Templates",
-    "0.16 Sequential + Partial Regeneration",
-    "0.17 Cleanup / Repair / Pending Fields",
-    "0.18 World Books, Character Exclusions, Import/Export Polish",
+    "0.15 Auto Timing + Drawer UX Overhaul",
+    "0.16 Power Template Engine",
+    "0.17 Dev Mode Templates",
+    "0.18 Sequential + Partial Regeneration",
+    "0.19 Cleanup / Repair / Pending Fields",
+    "0.20 World Books, Character Exclusions, Import/Export Polish",
   ]) {
     assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
@@ -1886,7 +2120,7 @@ test("drawer UI keeps detailed setting explanations out of the app surface", () 
   assert.doesNotMatch(frontend, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(frontend, /MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON/);
-  assert.match(frontend, /Context handler injection is disabled in 0\.13/);
+  assert.match(frontend, /Context handler injection remains disabled in 0\.14/);
   assert.match(frontend, /registerTagInterceptor/);
   assert.match(frontend, /data-settings-save-status/);
   assert.match(frontend, /saveSettings\("settings-auto"\)/);

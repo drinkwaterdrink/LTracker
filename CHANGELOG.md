@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14 - Tracker memory and safe prompt injection
+- Added tracker memory settings for retaining recent prior tracker snapshots.
+- Added default last-3 tracker memory for tracker generation.
+- Added sunset controls for full prior snapshots and future compact older memory.
+- Updated tracker prompt building so prior tracker states can be used as baseline memory.
+- Added instructions to mutate from the most recent prior tracker state while preserving stable unchanged fields.
+- Added safe interceptor-based normal prompt injection, separate from disabled context-handler injection.
+- Added retained tracker block stripping and backfill from sidecar/embedded tracker history.
+- Added compact, minimal, pretty JSON, and embedded-tag injection formats.
+- Added memory and interceptor diagnostics.
+- Added frozen-object regression tests to avoid readonly host object mutation.
+- Updated README to distinguish Tracker Memory from normal Prompt Injection.
+
 ## 0.13 - Connection settings
 - Added tracker connection settings with active/default, selected quiet, and selected raw generation modes.
 - Added connection profile listing, refresh, and selected profile storage.

@@ -1,6 +1,6 @@
 # LTracker
 
-Version: `0.13`
+Version: `0.14`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -15,6 +15,7 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Saves the latest per-chat tracker snapshot in user extension storage.
 - Supports manual tracker generation from the drawer or input-bar action.
 - Supports Auto Mode after assistant completions, including swipe/regenerate events when Lumiverse reports them.
+- Includes recent prior tracker snapshots as tracker-generation memory, using the most recent prior state as the baseline.
 - Stores message-attached tracker snapshots keyed by exact message id and selected swipe key.
 - Maintains a message snapshot index at `chats/{chatId}/message-snapshots/index.json`.
 - Renders sanitized tracker HTML previews in the drawer.
@@ -25,7 +26,7 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Preserves sandboxed iframe message widgets as a fallback.
 - Supports optional embedded `<ltracker type="state">` tags in assistant message swipes, hidden by a Lumiverse tag interceptor and rendered from the intercepted exact payload.
 - Autosaves settings changes from the drawer; Reset Settings remains explicit.
-- Keeps prompt injection settings saved, but context-handler injection remains disabled in `0.13`.
+- Supports optional safe normal prompt injection through `spindle.registerInterceptor()`, disabled by default.
 
 ## Message Display
 
@@ -108,9 +109,26 @@ LTracker writes user-scoped extension storage only:
 - Settings: `settings.json`
 - Preset index and presets: `presets/index.json` and `presets/{presetId}.json`
 
-## Context Handler Injection
+## Tracker Memory
 
-Prompt injection is disabled in `0.13`. The `context_handler` permission remains absent from `spindle.json`, and LTracker does not call `spindle.registerContextHandler()`.
+Tracker generation now uses prior tracker snapshots as baseline memory. By default, LTracker includes the last 3 prior tracker states, ordered oldest to newest, before the recent conversation transcript.
+
+The tracker prompt tells the model to mutate from the most recent prior tracker state while preserving stable unchanged fields. The current transcript still wins over prior memory when they conflict.
+
+The sunset policy is simple in `0.14`: `retainCount` controls how many prior snapshots are considered, `fullSnapshotCount` controls how many most-recent snapshots are included in full, and older snapshots are omitted unless compact older snapshots is enabled.
+
+Recommended start: Tracker Memory on, include last 3, full snapshot count 3, normal Prompt Injection off until tested.
+
+## Safe Prompt Injection
+
+Normal prompt injection is separate from Tracker Memory:
+
+- Tracker Memory affects tracker generation.
+- Prompt Injection affects normal roleplay generation.
+
+Prompt Injection uses the Lumiverse interceptor path, not `context_handler`. The `context_handler` permission remains absent from `spindle.json`, and LTracker does not call `spindle.registerContextHandler()`.
+
+The interceptor treats host messages as readonly, clones message objects before editing, strips older `<ltracker>` blocks when configured, and returns the original prompt unchanged on errors or timeout. It never runs LLM generation inside the interceptor.
 
 ## Template Capability Model
 
@@ -158,7 +176,7 @@ Settings are stored in per-user extension storage at `settings.json` and repaire
 
 ### Tracker Connection Settings
 
-LTracker 0.13 can use a dedicated tracker connection/profile instead of always using the active roleplay connection. API keys are never exposed to the extension, never displayed, and never stored; LTracker stores only the selected connection id and display name.
+LTracker 0.14 can use a dedicated tracker connection/profile instead of always using the active roleplay connection. API keys are never exposed to the extension, never displayed, and never stored; LTracker stores only the selected connection id and display name.
 
 Connection modes:
 
@@ -188,20 +206,40 @@ If a selected connection is missing, stale, or not selected, LTracker falls back
 | `connection.reasoning.thinkingDisplay` | `auto` | Custom thinking display preference. | Use summarized for inspectable reasoning where supported. | Use omitted for cleaner responses. | Display support is provider-dependent. |
 | `connection.testPrompt` | compact JSON test prompt | Prompt used by `Test Tracker Connection`. | Customize while debugging provider behavior. | Keep default for quick smoke tests. | Long prompts make the test less tiny. |
 
-### Prompt Injection
+### Tracker Memory
 
-Prompt injection is disabled in `0.13` unless a later version safely re-enables context-handler registration.
+Tracker Memory feeds prior tracker snapshots into the tracker-generation prompt. It does not affect normal roleplay generations by itself.
 
 | Setting | Default | What it does | When to increase or enable | When to decrease or disable | Tradeoff |
 | --- | --- | --- | --- | --- | --- |
-| `injection.enabled` | `false` | User preference for cached tracker injection. In `0.13`, it is saved but inactive. | Enable only for future testing after context injection is restored. | Keep disabled for normal `0.13` use. | Stored preference is ready for later, but it does nothing now. |
-| `injection.mode` | `latest_chat_snapshot` | Chooses latest chat snapshot or latest message-attached snapshot as injection source. | Use message-attached snapshot when per-response state matters. | Use latest chat snapshot for broad current-state summaries. | Exact message state is precise; chat-wide state is simpler. |
-| `injection.format` | `compact` | Chooses `compact`, `minimal`, or `pretty_json` text. | Use `pretty_json` for debugging; use `compact` for readable continuity. | Use `minimal` to save context if injection returns later. | Richer formats are easier to inspect but consume more prompt space. |
-| `injection.maxInjectedChars` | `3000` | Character cap for injected text. | Increase if compact state is being truncated. | Decrease to reduce context size. | More injected state can help continuity but competes with chat context. |
-| `injection.includeHeader` | `true` | Adds an include header label like `[LTracker Snapshot]`. | Enable to make injected text easy to identify. | Disable to save a few tokens. | A header improves clarity but adds small overhead. |
-| `injection.includeTimestamp` | `true` | Adds snapshot timestamp. | Enable when freshness matters. | Disable to shorten output. | Freshness context costs a little text. |
-| `injection.includeSourceMessageId` | `false` | Adds source message id for message snapshots. | Enable for debugging attachment timing. | Disable for cleaner prompt text. | Debug precision adds technical clutter. |
-| `injection.onlyInjectWhenSnapshotExists` | `true` | Avoids empty placeholder injection when no snapshot exists. | Keep enabled for clean prompts. | Disable only if a future placeholder workflow needs it. | Clean prompts omit missing state, while placeholders can make absence explicit. |
+| `memory.enabled` | `true` | Turns tracker memory collection on or off. | Keep enabled for stable tracker continuity. | Disable when testing fresh extraction with no prior state. | Memory improves continuity but adds prompt context. |
+| `memory.includeInTrackerGeneration` | `true` | Adds the rendered memory block to tracker-generation prompts. | Keep enabled for baseline mutation behavior. | Disable to collect previews without prompting with memory. | Useful control while debugging prompts. |
+| `memory.retainCount` | `3` | Total prior tracker snapshots considered. | Increase for slow-moving scenes. | Set to `0` to include no memory. | More retained state can help continuity but costs context. |
+| `memory.fullSnapshotCount` | `3` | Number of most recent retained snapshots included in full. | Increase for complex schemas. | Decrease to sunset older snapshots faster. | Full snapshots are precise but larger. |
+| `memory.compactOlderSnapshots` | `false` | Includes compact one-line older entries beyond the full snapshot count. | Enable after testing if longer memory helps. | Keep disabled for clean last-3 behavior. | Compact older memory is smaller but less complete. |
+| `memory.maxMemoryChars` | `12000` | Character cap for the rendered memory block. | Increase for large schemas. | Decrease if tracker prompts get too large. | Higher caps preserve detail but compete with transcript context. |
+| `memory.source` | `hybrid` | Chooses sidecar index, embedded tags, message-history scan, or hybrid. | Use hybrid for best recovery. | Use sidecar only for storage-first behavior. | Hybrid is resilient but does more lookup work. |
+| `memory.excludeTargetMessage` | `true` | Prevents the tracker currently being generated from becoming its own prior memory. | Keep enabled for per-message regeneration. | Disable only for debugging collection behavior. | Safer lineage may omit same-message alternate data. |
+| `memory.order` | `oldest_to_newest` | Orders retained memory. | Keep oldest-to-newest for progression. | Use newest-to-oldest only for experiments. | Oldest-to-newest mirrors the prompt baseline flow. |
+| `memory.requireSamePreset` | `false` | Uses only memory generated by the current preset. | Enable when switching incompatible schemas. | Disable for broader continuity. | Same-preset memory is cleaner but may omit useful history. |
+| `memory.requireSameSwipeWhenAvailable` | `false` | Prefers same-swipe lineage when entries exist. | Enable while debugging exact swipe state. | Keep disabled for normal cross-turn continuity. | Same-swipe filtering can be too narrow. |
+
+### Prompt Injection
+
+Prompt Injection is optional and disabled by default. It uses `spindle.registerInterceptor()` and never the old context-handler path.
+
+| Setting | Default | What it does | When to increase or enable | When to decrease or disable | Tradeoff |
+| --- | --- | --- | --- | --- | --- |
+| `injection.enabled` | `false` | Enables normal roleplay prompt injection through the interceptor. | Enable only after testing memory previews. | Keep disabled if tracker generation memory is enough. | Injection can improve roleplay continuity but changes normal prompt context. |
+| `injection.retainCount` | `3` | Number of recent tracker blocks to inject or retain. | Increase for broader roleplay continuity. | Set to `0` to strip only, if stripping is enabled. | More injected state costs context. |
+| `injection.format` | `embedded_tag` | Chooses `embedded_tag`, `compact_text`, `pretty_json`, or `minimal`. | Use embedded tags for structural continuity; use pretty JSON for debugging. | Use minimal to save prompt space. | Richer formats are clearer but larger. |
+| `injection.injectionPlacement` | `append_to_last_assistant` | Chooses append-to-assistant or system-message fallback placement. | Keep append-to-assistant for SimTracker-like behavior. | Use system placement if assistant appends confuse a provider. | Placement can affect prompt interpretation. |
+| `injection.includeOnlyIfMissingFromPrompt` | `true` | Skips backfill when enough tracker blocks are already present. | Keep enabled to avoid duplicates. | Disable only for testing forced injection. | Duplicate avoidance makes prompts cleaner. |
+| `injection.stripOlderTrackerBlocks` | `true` | Removes older `<ltracker>` blocks beyond retain count. | Keep enabled for context control. | Disable if you need to inspect all existing blocks. | Stripping prevents old state from crowding prompts. |
+| `injection.maxInjectedChars` | `12000` | Character cap for injected tracker text. | Increase for large schemas. | Decrease for smaller prompts. | Higher caps preserve detail but compete with chat context. |
+| `injection.roleFallback` | `system` | Role used when LTracker cannot append to an assistant message. | Keep system for explicit state blocks. | Use assistant only for provider experiments. | Role fallback changes prompt semantics. |
+| `injection.includeHeader` | `true` | Adds a header before injected tracker blocks. | Keep enabled for Prompt Breakdown clarity. | Disable to save a few tokens. | Headers are readable but slightly larger. |
+| `injection.header` | `LTracker Recent State` | Header label for injected blocks and preview. | Customize for debugging. | Keep default for consistent diagnostics. | Custom labels are cosmetic. |
 
 ### Renderer
 
@@ -251,7 +289,9 @@ The drawer renderer is separate from message display.
 
 ## Diagnostics
 
-v0.13 adds connection diagnostics for profile refresh, selected connection availability, generation mode used, fallback reason, tracker parameters, reasoning override, and connection test status. Message-control diagnostics still track the last compact-control render, exact message/swipe key, control state, generate-button click, inline action, native toolbar support, and native toolbar fallback reason.
+v0.14 keeps connection diagnostics for profile refresh, selected connection availability, generation mode used, fallback reason, tracker parameters, reasoning override, and connection test status. It also adds tracker memory diagnostics for memory count, character count, truncation, source summary, skipped reason, and whether the last tracker prompt included memory.
+
+Interceptor diagnostics track registration state, last interceptor time, injected count/chars, stripped count, skipped reason, error, and tracker block counts before/after prompt injection. Message-control diagnostics still track the last compact-control render, exact message/swipe key, control state, generate-button click, inline action, native toolbar support, and native toolbar fallback reason.
 
 ## Install And Development
 
@@ -269,12 +309,13 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 | `generation` | Calls `spindle.generate.quiet()` for tracker extraction and listens for generation-completed events. | Generate requests show a clear missing-permission error; auto assistant triggers cannot run. |
 | `chats` | Resolves the user's active chat through `spindle.chats.getActive()` when the frontend does not supply one. | Generate requests fall back to the frontend-supplied chat id or show a clear missing-permission error. |
 | `chat_mutation` | Reads chat messages through `spindle.chat.getMessages()` and calls `spindle.chat.updateMessage()` only for embedded tracker tag writes/removals. | Generate requests show a clear missing-permission error; embedded tracker tag mode cannot update message swipes. |
+| `interceptor` | Registers safe normal prompt injection with `spindle.registerInterceptor()`. | Tracker Memory still works; normal prompt injection remains unavailable. |
 
 Drawer tabs, input-bar actions, message-targeted DOM injection, message widgets, frontend/backend messaging, logging, toasts, and user storage are free-tier or frontend surfaces in the inspected `lumiverse-spindle-types@0.5.21` API.
 
 ## Known Limitations
 
-- Context-handler prompt injection is disabled in `0.13` to protect normal Lumiverse generation.
+- Context-handler prompt injection remains disabled in `0.14`; safe prompt injection uses the interceptor path instead.
 - Sequential generation, partial regeneration, cleanup/repair mode, World Books, Memory Cortex, character-card context, and TOON/XML/native transform modes are future phases.
 - DOM injection only attaches immediately to mounted message bubbles; iframe fallback and drawer history cover unavailable bubbles.
 - There is no official per-message toolbar slot in the inspected docs/types, so LTracker uses the safe in-message control pill fallback.
@@ -283,12 +324,13 @@ Drawer tabs, input-bar actions, message-targeted DOM injection, message widgets,
 
 ## Roadmap
 
-1. `0.14 Power Template Engine`
-2. `0.15 Dev Mode Templates`
-3. `0.16 Sequential + Partial Regeneration`
-4. `0.17 Cleanup / Repair / Pending Fields`
-5. `0.18 World Books, Character Exclusions, Import/Export Polish`
+1. `0.15 Auto Timing + Drawer UX Overhaul`
+2. `0.16 Power Template Engine`
+3. `0.17 Dev Mode Templates`
+4. `0.18 Sequential + Partial Regeneration`
+5. `0.19 Cleanup / Repair / Pending Fields`
+6. `0.20 World Books, Character Exclusions, Import/Export Polish`
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.13`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.14`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

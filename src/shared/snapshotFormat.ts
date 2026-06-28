@@ -142,11 +142,11 @@ function fallbackSummary(data: Record<string, unknown>): string {
 function metadataLines(
   snapshot: TrackerSnapshot,
   sourceMessageId: string | null,
-  settings: LTrackerInjectionSettings,
+  _settings: LTrackerInjectionSettings,
 ): string[] {
   const lines: string[] = [];
-  if (settings.includeTimestamp) lines.push(`Generated: ${snapshot.createdAt}`);
-  if (settings.includeSourceMessageId && sourceMessageId) lines.push(`Source message: ${sourceMessageId}`);
+  lines.push(`Generated: ${snapshot.createdAt}`);
+  if (sourceMessageId) lines.push(`Source message: ${sourceMessageId}`);
   return lines;
 }
 
@@ -156,7 +156,7 @@ function formatCompact(
   settings: LTrackerInjectionSettings,
 ): string {
   const lines: string[] = [];
-  if (settings.includeHeader) lines.push("[LTracker Snapshot]");
+  if (settings.includeHeader) lines.push(`[${settings.header || "LTracker Snapshot"}]`);
   lines.push(...metadataLines(snapshot, sourceMessageId, settings));
 
   const scene = sceneLine(snapshot.data);
@@ -203,7 +203,7 @@ function formatPrettyJson(
         data: snapshot.data,
       };
   const lines: string[] = [];
-  if (settings.includeHeader) lines.push("[LTracker Snapshot JSON]");
+  if (settings.includeHeader) lines.push(`[${settings.header || "LTracker Snapshot JSON"}]`);
   lines.push(...metadataLines(snapshot, sourceMessageId, settings));
   lines.push(JSON.stringify(payload, null, 2));
   return lines.join("\n");
@@ -215,7 +215,7 @@ function formatMinimal(
   settings: LTrackerInjectionSettings,
 ): string {
   const lines: string[] = [];
-  if (settings.includeHeader) lines.push("[LTracker Mini-State]");
+  if (settings.includeHeader) lines.push(`[${settings.header || "LTracker Mini-State"}]`);
   lines.push(...metadataLines(snapshot, sourceMessageId, settings));
   lines.push(`Location: ${stringAt(snapshot.data, ["scene", "location"]) ?? "Unknown"}`);
   const cast = characterNames(snapshot.data);
@@ -233,10 +233,12 @@ export function formatSnapshotForInjection(
   settings: LTrackerInjectionSettings,
 ): string {
   const { snapshot, sourceMessageId } = normalizeSnapshot(source);
-  const raw = settings.format === "pretty_json"
-    ? formatPrettyJson(source, snapshot, sourceMessageId, settings)
-    : settings.format === "minimal"
-      ? formatMinimal(snapshot, sourceMessageId, settings)
-      : formatCompact(snapshot, sourceMessageId, settings);
-  return truncateSafe(sanitizePromptText(raw), settings.maxInjectedChars);
+  const raw = settings.format === "embedded_tag"
+    ? `<ltracker type="state">\n${JSON.stringify(snapshot.data, null, 2)}\n</ltracker>`
+    : settings.format === "pretty_json"
+      ? formatPrettyJson(source, snapshot, sourceMessageId, settings)
+      : settings.format === "minimal"
+        ? formatMinimal(snapshot, sourceMessageId, settings)
+        : formatCompact(snapshot, sourceMessageId, settings);
+  return truncateSafe(raw, settings.maxInjectedChars);
 }

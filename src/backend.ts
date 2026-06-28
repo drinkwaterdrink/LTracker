@@ -3,6 +3,7 @@ import type {
   ConnectionProfileDTO,
   GenerationEndedPayloadDTO,
   GenerationRequestDTO,
+  InterceptorResultDTO,
   LlmMessageDTO,
   SpindleAPI,
 } from "lumiverse-spindle-types";
@@ -21,6 +22,7 @@ import {
   runContextHandlerFailSafe,
 } from "./shared/contextHandlerRuntime";
 import {
+  findLTrackerTags,
   removeLTrackerTag,
   upsertLTrackerTag,
 } from "./shared/embeddedTrackerTag";
@@ -62,6 +64,11 @@ import {
   repairSettings,
 } from "./shared/settings";
 import {
+  applyPromptInjection,
+  formatTrackerInjectionBlock,
+  type PromptInjectionMessage,
+} from "./shared/promptInjection";
+import {
   activePresetPath,
   diagnosticsPath,
   legacyMessageSnapshotPath,
@@ -76,6 +83,13 @@ import {
   buildCompactTranscript,
   buildTrackerPrompt,
 } from "./shared/trackerPrompt";
+import {
+  buildTrackerMemoryResult,
+  memoryOptionsFromTrigger,
+  trackerMemorySourceSummary,
+  type TrackerMemoryEntry,
+  type TrackerMemoryResult,
+} from "./shared/trackerMemory";
 import {
   buildTrackerGenerationRequest,
   TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
@@ -205,6 +219,7 @@ const usersByChat = new Map<string, Set<string>>();
 const eventCleanups: Array<() => void> = [];
 let autoSubscriptionsActive = false;
 let contextHandlerRegistered = false;
+let interceptorRegistered = false;
 let internalTrackerGenerationDepth = 0;
 let disposed = false;
 
@@ -352,6 +367,7 @@ function permissionState(): PermissionState {
     chats: spindle.permissions.has("chats"),
     chatMutation: spindle.permissions.has("chat_mutation"),
     contextHandler: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED && spindle.permissions.has("context_handler"),
+    interceptor: spindle.permissions.has("interceptor"),
   };
 }
 
@@ -402,6 +418,21 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastInjectionSkippedReason: null,
     lastInjectionSnapshotCreatedAt: null,
     lastInjectionSourceMessageId: null,
+    lastMemoryEntryCount: 0,
+    lastMemoryChars: 0,
+    lastMemoryTruncated: false,
+    lastMemorySourceSummary: null,
+    lastMemorySkippedReason: null,
+    lastPromptIncludedMemory: false,
+    interceptorRegistered,
+    lastInterceptorAt: null,
+    lastInterceptorInjectedCount: 0,
+    lastInterceptorInjectedChars: 0,
+    lastInterceptorStrippedCount: 0,
+    lastInterceptorSkippedReason: null,
+    lastInterceptorError: null,
+    lastInterceptorPromptTrackerCountBefore: 0,
+    lastInterceptorPromptTrackerCountAfter: 0,
     selectedPresetId: null,
     selectedPresetName: null,
     lastPresetFallbackReason: null,
@@ -533,7 +564,7 @@ function injectionModeOrNull(value: unknown): LTrackerInjectionMode | null {
 }
 
 function injectionFormatOrNull(value: unknown): LTrackerInjectionFormat | null {
-  return value === "compact" || value === "pretty_json" || value === "minimal" ? value : null;
+  return value === "embedded_tag" || value === "compact_text" || value === "pretty_json" || value === "minimal" ? value : null;
 }
 
 function renderSourceOrNull(value: unknown): LTrackerRenderSource | null {
@@ -683,6 +714,35 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastInjectionSkippedReason: stringOrNull(value.lastInjectionSkippedReason),
     lastInjectionSnapshotCreatedAt: stringOrNull(value.lastInjectionSnapshotCreatedAt),
     lastInjectionSourceMessageId: stringOrNull(value.lastInjectionSourceMessageId),
+    lastMemoryEntryCount: typeof value.lastMemoryEntryCount === "number" && Number.isFinite(value.lastMemoryEntryCount)
+      ? Math.max(0, Math.round(value.lastMemoryEntryCount))
+      : 0,
+    lastMemoryChars: typeof value.lastMemoryChars === "number" && Number.isFinite(value.lastMemoryChars)
+      ? Math.max(0, Math.round(value.lastMemoryChars))
+      : 0,
+    lastMemoryTruncated: typeof value.lastMemoryTruncated === "boolean" ? value.lastMemoryTruncated : false,
+    lastMemorySourceSummary: stringOrNull(value.lastMemorySourceSummary),
+    lastMemorySkippedReason: stringOrNull(value.lastMemorySkippedReason),
+    lastPromptIncludedMemory: typeof value.lastPromptIncludedMemory === "boolean" ? value.lastPromptIncludedMemory : false,
+    interceptorRegistered,
+    lastInterceptorAt: stringOrNull(value.lastInterceptorAt),
+    lastInterceptorInjectedCount: typeof value.lastInterceptorInjectedCount === "number" && Number.isFinite(value.lastInterceptorInjectedCount)
+      ? Math.max(0, Math.round(value.lastInterceptorInjectedCount))
+      : 0,
+    lastInterceptorInjectedChars: typeof value.lastInterceptorInjectedChars === "number" && Number.isFinite(value.lastInterceptorInjectedChars)
+      ? Math.max(0, Math.round(value.lastInterceptorInjectedChars))
+      : 0,
+    lastInterceptorStrippedCount: typeof value.lastInterceptorStrippedCount === "number" && Number.isFinite(value.lastInterceptorStrippedCount)
+      ? Math.max(0, Math.round(value.lastInterceptorStrippedCount))
+      : 0,
+    lastInterceptorSkippedReason: stringOrNull(value.lastInterceptorSkippedReason),
+    lastInterceptorError: stringOrNull(value.lastInterceptorError),
+    lastInterceptorPromptTrackerCountBefore: typeof value.lastInterceptorPromptTrackerCountBefore === "number" && Number.isFinite(value.lastInterceptorPromptTrackerCountBefore)
+      ? Math.max(0, Math.round(value.lastInterceptorPromptTrackerCountBefore))
+      : 0,
+    lastInterceptorPromptTrackerCountAfter: typeof value.lastInterceptorPromptTrackerCountAfter === "number" && Number.isFinite(value.lastInterceptorPromptTrackerCountAfter)
+      ? Math.max(0, Math.round(value.lastInterceptorPromptTrackerCountAfter))
+      : 0,
     selectedPresetId: stringOrNull(value.selectedPresetId),
     selectedPresetName: stringOrNull(value.selectedPresetName),
     lastPresetFallbackReason: stringOrNull(value.lastPresetFallbackReason),
@@ -998,6 +1058,147 @@ async function saveMessageSnapshotIndex(
   });
 }
 
+function messageIndexFromChatMessage(message: ChatMessageDTO): number | null {
+  return typeof message.index_in_chat === "number" && Number.isFinite(message.index_in_chat)
+    ? Math.max(0, Math.round(message.index_in_chat))
+    : null;
+}
+
+function trackerPayloadText(payload: Record<string, unknown>): string {
+  return JSON.stringify(payload, null, 2);
+}
+
+function memoryEntryFromAttachedSnapshot(
+  snapshot: MessageAttachedSnapshot,
+  source: TrackerMemoryEntry["source"] = "sidecar_snapshot",
+): TrackerMemoryEntry {
+  return {
+    messageId: snapshot.messageId,
+    messageIndex: snapshot.messageIndex,
+    swipeKey: snapshot.swipeKey,
+    presetId: snapshot.presetId ?? snapshot.snapshot.presetId,
+    presetName: snapshot.presetName ?? snapshot.snapshot.presetName,
+    createdAt: snapshot.snapshot.createdAt || snapshot.attachedAt,
+    source,
+    payload: snapshot.snapshot.data,
+    text: trackerPayloadText(snapshot.snapshot.data),
+  };
+}
+
+function memoryEntryFromChatSnapshot(snapshot: TrackerSnapshot): TrackerMemoryEntry {
+  return {
+    messageId: null,
+    messageIndex: null,
+    swipeKey: null,
+    presetId: snapshot.presetId,
+    presetName: snapshot.presetName,
+    createdAt: snapshot.createdAt,
+    source: "latest_chat_snapshot",
+    payload: snapshot.data,
+    text: trackerPayloadText(snapshot.data),
+  };
+}
+
+function parseEmbeddedMemoryEntriesFromContent(
+  content: string,
+  message: ChatMessageDTO,
+  source: TrackerMemoryEntry["source"],
+): TrackerMemoryEntry[] {
+  const tags = findLTrackerTags(content);
+  const entries: TrackerMemoryEntry[] = [];
+  for (const tag of tags) {
+    try {
+      const payload = parseTrackerJson(tag.content);
+      entries.push({
+        messageId: message.id,
+        messageIndex: messageIndexFromChatMessage(message),
+        swipeKey: tag.attrs.swipe || null,
+        presetId: null,
+        presetName: null,
+        createdAt: nowIso(),
+        source,
+        payload,
+        text: trackerPayloadText(payload),
+      });
+    } catch {
+      // Ignore malformed embedded tags during memory collection.
+    }
+  }
+  return entries;
+}
+
+async function embeddedMemoryEntriesFromMessages(
+  chatId: string,
+  settings: LTrackerSettings,
+): Promise<TrackerMemoryEntry[]> {
+  if (
+    settings.memory.source !== "hybrid"
+    && settings.memory.source !== "embedded_tags"
+    && settings.memory.source !== "message_history"
+  ) return [];
+  const messages = await readChatMessages(chatId).catch(() => []);
+  const source: TrackerMemoryEntry["source"] = settings.memory.source === "message_history"
+    ? "history_scan"
+    : "embedded_tag";
+  const entries: TrackerMemoryEntry[] = [];
+  for (const message of messages.slice(-Math.max(settings.recentMessageLimit, 24))) {
+    if (typeof message.content === "string") {
+      entries.push(...parseEmbeddedMemoryEntriesFromContent(message.content, message, source));
+    }
+    const swipes = Array.isArray(message.swipes) ? message.swipes : [];
+    for (const swipeContent of swipes) {
+      if (typeof swipeContent !== "string" || swipeContent === message.content) continue;
+      entries.push(...parseEmbeddedMemoryEntriesFromContent(swipeContent, message, source));
+    }
+  }
+  return entries;
+}
+
+async function sidecarMemoryEntriesFromIndex(
+  chatId: string,
+  userId: string,
+  index: MessageSnapshotIndexEntry[],
+): Promise<TrackerMemoryEntry[]> {
+  const entries: TrackerMemoryEntry[] = [];
+  for (const indexEntry of index) {
+    const attached = await loadMessageSnapshot(chatId, indexEntry.messageId, userId, indexEntry.swipeKey);
+    if (!attached) continue;
+    entries.push(memoryEntryFromAttachedSnapshot(attached));
+  }
+  return entries;
+}
+
+async function collectTrackerMemory(
+  chatId: string,
+  userId: string,
+  settings: LTrackerSettings,
+  activePreset: TrackerSchemaPreset,
+  trigger?: TrackerTriggerSource,
+): Promise<TrackerMemoryResult> {
+  if (!settings.memory.enabled || settings.memory.retainCount <= 0) {
+    return buildTrackerMemoryResult([], settings.memory, trigger
+      ? memoryOptionsFromTrigger(trigger, activePreset)
+      : { activePreset });
+  }
+
+  const entries: TrackerMemoryEntry[] = [];
+  const index = await loadMessageSnapshotIndex(chatId, userId);
+  if (settings.memory.source === "hybrid" || settings.memory.source === "sidecar_index") {
+    entries.push(...await sidecarMemoryEntriesFromIndex(chatId, userId, index));
+  }
+  if (settings.memory.source === "hybrid" || settings.memory.source === "embedded_tags" || settings.memory.source === "message_history") {
+    entries.push(...await embeddedMemoryEntriesFromMessages(chatId, settings));
+  }
+  if (entries.length === 0 && (settings.memory.source === "hybrid" || settings.memory.source === "sidecar_index")) {
+    const latestSnapshot = await loadSnapshot(chatId, userId);
+    if (latestSnapshot) entries.push(memoryEntryFromChatSnapshot(latestSnapshot));
+  }
+
+  return buildTrackerMemoryResult(entries, settings.memory, trigger
+    ? memoryOptionsFromTrigger(trigger, activePreset)
+    : { activePreset });
+}
+
 function chatJobKey(chatId: string): string {
   return `chat:${chatId}`;
 }
@@ -1300,13 +1501,15 @@ async function buildState(
     : 0;
   const placement = resolveMessageWidgetPlacement(settings.messageDisplay.placement, settings);
   const activeWidgetRegenerationCount = Object.keys(activeWidgetJobs).length;
-  const injectionPreview = CONTEXT_HANDLER_EXPERIMENTAL_ENABLED
-    ? buildInjectionDecision({
-        settings,
-        chatSnapshot: snapshot,
-        messageSnapshot: latestMessageSnapshot,
-        internalTrackerGeneration: false,
-      }).text
+  const memoryPreviewResult = chatId
+    ? await collectTrackerMemory(chatId, userId, settings, presetState.activePreset).catch((error: unknown) => {
+        spindle.log.warn(`LTracker could not build tracker memory preview: ${errorMessage(error)}`);
+        return null;
+      })
+    : null;
+  const memoryPreview = memoryPreviewResult?.renderedText.trim() ? memoryPreviewResult.renderedText : null;
+  const injectionPreview = memoryPreviewResult?.entries.length
+    ? formatTrackerInjectionBlock(memoryPreviewResult.entries, settings.injection)
     : null;
   const stateError = error ?? diagnostics.lastError;
   return {
@@ -1315,6 +1518,7 @@ async function buildState(
     chatId,
     snapshot,
     latestMessageSnapshot,
+    memoryPreview,
     injectionPreview,
     renderPreview,
     messageSnapshotHistory,
@@ -1337,11 +1541,17 @@ async function buildState(
       lastConnectionRefreshAt: connectionCache.refreshedAt ?? diagnostics.lastConnectionRefreshAt,
       lastConnectionRefreshError: connectionCache.error ?? diagnostics.lastConnectionRefreshError,
       autoSubscriptionActive: autoSubscriptionsActive,
-      injectionEnabled: settings.injection.enabled && CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
+      injectionEnabled: settings.injection.enabled && interceptorRegistered,
+      lastMemoryEntryCount: memoryPreviewResult?.entries.length ?? diagnostics.lastMemoryEntryCount,
+      lastMemoryChars: memoryPreviewResult?.totalChars ?? diagnostics.lastMemoryChars,
+      lastMemoryTruncated: memoryPreviewResult?.truncated ?? diagnostics.lastMemoryTruncated,
+      lastMemorySourceSummary: memoryPreviewResult ? trackerMemorySourceSummary(memoryPreviewResult.entries) : diagnostics.lastMemorySourceSummary,
+      lastMemorySkippedReason: memoryPreviewResult?.skippedReason ?? diagnostics.lastMemorySkippedReason,
       selectedPresetId: presetState.activePreset.id,
       selectedPresetName: presetState.activePreset.name,
       lastPresetFallbackReason: presetState.fallbackReason ?? diagnostics.lastPresetFallbackReason,
       contextHandlerRegistered,
+      interceptorRegistered,
       contextHandlerDisabledReason: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED
         ? diagnostics.contextHandlerDisabledReason
         : CONTEXT_HANDLER_DISABLED_REASON,
@@ -2185,7 +2395,7 @@ async function recordInjectionDiagnostics(
     ...currentDiagnostics,
     injectionEnabled: settings.injection.enabled,
     lastInjectionAt: decision.text ? nowIso() : currentDiagnostics.lastInjectionAt,
-    lastInjectionMode: settings.injection.mode,
+    lastInjectionMode: null,
     lastInjectionFormat: settings.injection.format,
     lastInjectedChars: decision.injectedChars,
     lastInjectionSkippedReason: decision.skippedReason,
@@ -2193,6 +2403,148 @@ async function recordInjectionDiagnostics(
     lastInjectionSourceMessageId: decision.sourceMessageId,
   };
   await tryPersistDiagnostics(diagnostics, userId);
+}
+
+async function recordInterceptorDiagnostics(
+  chatId: string,
+  userId: string,
+  settings: LTrackerSettings,
+  result: ReturnType<typeof applyPromptInjection>,
+): Promise<void> {
+  const currentDiagnostics = await loadDiagnostics(chatId, userId);
+  await tryPersistDiagnostics({
+    ...currentDiagnostics,
+    injectionEnabled: settings.injection.enabled,
+    lastInjectionAt: result.injectedCount > 0 ? nowIso() : currentDiagnostics.lastInjectionAt,
+    lastInjectionMode: null,
+    lastInjectionFormat: settings.injection.format,
+    lastInjectedChars: result.injectedChars,
+    lastInjectionSkippedReason: result.skippedReason,
+    interceptorRegistered,
+    lastInterceptorAt: nowIso(),
+    lastInterceptorInjectedCount: result.injectedCount,
+    lastInterceptorInjectedChars: result.injectedChars,
+    lastInterceptorStrippedCount: result.strippedCount,
+    lastInterceptorSkippedReason: result.skippedReason,
+    lastInterceptorError: result.error,
+    lastInterceptorPromptTrackerCountBefore: result.promptTrackerCountBefore,
+    lastInterceptorPromptTrackerCountAfter: result.promptTrackerCountAfter,
+  }, userId);
+}
+
+async function recordInterceptorSkipped(
+  chatId: string | null,
+  userId: string | null,
+  reason: string,
+  error: string | null = null,
+): Promise<void> {
+  if (!chatId || !userId) return;
+  const currentDiagnostics = await loadDiagnostics(chatId, userId);
+  await tryPersistDiagnostics({
+    ...currentDiagnostics,
+    interceptorRegistered,
+    lastInterceptorAt: nowIso(),
+    lastInterceptorInjectedCount: 0,
+    lastInterceptorInjectedChars: 0,
+    lastInterceptorStrippedCount: 0,
+    lastInterceptorSkippedReason: reason,
+    lastInterceptorError: error,
+  }, userId);
+}
+
+function promptMessagesForInjection(messages: LlmMessageDTO[]): PromptInjectionMessage[] {
+  return messages.map((message) => ({ ...message })) as PromptInjectionMessage[];
+}
+
+function ltrackerMessagesFromPrompt(messages: PromptInjectionMessage[]): LlmMessageDTO[] {
+  return messages.map((message) => ({ ...message })) as LlmMessageDTO[];
+}
+
+function injectionMemorySettings(settings: LTrackerSettings): LTrackerSettings {
+  return {
+    ...settings,
+    memory: {
+      ...settings.memory,
+      enabled: true,
+      includeInTrackerGeneration: true,
+      retainCount: settings.injection.retainCount,
+      fullSnapshotCount: settings.injection.retainCount,
+      compactOlderSnapshots: false,
+      maxMemoryChars: settings.injection.maxInjectedChars,
+      source: settings.memory.source,
+      order: "oldest_to_newest",
+    },
+  };
+}
+
+async function handlePromptInterceptor(
+  messages: LlmMessageDTO[],
+  context: unknown,
+): Promise<LlmMessageDTO[] | InterceptorResultDTO> {
+  if (disposed) return messages;
+  if (shouldSkipContextForInternalGeneration(context, internalTrackerGenerationDepth > 0)) {
+    const contextUser = contextUserId(context);
+    const contextChat = contextChatId(context);
+    await recordInterceptorSkipped(contextChat, knownUserForContext(contextUser, contextChat), "Skipped quiet or internal LTracker generation.");
+    return messages;
+  }
+
+  const contextUser = contextUserId(context);
+  const contextChat = contextChatId(context);
+  const userId = knownUserForContext(contextUser, contextChat);
+  if (!userId) return messages;
+  const chatId = await resolveContextChatId(context, userId);
+  if (!chatId) return messages;
+  rememberActiveChat(userId, chatId);
+
+  try {
+    const settings = await getSettings(userId);
+    const presetState = await resolveActivePreset(chatId, userId);
+    if (!settings.injection.enabled) {
+      const result = applyPromptInjection({
+        messages: promptMessagesForInjection(messages),
+        entries: [],
+        settings: settings.injection,
+      });
+      await recordInterceptorDiagnostics(chatId, userId, settings, result);
+      return messages;
+    }
+
+    const memorySettings = injectionMemorySettings(settings);
+    const memory = await collectTrackerMemory(chatId, userId, memorySettings, presetState.activePreset);
+    const result = applyPromptInjection({
+      messages: promptMessagesForInjection(messages),
+      entries: memory.entries,
+      settings: settings.injection,
+    });
+    await recordInterceptorDiagnostics(chatId, userId, settings, result);
+    if (result.error) return messages;
+    const response: InterceptorResultDTO = {
+      messages: ltrackerMessagesFromPrompt(result.messages),
+    };
+    if (result.breakdown.length > 0) response.breakdown = result.breakdown;
+    return response;
+  } catch (error) {
+    await recordInterceptorSkipped(chatId, userId, "Prompt injection failed safely.", errorMessage(error));
+    return messages;
+  }
+}
+
+async function handlePromptInterceptorFailSafe(
+  messages: LlmMessageDTO[],
+  context: unknown,
+): Promise<LlmMessageDTO[] | InterceptorResultDTO> {
+  try {
+    const result = await withContextTimeout(handlePromptInterceptor(messages, context), 750);
+    if (!result.timedOut) return result.value;
+    const contextUser = contextUserId(context);
+    const contextChat = contextChatId(context);
+    await recordInterceptorSkipped(contextChat, knownUserForContext(contextUser, contextChat), "Prompt injection timed out.");
+    return messages;
+  } catch (error) {
+    spindle.log.warn(`LTracker prompt interceptor failed safely: ${errorMessage(error)}`);
+    return messages;
+  }
 }
 
 async function handleContextInjection(context: unknown): Promise<unknown> {
@@ -2222,12 +2574,8 @@ async function handleContextInjectionEnabled(context: unknown): Promise<unknown>
       const settings = await getSettings(userId);
       const skipInternal = shouldSkipContextForInternalGeneration(context, internalTrackerGenerationDepth > 0);
       const diagnostics = await loadDiagnostics(chatId, userId);
-      const snapshot = settings.injection.mode === "latest_chat_snapshot"
-        ? await loadSnapshot(chatId, userId)
-        : null;
-      const messageSnapshot = settings.injection.mode === "latest_message_snapshot"
-        ? await loadMessageSnapshot(chatId, diagnostics.latestAttachedMessageId, userId)
-        : null;
+      const snapshot = await loadSnapshot(chatId, userId);
+      const messageSnapshot = await loadMessageSnapshot(chatId, diagnostics.latestAttachedMessageId, userId);
       const decision = buildInjectionDecision({
         settings,
         chatSnapshot: snapshot,
@@ -2413,11 +2761,32 @@ async function generateTracker(
 
     stage = "prompt";
     const transcript = buildCompactTranscript(transcriptMessages, settings.maxMessageChars);
-    const promptMessages: LlmMessageDTO[] = buildTrackerPrompt(transcript, presetState.activePreset);
+    const memory = settings.memory.enabled && settings.memory.includeInTrackerGeneration
+      ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger)
+      : {
+          entries: [],
+          renderedText: "",
+          totalChars: 0,
+          truncated: false,
+          skippedReason: settings.memory.enabled
+            ? "Tracker memory is not included in tracker generation."
+            : "Tracker memory is disabled.",
+        } satisfies TrackerMemoryResult;
+    const promptMessages: LlmMessageDTO[] = buildTrackerPrompt(
+      transcript,
+      presetState.activePreset,
+      memory.renderedText ? memory : null,
+    );
     diagnostics = {
       ...diagnostics,
       lastPromptUsedPresetId: presetState.activePreset.id,
       lastPromptUsedPresetName: presetState.activePreset.name,
+      lastMemoryEntryCount: memory.entries.length,
+      lastMemoryChars: memory.totalChars,
+      lastMemoryTruncated: memory.truncated,
+      lastMemorySourceSummary: trackerMemorySourceSummary(memory.entries),
+      lastMemorySkippedReason: memory.skippedReason,
+      lastPromptIncludedMemory: Boolean(memory.renderedText),
       lastPromptPreview: settings.savePromptPreview
         ? promptPreview(promptMessages)
         : "[Prompt preview saving disabled]",
@@ -3381,6 +3750,7 @@ function disposeBackend(): void {
   for (const cleanup of eventCleanups.splice(0).reverse()) cleanup();
   autoSubscriptionsActive = false;
   contextHandlerRegistered = false;
+  interceptorRegistered = false;
 }
 
 function registerEventListeners(): void {
@@ -3418,7 +3788,22 @@ function registerContextInjection(): void {
   spindle.log.warn("LTracker context injection stayed disabled because no verified Lumiverse context handler DTO is available.");
 }
 
+function registerSafePromptInterceptor(): void {
+  if (interceptorRegistered) return;
+  if (!spindle.permissions.has("interceptor")) {
+    spindle.log.warn("LTracker prompt injection is unavailable until the interceptor permission is granted.");
+    return;
+  }
+  if (!spindle.registerInterceptor) {
+    spindle.log.warn("LTracker prompt injection is unavailable because registerInterceptor is missing.");
+    return;
+  }
+  spindle.registerInterceptor(async (messages, context) => handlePromptInterceptorFailSafe(messages, context), 0);
+  interceptorRegistered = true;
+}
+
 registerEventListeners();
+registerSafePromptInterceptor();
 registerContextInjection();
 
 spindle.onFrontendMessage((payload, userId) => {

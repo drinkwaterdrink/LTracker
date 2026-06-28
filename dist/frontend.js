@@ -511,9 +511,6 @@ function normalizeSnapshot(value) {
     sourceMessageId: null
   };
 }
-function sanitizePromptText(value) {
-  return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 function truncateSafe2(value, maxChars) {
   const chars = Array.from(value);
   if (chars.length <= maxChars) return value;
@@ -594,15 +591,15 @@ function fallbackSummary(data) {
   }).filter((item) => Boolean(item));
   return fragments.slice(0, 6).join("\n");
 }
-function metadataLines(snapshot, sourceMessageId, settings) {
+function metadataLines(snapshot, sourceMessageId, _settings) {
   const lines = [];
-  if (settings.includeTimestamp) lines.push(`Generated: ${snapshot.createdAt}`);
-  if (settings.includeSourceMessageId && sourceMessageId) lines.push(`Source message: ${sourceMessageId}`);
+  lines.push(`Generated: ${snapshot.createdAt}`);
+  if (sourceMessageId) lines.push(`Source message: ${sourceMessageId}`);
   return lines;
 }
 function formatCompact(snapshot, sourceMessageId, settings) {
   const lines = [];
-  if (settings.includeHeader) lines.push("[LTracker Snapshot]");
+  if (settings.includeHeader) lines.push(`[${settings.header || "LTracker Snapshot"}]`);
   lines.push(...metadataLines(snapshot, sourceMessageId, settings));
   const scene = sceneLine(snapshot.data);
   if (scene) lines.push(`Scene: ${scene}`);
@@ -635,14 +632,14 @@ function formatPrettyJson(source, snapshot, sourceMessageId, settings) {
     data: snapshot.data
   };
   const lines = [];
-  if (settings.includeHeader) lines.push("[LTracker Snapshot JSON]");
+  if (settings.includeHeader) lines.push(`[${settings.header || "LTracker Snapshot JSON"}]`);
   lines.push(...metadataLines(snapshot, sourceMessageId, settings));
   lines.push(JSON.stringify(payload, null, 2));
   return lines.join("\n");
 }
 function formatMinimal(snapshot, sourceMessageId, settings) {
   const lines = [];
-  if (settings.includeHeader) lines.push("[LTracker Mini-State]");
+  if (settings.includeHeader) lines.push(`[${settings.header || "LTracker Mini-State"}]`);
   lines.push(...metadataLines(snapshot, sourceMessageId, settings));
   lines.push(`Location: ${stringAt2(snapshot.data, ["scene", "location"]) ?? "Unknown"}`);
   const cast = characterNames(snapshot.data);
@@ -656,8 +653,10 @@ function formatMinimal(snapshot, sourceMessageId, settings) {
 }
 function formatSnapshotForInjection(source, settings) {
   const { snapshot, sourceMessageId } = normalizeSnapshot(source);
-  const raw = settings.format === "pretty_json" ? formatPrettyJson(source, snapshot, sourceMessageId, settings) : settings.format === "minimal" ? formatMinimal(snapshot, sourceMessageId, settings) : formatCompact(snapshot, sourceMessageId, settings);
-  return truncateSafe2(sanitizePromptText(raw), settings.maxInjectedChars);
+  const raw = settings.format === "embedded_tag" ? `<ltracker type="state">
+${JSON.stringify(snapshot.data, null, 2)}
+</ltracker>` : settings.format === "pretty_json" ? formatPrettyJson(source, snapshot, sourceMessageId, settings) : settings.format === "minimal" ? formatMinimal(snapshot, sourceMessageId, settings) : formatCompact(snapshot, sourceMessageId, settings);
+  return truncateSafe2(raw, settings.maxInjectedChars);
 }
 
 // src/shared/swipeIdentity.ts
@@ -720,13 +719,15 @@ function generationMetadataFromSnapshot(snapshot, input) {
 function injectionSettings(settings) {
   return {
     enabled: true,
-    mode: "latest_message_snapshot",
-    format: "compact",
+    retainCount: 1,
+    format: "compact_text",
+    injectionPlacement: "append_to_last_assistant",
+    includeOnlyIfMissingFromPrompt: true,
+    stripOlderTrackerBlocks: true,
     maxInjectedChars: settings.maxRenderedChars,
+    roleFallback: "system",
     includeHeader: false,
-    includeTimestamp: false,
-    includeSourceMessageId: false,
-    onlyInjectWhenSnapshotExists: true
+    header: "LTracker Recent State"
   };
 }
 function displayJson(messageId, messageIndex, attachedSnapshot, snapshot, settings) {
@@ -1103,7 +1104,7 @@ function renderMessageTracker(input) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.13";
+var EXTENSION_VERSION = "0.14";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1136,7 +1137,11 @@ var SETTINGS_LIMITS = {
   generationTimeoutMs: { min: 1e4, max: 18e4, default: 45e3 },
   autoDebounceMs: { min: 250, max: 3e4, default: 1500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
-  maxInjectedChars: { min: 500, max: 2e4, default: 3e3 },
+  memoryRetainCount: { min: 0, max: 10, default: 3 },
+  memoryFullSnapshotCount: { min: 0, max: 10, default: 3 },
+  maxMemoryChars: { min: 1e3, max: 5e4, default: 12e3 },
+  injectionRetainCount: { min: 0, max: 10, default: 3 },
+  maxInjectedChars: { min: 1e3, max: 5e4, default: 12e3 },
   maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
   maxMessageDisplayRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
   minimizedMaxHeightPx: { min: 0, max: 400, default: 0 }
@@ -1157,15 +1162,30 @@ var DEFAULT_SETTINGS = {
     attachSnapshotToMessage: true,
     onlyWhenChatActive: true
   },
+  memory: {
+    enabled: true,
+    includeInTrackerGeneration: true,
+    retainCount: SETTINGS_LIMITS.memoryRetainCount.default,
+    fullSnapshotCount: SETTINGS_LIMITS.memoryFullSnapshotCount.default,
+    compactOlderSnapshots: false,
+    maxMemoryChars: SETTINGS_LIMITS.maxMemoryChars.default,
+    source: "hybrid",
+    excludeTargetMessage: true,
+    order: "oldest_to_newest",
+    requireSamePreset: false,
+    requireSameSwipeWhenAvailable: false
+  },
   injection: {
     enabled: false,
-    mode: "latest_chat_snapshot",
-    format: "compact",
+    retainCount: SETTINGS_LIMITS.injectionRetainCount.default,
+    format: "embedded_tag",
+    injectionPlacement: "append_to_last_assistant",
+    includeOnlyIfMissingFromPrompt: true,
+    stripOlderTrackerBlocks: true,
     maxInjectedChars: SETTINGS_LIMITS.maxInjectedChars.default,
+    roleFallback: "system",
     includeHeader: true,
-    includeTimestamp: true,
-    includeSourceMessageId: false,
-    onlyInjectWhenSnapshotExists: true
+    header: "LTracker Recent State"
   },
   renderer: {
     enabled: true,
@@ -1509,7 +1529,8 @@ function emptyState() {
       generation: false,
       chats: false,
       chatMutation: false,
-      contextHandler: false
+      contextHandler: false,
+      interceptor: false
     },
     settings: DEFAULT_SETTINGS,
     diagnostics: {
@@ -1560,6 +1581,21 @@ function emptyState() {
       lastInjectionSkippedReason: null,
       lastInjectionSnapshotCreatedAt: null,
       lastInjectionSourceMessageId: null,
+      lastMemoryEntryCount: 0,
+      lastMemoryChars: 0,
+      lastMemoryTruncated: false,
+      lastMemorySourceSummary: null,
+      lastMemorySkippedReason: null,
+      lastPromptIncludedMemory: false,
+      interceptorRegistered: false,
+      lastInterceptorAt: null,
+      lastInterceptorInjectedCount: 0,
+      lastInterceptorInjectedChars: 0,
+      lastInterceptorStrippedCount: 0,
+      lastInterceptorSkippedReason: null,
+      lastInterceptorError: null,
+      lastInterceptorPromptTrackerCountBefore: 0,
+      lastInterceptorPromptTrackerCountAfter: 0,
       selectedPresetId: null,
       selectedPresetName: null,
       lastPresetFallbackReason: null,
@@ -1577,7 +1613,7 @@ function emptyState() {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection is disabled in 0.13 while the Lumiverse context handler return contract is being verified.",
+      contextHandlerDisabledReason: "Context handler injection remains disabled in 0.14; safe normal prompt injection uses the Lumiverse interceptor path instead.",
       lastContextHandlerError: null,
       messageDisplayEnabled: false,
       messageDisplayMode: null,
@@ -1656,6 +1692,7 @@ function emptyState() {
       lastConnectionTestFinishReason: null,
       lastConnectionTestUsage: null
     },
+    memoryPreview: null,
     injectionPreview: null,
     renderPreview: null,
     messageSnapshotHistory: [],
@@ -1843,7 +1880,7 @@ function setup(ctx) {
   }
   function isSettingsControl(target) {
     if (!(target instanceof HTMLElement)) return false;
-    return Boolean(target.closest("[data-setting], [data-renderer-setting], [data-message-display-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning]"));
+    return Boolean(target.closest("[data-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning]"));
   }
   function localDiagnostics(update) {
     state = {
@@ -2424,13 +2461,29 @@ function setup(ctx) {
       const input = tab.root.querySelector(`[data-setting="${name}"]`);
       return input ? input.checked : state.settings.auto[name];
     };
+    const memoryNumberValue = (name) => {
+      const input = tab.root.querySelector(`[data-memory-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.memory[name];
+    };
+    const memoryBooleanValue = (name) => {
+      const input = tab.root.querySelector(`[data-memory-setting="${name}"]`);
+      return input ? input.checked : state.settings.memory[name];
+    };
+    const memorySelectValue = (name, fallback) => {
+      const input = tab.root.querySelector(`[data-memory-setting="${name}"]`);
+      return input ? input.value : fallback;
+    };
     const injectionNumberValue = (name) => {
-      const input = tab.root.querySelector(`[data-setting="${name}"]`);
+      const input = tab.root.querySelector(`[data-injection-setting="${name}"]`);
       return input ? Number(input.value) : state.settings.injection[name];
     };
     const injectionBooleanValue = (name) => {
-      const input = tab.root.querySelector(`[data-setting="${name}"]`);
+      const input = tab.root.querySelector(`[data-injection-setting="${name}"]`);
       return input ? input.checked : state.settings.injection[name];
+    };
+    const injectionTextValue = (name) => {
+      const input = tab.root.querySelector(`[data-injection-setting="${name}"]`);
+      return input ? input.value : state.settings.injection[name];
     };
     const rendererNumberValue = (name) => {
       const input = tab.root.querySelector(`[data-renderer-setting="${name}"]`);
@@ -2452,8 +2505,8 @@ function setup(ctx) {
       const input = tab.root.querySelector(`[data-message-display-setting="${name}"]`);
       return input ? input.checked : state.settings.messageDisplay[name];
     };
-    const selectValue = (name, fallback) => {
-      const input = tab.root.querySelector(`[data-setting="${name}"]`);
+    const injectionSelectValue = (name, fallback) => {
+      const input = tab.root.querySelector(`[data-injection-setting="${name}"]`);
       return input ? input.value : fallback;
     };
     const rendererSelectValue = (name, fallback) => {
@@ -2502,15 +2555,30 @@ function setup(ctx) {
         attachSnapshotToMessage: autoBooleanValue("attachSnapshotToMessage"),
         onlyWhenChatActive: autoBooleanValue("onlyWhenChatActive")
       },
+      memory: {
+        enabled: memoryBooleanValue("enabled"),
+        includeInTrackerGeneration: memoryBooleanValue("includeInTrackerGeneration"),
+        retainCount: memoryNumberValue("retainCount"),
+        fullSnapshotCount: memoryNumberValue("fullSnapshotCount"),
+        compactOlderSnapshots: memoryBooleanValue("compactOlderSnapshots"),
+        maxMemoryChars: memoryNumberValue("maxMemoryChars"),
+        source: memorySelectValue("source", state.settings.memory.source),
+        excludeTargetMessage: memoryBooleanValue("excludeTargetMessage"),
+        order: memorySelectValue("order", state.settings.memory.order),
+        requireSamePreset: memoryBooleanValue("requireSamePreset"),
+        requireSameSwipeWhenAvailable: memoryBooleanValue("requireSameSwipeWhenAvailable")
+      },
       injection: {
         enabled: injectionBooleanValue("enabled"),
-        mode: selectValue("mode", state.settings.injection.mode),
-        format: selectValue("format", state.settings.injection.format),
+        retainCount: injectionNumberValue("retainCount"),
+        format: injectionSelectValue("format", state.settings.injection.format),
+        injectionPlacement: injectionSelectValue("injectionPlacement", state.settings.injection.injectionPlacement),
+        includeOnlyIfMissingFromPrompt: injectionBooleanValue("includeOnlyIfMissingFromPrompt"),
+        stripOlderTrackerBlocks: injectionBooleanValue("stripOlderTrackerBlocks"),
         maxInjectedChars: injectionNumberValue("maxInjectedChars"),
+        roleFallback: injectionSelectValue("roleFallback", state.settings.injection.roleFallback),
         includeHeader: injectionBooleanValue("includeHeader"),
-        includeTimestamp: injectionBooleanValue("includeTimestamp"),
-        includeSourceMessageId: injectionBooleanValue("includeSourceMessageId"),
-        onlyInjectWhenSnapshotExists: injectionBooleanValue("onlyInjectWhenSnapshotExists")
+        header: injectionTextValue("header")
       },
       renderer: {
         enabled: rendererBooleanValue("enabled"),
@@ -2924,8 +2992,8 @@ function setup(ctx) {
     const error = state.error ?? diagnostics.lastError;
     const autoStatus = state.settings.auto.autoModeEnabled ? diagnostics.autoSubscriptionActive ? "Armed" : "Enabled, listener inactive" : "Disabled";
     const latestMessageSnapshotText = state.latestMessageSnapshot ? JSON.stringify(state.latestMessageSnapshot, null, 2) : "No message-attached tracker snapshot saved yet.";
-    const injectionDisabledReason = diagnostics.contextHandlerDisabledReason;
-    const injectionPreviewText = injectionDisabledReason ? injectionDisabledReason : state.injectionPreview ?? "No injection preview available. Generate a tracker and enable injection to preview cached context.";
+    const memoryPreviewText = state.memoryPreview ?? "No tracker memory block available yet.";
+    const injectionPreviewText = state.injectionPreview ?? "No injection preview available yet.";
     const renderPreview = state.renderPreview;
     const renderStatus = renderPreview?.status ?? "not rendered";
     const renderSnapshotAt = renderPreview?.snapshotCreatedAt ?? "None";
@@ -2947,7 +3015,8 @@ function setup(ctx) {
       state.permissions.generation ? "generation granted" : "generation missing",
       state.permissions.chats ? "chats granted" : "chats missing",
       state.permissions.chatMutation ? "chat_mutation granted" : "chat_mutation missing",
-      diagnostics.contextHandlerDisabledReason ? "context_handler disabled by hotfix" : state.permissions.contextHandler ? "context_handler granted" : "context_handler missing"
+      diagnostics.contextHandlerDisabledReason ? "context_handler disabled by hotfix" : state.permissions.contextHandler ? "context_handler granted" : "context_handler missing",
+      state.permissions.interceptor ? "interceptor granted" : "interceptor missing"
     ].join(" / ");
     const connectionSettings = state.settings.connection;
     const selectedConnection = connectionSettings.selectedConnectionId ? state.connectionProfiles.find((profile) => profile.id === connectionSettings.selectedConnectionId) ?? null : null;
@@ -3186,55 +3255,135 @@ function setup(ctx) {
         </section>
 
         <section class="ltracker-panel">
-          <span class="ltracker-label">Prompt Injection</span>
+          <span class="ltracker-label">Tracker Memory</span>
           <div class="ltracker-settings">
             <label class="ltracker-check">
-              <input type="checkbox" data-setting="enabled"${checked(state.settings.injection.enabled)}>
-              Enable LTracker injection
+              <input type="checkbox" data-memory-setting="enabled"${checked(state.settings.memory.enabled)}>
+              Enable tracker memory
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-memory-setting="includeInTrackerGeneration"${checked(state.settings.memory.includeInTrackerGeneration)}>
+              Include in tracker generation
             </label>
             <label class="ltracker-field">
-              Mode
-              <select data-setting="mode">
-                <option value="latest_chat_snapshot"${selected(state.settings.injection.mode === "latest_chat_snapshot")}>Latest chat snapshot</option>
-                <option value="latest_message_snapshot"${selected(state.settings.injection.mode === "latest_message_snapshot")}>Latest message snapshot</option>
+              Retain last N
+              <input type="number" min="0" max="10" step="1" data-memory-setting="retainCount" value="${escapeHtml2(String(state.settings.memory.retainCount))}">
+            </label>
+            <label class="ltracker-field">
+              Full snapshots
+              <input type="number" min="0" max="10" step="1" data-memory-setting="fullSnapshotCount" value="${escapeHtml2(String(state.settings.memory.fullSnapshotCount))}">
+            </label>
+            <label class="ltracker-field">
+              Max memory chars
+              <input type="number" min="1000" max="50000" step="500" data-memory-setting="maxMemoryChars" value="${escapeHtml2(String(state.settings.memory.maxMemoryChars))}">
+            </label>
+            <label class="ltracker-field">
+              Memory source
+              <select data-memory-setting="source">
+                <option value="hybrid"${selected(state.settings.memory.source === "hybrid")}>Hybrid</option>
+                <option value="sidecar_index"${selected(state.settings.memory.source === "sidecar_index")}>Sidecar index</option>
+                <option value="embedded_tags"${selected(state.settings.memory.source === "embedded_tags")}>Embedded tags</option>
+                <option value="message_history"${selected(state.settings.memory.source === "message_history")}>Message history</option>
               </select>
             </label>
             <label class="ltracker-field">
+              Order
+              <select data-memory-setting="order">
+                <option value="oldest_to_newest"${selected(state.settings.memory.order === "oldest_to_newest")}>Oldest to newest</option>
+                <option value="newest_to_oldest"${selected(state.settings.memory.order === "newest_to_oldest")}>Newest to oldest</option>
+              </select>
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-memory-setting="compactOlderSnapshots"${checked(state.settings.memory.compactOlderSnapshots)}>
+              Compact older snapshots
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-memory-setting="excludeTargetMessage"${checked(state.settings.memory.excludeTargetMessage)}>
+              Exclude target message
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-memory-setting="requireSamePreset"${checked(state.settings.memory.requireSamePreset)}>
+              Require same preset
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-memory-setting="requireSameSwipeWhenAvailable"${checked(state.settings.memory.requireSameSwipeWhenAvailable)}>
+              Require same swipe when available
+            </label>
+          </div>
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="copy-memory-preview" ${disabled(!state.memoryPreview)}>
+              Copy Memory Block
+            </button>
+          </div>
+          <details class="ltracker-details">
+            <summary>Preview memory block</summary>
+            <pre class="ltracker-text">${escapeHtml2(memoryPreviewText)}</pre>
+          </details>
+        </section>
+
+        <section class="ltracker-panel">
+          <span class="ltracker-label">Advanced Prompt Injection</span>
+          <p class="ltracker-note">${escapeHtml2("Normal prompt injection affects roleplay prompt context and uses the interceptor path. Keep it off if you only want tracker-generation memory.")}</p>
+          <div class="ltracker-settings">
+            <label class="ltracker-check">
+              <input type="checkbox" data-injection-setting="enabled"${checked(state.settings.injection.enabled)}>
+              Enable normal prompt injection
+            </label>
+            <label class="ltracker-field">
+              Retain last N
+              <input type="number" min="0" max="10" step="1" data-injection-setting="retainCount" value="${escapeHtml2(String(state.settings.injection.retainCount))}">
+            </label>
+            <label class="ltracker-field">
               Format
-              <select data-setting="format">
-                <option value="compact"${selected(state.settings.injection.format === "compact")}>Compact</option>
+              <select data-injection-setting="format">
+                <option value="embedded_tag"${selected(state.settings.injection.format === "embedded_tag")}>Embedded tag</option>
+                <option value="compact_text"${selected(state.settings.injection.format === "compact_text")}>Compact text</option>
                 <option value="pretty_json"${selected(state.settings.injection.format === "pretty_json")}>Pretty JSON</option>
                 <option value="minimal"${selected(state.settings.injection.format === "minimal")}>Minimal</option>
               </select>
             </label>
             <label class="ltracker-field">
+              Placement
+              <select data-injection-setting="injectionPlacement">
+                <option value="append_to_last_assistant"${selected(state.settings.injection.injectionPlacement === "append_to_last_assistant")}>Append to last assistant</option>
+                <option value="system_before_last"${selected(state.settings.injection.injectionPlacement === "system_before_last")}>System before last</option>
+                <option value="system_after_history"${selected(state.settings.injection.injectionPlacement === "system_after_history")}>System after history</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
               Max injected chars
-              <input type="number" min="500" max="20000" step="250" data-setting="maxInjectedChars" value="${escapeHtml2(String(state.settings.injection.maxInjectedChars))}">
+              <input type="number" min="1000" max="50000" step="500" data-injection-setting="maxInjectedChars" value="${escapeHtml2(String(state.settings.injection.maxInjectedChars))}">
+            </label>
+            <label class="ltracker-field">
+              Role fallback
+              <select data-injection-setting="roleFallback">
+                <option value="system"${selected(state.settings.injection.roleFallback === "system")}>System</option>
+                <option value="assistant"${selected(state.settings.injection.roleFallback === "assistant")}>Assistant</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Header
+              <input type="text" data-injection-setting="header" value="${escapeHtml2(state.settings.injection.header)}">
             </label>
             <label class="ltracker-check">
-              <input type="checkbox" data-setting="includeHeader"${checked(state.settings.injection.includeHeader)}>
+              <input type="checkbox" data-injection-setting="includeOnlyIfMissingFromPrompt"${checked(state.settings.injection.includeOnlyIfMissingFromPrompt)}>
+              Only backfill if missing
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-injection-setting="stripOlderTrackerBlocks"${checked(state.settings.injection.stripOlderTrackerBlocks)}>
+              Strip older tracker blocks
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-injection-setting="includeHeader"${checked(state.settings.injection.includeHeader)}>
               Include header
             </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-setting="includeTimestamp"${checked(state.settings.injection.includeTimestamp)}>
-              Include timestamp
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-setting="includeSourceMessageId"${checked(state.settings.injection.includeSourceMessageId)}>
-              Include source message id
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-setting="onlyInjectWhenSnapshotExists"${checked(state.settings.injection.onlyInjectWhenSnapshotExists)}>
-              Only inject when snapshot exists
-            </label>
           </div>
-          ${injectionDisabledReason ? `<p class="ltracker-note">${escapeHtml2(injectionDisabledReason)}</p>` : ""}
           <div class="ltracker-actions" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="copy-injection-preview" ${disabled(!state.injectionPreview)}>
               Copy Injection Preview
             </button>
           </div>
-          <details class="ltracker-details" open>
+          <details class="ltracker-details">
             <summary>Current injection preview</summary>
             <pre class="ltracker-text">${escapeHtml2(injectionPreviewText)}</pre>
           </details>
@@ -3617,6 +3766,21 @@ function setup(ctx) {
             ${renderRow("Last injection skipped", diagnostics.lastInjectionSkippedReason)}
             ${renderRow("Last injection snapshot", diagnostics.lastInjectionSnapshotCreatedAt)}
             ${renderRow("Last injection source message", diagnostics.lastInjectionSourceMessageId)}
+            ${renderRow("Last memory entry count", diagnostics.lastMemoryEntryCount)}
+            ${renderRow("Last memory chars", diagnostics.lastMemoryChars)}
+            ${renderRow("Last memory truncated", diagnostics.lastMemoryTruncated ? "yes" : "no")}
+            ${renderRow("Last memory sources", diagnostics.lastMemorySourceSummary)}
+            ${renderRow("Last memory skipped", diagnostics.lastMemorySkippedReason)}
+            ${renderRow("Last prompt included memory", diagnostics.lastPromptIncludedMemory ? "yes" : "no")}
+            ${renderRow("Interceptor registered", diagnostics.interceptorRegistered ? "yes" : "no")}
+            ${renderRow("Last interceptor at", diagnostics.lastInterceptorAt)}
+            ${renderRow("Last interceptor injected count", diagnostics.lastInterceptorInjectedCount)}
+            ${renderRow("Last interceptor injected chars", diagnostics.lastInterceptorInjectedChars)}
+            ${renderRow("Last interceptor stripped count", diagnostics.lastInterceptorStrippedCount)}
+            ${renderRow("Last interceptor skipped", diagnostics.lastInterceptorSkippedReason)}
+            ${renderRow("Last interceptor error", diagnostics.lastInterceptorError)}
+            ${renderRow("Prompt trackers before", diagnostics.lastInterceptorPromptTrackerCountBefore)}
+            ${renderRow("Prompt trackers after", diagnostics.lastInterceptorPromptTrackerCountAfter)}
             ${renderRow("Selected preset id", diagnostics.selectedPresetId ?? activePreset.id)}
             ${renderRow("Selected preset name", diagnostics.selectedPresetName ?? activePreset.name)}
             ${renderRow("Last preset fallback", diagnostics.lastPresetFallbackReason)}
@@ -3734,6 +3898,7 @@ function setup(ctx) {
         "message snapshot"
       );
     }
+    if (action === "copy-memory-preview") void copyText(state.memoryPreview, "tracker memory block");
     if (action === "copy-injection-preview") void copyText(state.injectionPreview, "injection preview");
     if (action === "render-template") renderTemplatePreview();
     if (action === "copy-render-html") void copyText(state.renderPreview?.html ?? null, "sanitized HTML");
