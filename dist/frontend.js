@@ -239,7 +239,7 @@ function estimatePresetStats(preset) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.19.2";
+var EXTENSION_VERSION = "0.20";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -401,6 +401,14 @@ var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "word-break",
   "white-space",
   "opacity",
+  "position",
+  "top",
+  "right",
+  "bottom",
+  "left",
+  "z-index",
+  "inset",
+  "aspect-ratio",
   "transform",
   "transform-origin",
   "transition",
@@ -412,7 +420,18 @@ var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "animation-duration",
   "animation-timing-function",
   "animation-iteration-count",
-  "filter"
+  "filter",
+  "place-items",
+  "place-content",
+  "justify-self",
+  "align-self",
+  "text-overflow",
+  "isolation",
+  "contain",
+  "pointer-events",
+  "user-select",
+  "backdrop-filter",
+  "-webkit-backdrop-filter"
 ]);
 var INLINE_HELPERS = /* @__PURE__ */ new Set([
   "default",
@@ -425,12 +444,36 @@ var INLINE_HELPERS = /* @__PURE__ */ new Set([
   "or",
   "not",
   "class",
+  "safeClass",
   "lower",
   "upper",
-  "truncate"
+  "truncate",
+  "length",
+  "join",
+  "pluck",
+  "pluckJoin",
+  "get",
+  "coalesce",
+  "isArray",
+  "isObject",
+  "isEmpty",
+  "notEmpty",
+  "clamp",
+  "meterWidth",
+  "nl2br",
+  "chip",
+  "chipList",
+  "fieldChip",
+  "fieldChipList"
 ]);
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function safeHtml(html) {
+  return { __ltrackerSafeHtml: true, html };
+}
+function isSafeHtmlValue(value) {
+  return isRecord2(value) && value.__ltrackerSafeHtml === true && typeof value.html === "string";
 }
 function escapeHtml(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -465,8 +508,26 @@ function valueAtPath(source, path) {
 function resolvePath(ctx, path) {
   const trimmed = path.trim();
   if (!trimmed || trimmed === "." || trimmed === "this") return ctx.current;
+  if (trimmed === "@index") return ctx.index ?? 0;
+  if (trimmed === "@first") return (ctx.index ?? 0) === 0;
+  if (trimmed === "@last") return typeof ctx.index === "number" && typeof ctx.length === "number" ? ctx.index === ctx.length - 1 : false;
+  if (trimmed === "@root") return ctx.root;
+  if (trimmed.startsWith("@root.")) return valueAtPath(ctx.root, trimmed.slice(6));
   if (trimmed.startsWith("this.")) return valueAtPath(ctx.current, trimmed.slice(5));
   if (trimmed.startsWith("data.")) return valueAtPath(ctx.root, trimmed.slice(5));
+  let relative = trimmed;
+  let targetCtx = ctx;
+  while (relative.startsWith("../")) {
+    targetCtx = targetCtx.parent ?? targetCtx;
+    relative = relative.slice(3);
+  }
+  if (relative !== trimmed) {
+    if (!relative || relative === "." || relative === "this") return targetCtx.current;
+    if (relative.startsWith("this.")) return valueAtPath(targetCtx.current, relative.slice(5));
+    const parentValue = valueAtPath(targetCtx.current, relative);
+    if (parentValue !== void 0) return parentValue;
+    return valueAtPath(targetCtx.root, relative);
+  }
   const currentValue = valueAtPath(ctx.current, trimmed);
   if (currentValue !== void 0) return currentValue;
   return valueAtPath(ctx.root, trimmed);
@@ -512,6 +573,41 @@ function compareNumber(value) {
 function sanitizeClass(value) {
   return valueToText(value, "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
 }
+function arrayFromUnknown(value) {
+  return Array.isArray(value) ? value : [];
+}
+function valueLength(value) {
+  if (Array.isArray(value) || typeof value === "string") return value.length;
+  if (isRecord2(value)) return Object.keys(value).length;
+  return truthy(value) ? 1 : 0;
+}
+function isEmptyValue(value) {
+  if (value === false || value === null || value === void 0 || value === "" || value === 0) return true;
+  if (Array.isArray(value) || typeof value === "string") return value.length === 0;
+  if (isRecord2(value)) return Object.keys(value).length === 0;
+  return false;
+}
+function fieldValue(value, field) {
+  const path = valueToText(field, "").trim();
+  if (!path) return void 0;
+  return valueAtPath(value, path);
+}
+function joinValues(values, separator, placeholder) {
+  const sep = valueToText(separator ?? ", ", ", ");
+  return values.map((value) => valueToText(value, placeholder)).filter(Boolean).join(sep);
+}
+function chipMarkup(label, content) {
+  const labelText = valueToText(label, "").trim();
+  const contentText = valueToText(content, "").trim();
+  if (!labelText && !contentText) return "";
+  const className = sanitizeClass(labelText || contentText);
+  const extraClass = className ? ` ltracker-template-chip-${escapeHtml(className)}` : "";
+  const body = contentText ? `<b>${escapeHtml(labelText || contentText)}</b><span>${escapeHtml(contentText)}</span>` : `<span>${escapeHtml(labelText)}</span>`;
+  return `<span class="ltracker-template-chip${extraClass}">${body}</span>`;
+}
+function fieldChipListMarkup(value, labelField, contentField) {
+  return arrayFromUnknown(value).map((item) => chipMarkup(fieldValue(item, labelField), fieldValue(item, contentField))).filter(Boolean).join("");
+}
 function evalExpression(ctx, expression, placeholder) {
   const tokens = tokenizeExpression(expression);
   if (tokens.length === 0) return void 0;
@@ -540,7 +636,7 @@ function evalExpression(ctx, expression, placeholder) {
   if (helper === "and") return args.every(truthy);
   if (helper === "or") return args.some(truthy);
   if (helper === "not") return !truthy(args[0]);
-  if (helper === "class") return sanitizeClass(args[0]);
+  if (helper === "class" || helper === "safeClass") return sanitizeClass(args[0]);
   if (helper === "lower") return valueToText(args[0], placeholder).toLowerCase();
   if (helper === "upper") return valueToText(args[0], placeholder).toUpperCase();
   if (helper === "truncate") {
@@ -548,6 +644,38 @@ function evalExpression(ctx, expression, placeholder) {
     const limit = compareNumber(args[1]) ?? 80;
     return Array.from(text).slice(0, Math.max(0, Math.round(limit))).join("");
   }
+  if (helper === "length") return valueLength(args[0]);
+  if (helper === "join") return joinValues(arrayFromUnknown(args[0]), args[1] ?? ", ", placeholder);
+  if (helper === "pluck") return arrayFromUnknown(args[0]).map((item) => fieldValue(item, args[1]));
+  if (helper === "pluckJoin") return joinValues(arrayFromUnknown(args[0]).map((item) => fieldValue(item, args[1])), args[2] ?? ", ", placeholder);
+  if (helper === "get") return fieldValue(args[0], args[1]);
+  if (helper === "coalesce") return args.find((arg) => !isEmptyValue(arg)) ?? placeholder;
+  if (helper === "isArray") return Array.isArray(args[0]);
+  if (helper === "isObject") return isRecord2(args[0]);
+  if (helper === "isEmpty") return isEmptyValue(args[0]);
+  if (helper === "notEmpty") return !isEmptyValue(args[0]);
+  if (helper === "clamp") {
+    const value = compareNumber(args[0]);
+    const min = compareNumber(args[1]) ?? 0;
+    const max = compareNumber(args[2]) ?? 100;
+    if (value === null) return placeholder;
+    return Math.min(Math.max(value, Math.min(min, max)), Math.max(min, max));
+  }
+  if (helper === "meterWidth") {
+    const value = compareNumber(args[0]);
+    if (value === null) return placeholder;
+    const percent = Math.abs(value) <= 1 ? value * 100 : value;
+    return `${Math.round(Math.min(100, Math.max(0, percent)))}%`;
+  }
+  if (helper === "nl2br") {
+    return safeHtml(escapeHtml(valueToText(args[0], placeholder)).replace(/\r?\n/g, "<br>"));
+  }
+  if (helper === "chip") return safeHtml(chipMarkup(args[0]));
+  if (helper === "chipList") {
+    return safeHtml(arrayFromUnknown(args[0]).map((item) => chipMarkup(item)).filter(Boolean).join(""));
+  }
+  if (helper === "fieldChip") return safeHtml(chipMarkup(fieldValue(args[0], args[1]), fieldValue(args[0], args[2])));
+  if (helper === "fieldChipList") return safeHtml(fieldChipListMarkup(args[0], args[1], args[2]));
   return void 0;
 }
 function activeNodes(frame) {
@@ -613,20 +741,27 @@ function renderNodes(nodes, ctx, placeholder) {
       continue;
     }
     if (node.type === "mustache") {
-      output += escapeHtml(valueToText(evalExpression(ctx, node.expression, placeholder), placeholder));
+      const value2 = evalExpression(ctx, node.expression, placeholder);
+      output += isSafeHtmlValue(value2) ? value2.html : escapeHtml(valueToText(value2, placeholder));
       continue;
     }
     const value = evalExpression(ctx, node.expression, placeholder);
     if (node.kind === "each") {
       if (Array.isArray(value) && value.length > 0) {
-        output += value.map((item) => renderNodes(node.body, { root: ctx.root, current: item }, placeholder)).join("");
+        output += value.map((item, index) => renderNodes(node.body, {
+          root: ctx.root,
+          current: item,
+          parent: ctx,
+          index,
+          length: value.length
+        }, placeholder)).join("");
       } else {
         output += renderNodes(node.inverse, ctx, placeholder);
       }
       continue;
     }
     if (node.kind === "with") {
-      output += truthy(value) ? renderNodes(node.body, { root: ctx.root, current: value }, placeholder) : renderNodes(node.inverse, ctx, placeholder);
+      output += truthy(value) ? renderNodes(node.body, { root: ctx.root, current: value, parent: ctx }, placeholder) : renderNodes(node.inverse, ctx, placeholder);
       continue;
     }
     const condition = truthy(value);
@@ -1037,13 +1172,16 @@ function detectTemplateRendererRequirements(template) {
   const usesInlineStyles = /\sstyle\s*=/i.test(template);
   const usesInlineSvg = /<\s*svg\b/i.test(template);
   const usesConditionals = /\{\{\s*#(?:if|unless|with)\b|\{\{\s*else\s*\}\}/i.test(template);
-  const usesHelpers = /\{\{\s*(?:default|percent|json|eq|gt|lt|and|or|not|class|lower|upper|truncate)\b/i.test(template);
+  const helperPattern = new RegExp(`\\{\\{\\s*(?:${[...INLINE_HELPERS].map((helper) => helper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
+  const usesHelpers = helperPattern.test(template);
+  const usesNestedLoops = /\{\{\s*#each\b[\s\S]*\{\{\s*#each\b/i.test(template);
   const hasJavaScriptLikeContent = detectJavaScriptLike(template);
   const features = [
     usesScopedCss ? "Scoped CSS" : null,
     usesInlineStyles ? "Inline styles" : null,
     usesInlineSvg ? "Inline SVG" : null,
     usesConditionals ? "Conditionals" : null,
+    usesNestedLoops ? "Nested loops" : null,
     usesHelpers ? "Template helpers" : null
   ].filter((item) => Boolean(item));
   const warnings = hasJavaScriptLikeContent ? ["This preset contains JavaScript-like content. JavaScript will be stripped unless Dev Mode is explicitly enabled in a future phase."] : [];
@@ -1362,6 +1500,729 @@ function importPresetPack(value, existingIds, now) {
   }
   return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Unrecognized import format. Expected ltracker_preset_pack, ltracker_schema_preset, or a raw preset object with jsonSchema and promptInstructions.", warnings: [], packMeta: null };
 }
+var SAMPLE_MAX_DEPTH = 5;
+var SAMPLE_MAX_ARRAY_LENGTH = 2;
+var FIELD_HEURISTICS = [
+  [/^name$/i, () => "Example Name"],
+  [/^(full|display|character)[-_]?name$/i, () => "Aria Voss"],
+  [/^location$/i, () => "Example Location"],
+  [/^(current[-_]?)?scene$/i, () => "A dimly lit study"],
+  [/^mood$/i, () => "tense"],
+  [/^emotion$/i, () => "curious"],
+  [/^status$/i, () => "active"],
+  [/^(health|hp)$/i, () => 85],
+  [/^(mana|mp|energy)$/i, () => 60],
+  [/^percent(age)?$|^progress$/i, () => 66],
+  [/^level$/i, () => 5],
+  [/^(color|colour)$/i, () => "#9b5cff"],
+  [/^(background[-_]?)?color$/i, () => "#1a1a2e"],
+  [/^description$/i, () => "A brief description of the current state."],
+  [/^notes?$/i, () => "No special notes."],
+  [/^time$/i, () => "Late evening"],
+  [/^weather$/i, () => "Overcast"],
+  [/^(score|rating)$/i, () => 7],
+  [/^(count|total|number)$/i, () => 3],
+  [/^(title|heading)$/i, () => "Sample Title"],
+  [/^(summary|overview)$/i, () => "Brief summary of events."],
+  [/^(goal|objective)$/i, () => "Investigate the strange noises."],
+  [/^(threat|danger)[-_]?level$/i, () => "moderate"],
+  [/^(relationship|bond)$/i, () => "cautious ally"],
+  [/^(attitude|disposition)$/i, () => "neutral"],
+  [/^(class|role|type)$/i, () => "Researcher"],
+  [/^(item|weapon|tool)$/i, () => "Brass compass"],
+  [/^(gold|money|currency|coins?)$/i, () => 150],
+  [/^(strength|dexterity|intelligence|wisdom|charisma|constitution)$/i, () => 14],
+  [/^(active|enabled|visible|alive|conscious)$/i, () => true],
+  [/^(dead|unconscious|hidden|disabled)$/i, () => false],
+  [/url$/i, () => "https://example.com"],
+  [/^id$/i, () => "sample-001"]
+];
+function sampleValueForField(fieldName, depth) {
+  for (const [pattern, generator] of FIELD_HEURISTICS) {
+    if (pattern.test(fieldName)) return generator();
+  }
+  if (fieldName.endsWith("s") && depth < SAMPLE_MAX_DEPTH) {
+    return `Example ${fieldName}`;
+  }
+  return `Example ${fieldName.replace(/[-_]/g, " ")}`;
+}
+function generateSampleFromSchema(schema, depth = 0) {
+  if (depth > SAMPLE_MAX_DEPTH) return "[max depth]";
+  if (!isRecord3(schema)) {
+    return "sample value";
+  }
+  const schemaType = stringValue2(schema.type, "object");
+  if (schemaType === "object" || schema.properties && isRecord3(schema.properties)) {
+    const properties = isRecord3(schema.properties) ? schema.properties : schema;
+    const result = {};
+    for (const [key, value] of Object.entries(properties)) {
+      if (key === "type" || key === "properties" || key === "required" || key === "description" || key === "items" || key === "default" || key === "enum") continue;
+      if (isRecord3(value)) {
+        result[key] = generateSampleForProperty(key, value, depth + 1);
+      } else {
+        result[key] = sampleValueForField(key, depth);
+      }
+    }
+    if (Object.keys(result).length === 0 && !schema.properties) {
+      for (const key of Object.keys(schema)) {
+        if (isRecord3(schema[key])) {
+          result[key] = generateSampleFromSchema(schema[key], depth + 1);
+        } else {
+          result[key] = sampleValueForField(key, depth);
+        }
+      }
+    }
+    return result;
+  }
+  if (schemaType === "array") {
+    const items = isRecord3(schema.items) ? schema.items : null;
+    const sample = items ? generateSampleFromSchema(items, depth + 1) : "sample item";
+    return Array.from(
+      { length: Math.min(SAMPLE_MAX_ARRAY_LENGTH, 2) },
+      () => isRecord3(sample) ? { ...sample } : sample
+    );
+  }
+  if (schemaType === "string") {
+    if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+      return schema.enum[0];
+    }
+    if (typeof schema.default === "string") return schema.default;
+    return "sample text";
+  }
+  if (schemaType === "number" || schemaType === "integer") {
+    if (typeof schema.default === "number") return schema.default;
+    return 42;
+  }
+  if (schemaType === "boolean") {
+    if (typeof schema.default === "boolean") return schema.default;
+    return true;
+  }
+  return "sample value";
+}
+function generateSampleForProperty(fieldName, prop, depth) {
+  if (depth > SAMPLE_MAX_DEPTH) return "[max depth]";
+  if (typeof prop.default !== "undefined") return prop.default;
+  if (Array.isArray(prop.enum) && prop.enum.length > 0) return prop.enum[0];
+  const propType = stringValue2(prop.type, "");
+  if (propType === "object" || isRecord3(prop.properties)) {
+    return generateSampleFromSchema(prop, depth);
+  }
+  if (propType === "array") {
+    const items = isRecord3(prop.items) ? prop.items : null;
+    const itemSample = items ? generateSampleFromSchema(items, depth + 1) : sampleValueForField(fieldName, depth);
+    return Array.from(
+      { length: SAMPLE_MAX_ARRAY_LENGTH },
+      () => isRecord3(itemSample) ? { ...itemSample } : itemSample
+    );
+  }
+  if (propType === "number" || propType === "integer") {
+    const heuristic = sampleValueForField(fieldName, depth);
+    return typeof heuristic === "number" ? heuristic : 42;
+  }
+  if (propType === "boolean") {
+    const heuristic = sampleValueForField(fieldName, depth);
+    return typeof heuristic === "boolean" ? heuristic : true;
+  }
+  return sampleValueForField(fieldName, depth);
+}
+function trackerStressData(mode) {
+  const longWord = "HyperAdministrativelyOverInstrumentalizedContinuityCheckpoint";
+  const commonCast = [
+    {
+      name: "Cecelia Voss",
+      role: "Political liaison",
+      desc: "Composed, watchful, and tracking every private reaction in the room.",
+      rel: [
+        { t: "Liaison", c: "Cecelia Voss" },
+        { t: "Trust", c: "Cautious but rising" }
+      ],
+      pockets: [
+        { t: "cigarettes", c: "right hand" },
+        { t: "folded writ", c: "inside coat" }
+      ]
+    },
+    {
+      name: mode === "mobile_torture" ? `Maximilian-${longWord}` : "Mara Ell",
+      role: "Witness",
+      desc: mode === "mobile_torture" ? `A long visual description with ${longWord} and several clauses that should reveal cramped mobile layouts.` : "Nervous but attentive, with one unresolved answer still hidden.",
+      rel: [
+        { t: mode === "mobile_torture" ? `LongRelationLabel-${longWord}` : "Pressure", c: "Knows more than she admits" }
+      ],
+      pockets: [
+        { t: mode === "mobile_torture" ? `Pocket-${longWord}` : "silver key", c: "left pocket" }
+      ]
+    }
+  ];
+  const worldItems = [
+    { t: "storm lantern", c: "low oil" },
+    { t: "sealed contract", c: "unsigned" },
+    { t: "weather", c: "rain pressing against the windows" }
+  ];
+  const base = {
+    time: { clock: "23:18", day: "Thursday", pressure: 72 },
+    loc: {
+      name: mode === "mobile_torture" ? `Northwestern-${longWord}-Observation Balcony` : "North Gallery",
+      weather: "Hard rain, amber lamps, glass fogging at the edges."
+    },
+    scene: {
+      location: mode === "mobile_torture" ? `Northwestern-${longWord}-Observation Balcony` : "North Gallery",
+      time: "late night",
+      mood: "charged but contained",
+      alert: mode === "mobile_torture" ? `Very long alert: ${longWord} ${longWord} ${longWord}.` : "A promised answer is overdue."
+    },
+    cast: commonCast,
+    rel: commonCast[0]?.rel ?? [],
+    relations: commonCast[0]?.rel ?? [],
+    pockets: commonCast[0]?.pockets ?? [],
+    world: {
+      items: worldItems,
+      alerts: [
+        { t: "Door", c: "Unlocked from the wrong side" },
+        { t: "Ledger", c: "Missing final page" }
+      ]
+    },
+    meters: {
+      danger: 63,
+      intimacy: 41,
+      suspicion: 78
+    },
+    notes: [
+      "One optional field is intentionally absent in some samples.",
+      mode === "mobile_torture" ? `Long unbroken token ${longWord}${longWord}` : "Use this to test wrapping."
+    ],
+    empty_list: [],
+    missing_optional_demo: null
+  };
+  if (mode === "minimal") {
+    return {
+      time: { clock: "09:00" },
+      loc: { name: "Small room" },
+      scene: { location: "Small room", time: "morning" },
+      cast: [commonCast[0]],
+      rel: [],
+      pockets: []
+    };
+  }
+  if (mode === "cast_heavy") {
+    return {
+      ...base,
+      cast: [
+        ...commonCast,
+        {
+          name: "Tamsin Vale",
+          role: "Guard captain",
+          desc: "Scanning exits and counting lies.",
+          rel: [{ t: "Command", c: "Controls the room" }],
+          pockets: [{ t: "brass whistle", c: "belt" }]
+        },
+        {
+          name: "Oren Pike",
+          role: "Messenger",
+          desc: "Carrying a letter he has not read.",
+          rel: [{ t: "Risk", c: "May bolt if pressed" }],
+          pockets: [{ t: "sealed letter", c: "satchel" }]
+        }
+      ]
+    };
+  }
+  if (mode === "world_heavy") {
+    return {
+      ...base,
+      world: {
+        items: [
+          ...worldItems,
+          { t: "north door", c: "barred" },
+          { t: "old bell", c: "rings without being touched" },
+          { t: "ledger ink", c: "fresh" }
+        ],
+        factions: [
+          { t: "Wardens", c: "watching" },
+          { t: "Archivists", c: "withholding records" }
+        ]
+      }
+    };
+  }
+  if (mode === "stress" || mode === "mobile_torture") {
+    return {
+      ...base,
+      cast: [
+        ...commonCast,
+        {
+          name: "Dr. Halden Cross",
+          role: "Archivist",
+          desc: "Carries the last known map and refuses to say who drew it.",
+          rel: [
+            { t: "Debt", c: "Owes Cecelia a dangerous favor" },
+            { t: "Fear", c: "The map names him" }
+          ],
+          pockets: [
+            { t: "map tube", c: "under arm" },
+            { t: "burnt match", c: "waistcoat" }
+          ]
+        }
+      ]
+    };
+  }
+  return base;
+}
+function mergeSampleModeData(base, mode) {
+  const modeData = trackerStressData(mode);
+  if (mode === "normal") {
+    return {
+      ...modeData,
+      ...base,
+      cast: Array.isArray(base.cast) ? base.cast : modeData.cast,
+      rel: Array.isArray(base.rel) ? base.rel : modeData.rel,
+      relations: Array.isArray(base.relations) ? base.relations : modeData.relations,
+      pockets: Array.isArray(base.pockets) ? base.pockets : modeData.pockets,
+      world: isRecord3(base.world) ? { ...modeData.world, ...base.world } : modeData.world
+    };
+  }
+  return {
+    ...base,
+    ...modeData,
+    world: isRecord3(base.world) && isRecord3(modeData.world) ? { ...base.world, ...modeData.world } : modeData.world
+  };
+}
+function generateSampleSnapshot(jsonSchema, mode = "normal") {
+  const result = generateSampleFromSchema(jsonSchema, 0);
+  const base = isRecord3(result) ? result : { data: result };
+  return mergeSampleModeData(base, mode);
+}
+var SCHEMA_META_KEYS = /* @__PURE__ */ new Set(["type", "properties", "required", "description", "items", "default", "enum"]);
+var TEMPLATE_HELPERS = /* @__PURE__ */ new Set([
+  "default",
+  "percent",
+  "json",
+  "eq",
+  "gt",
+  "lt",
+  "and",
+  "or",
+  "not",
+  "class",
+  "safeClass",
+  "lower",
+  "upper",
+  "truncate",
+  "length",
+  "join",
+  "pluck",
+  "pluckJoin",
+  "get",
+  "coalesce",
+  "isArray",
+  "isObject",
+  "isEmpty",
+  "notEmpty",
+  "clamp",
+  "meterWidth",
+  "nl2br",
+  "chip",
+  "chipList",
+  "fieldChip",
+  "fieldChipList"
+]);
+function valueAtTemplatePath(source, path) {
+  if (!path) return source;
+  let current = source;
+  for (const part of path.split(".")) {
+    if (!part) continue;
+    if (Array.isArray(current) && /^\d+$/.test(part)) {
+      current = current[Number(part)];
+    } else if (isRecord3(current)) {
+      current = current[part];
+    } else {
+      return void 0;
+    }
+  }
+  return current;
+}
+function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
+  if (depth > 5) return [];
+  if (isRecord3(schema.properties)) {
+    return collectSchemaFieldNames(schema.properties, prefix, depth);
+  }
+  const fields = [];
+  for (const key of Object.keys(schema)) {
+    if (SCHEMA_META_KEYS.has(key)) continue;
+    const fullKey = prefix ? `${prefix}.${key}` : key;
+    fields.push(fullKey);
+    const val = schema[key];
+    if (isRecord3(val)) {
+      if (isRecord3(val.properties)) {
+        fields.push(...collectSchemaFieldNames(val.properties, fullKey, depth + 1));
+      } else if (val.type === "array" && isRecord3(val.items)) {
+        const item = val.items;
+        if (isRecord3(item.properties)) {
+          fields.push(...collectSchemaFieldNames(item.properties, fullKey, depth + 1));
+        } else if (isRecord3(item)) {
+          fields.push(...collectSchemaFieldNames(item, fullKey, depth + 1));
+        }
+      } else if (val.type !== "string" && val.type !== "number" && val.type !== "boolean" && val.type !== "integer" && val.type !== "array") {
+        fields.push(...collectSchemaFieldNames(val, fullKey, depth + 1));
+      }
+    }
+  }
+  return [...new Set(fields)];
+}
+function expressionTokens(expression) {
+  const tokens = [];
+  const pattern = /"[^"]*"|'[^']*'|[^\s]+/g;
+  let match;
+  while ((match = pattern.exec(expression)) !== null) tokens.push(match[0] ?? "");
+  return tokens;
+}
+function isLiteralToken(token) {
+  return token === "true" || token === "false" || token === "null" || /^-?\d+(?:\.\d+)?$/.test(token) || /^".*"$/.test(token) || /^'.*'$/.test(token);
+}
+function normalizeTemplatePath(path, contextStack) {
+  const trimmed = path.trim();
+  if (!trimmed || isLiteralToken(trimmed)) return null;
+  if (TEMPLATE_HELPERS.has(trimmed)) return null;
+  if (trimmed.startsWith("@root.")) return trimmed.slice(6);
+  if (trimmed === "@root") return null;
+  if (trimmed === "@index" || trimmed === "@first" || trimmed === "@last") return null;
+  if (trimmed.startsWith("data.")) return trimmed.slice(5);
+  let withoutData = trimmed;
+  let contextIndex = contextStack.length - 1;
+  while (withoutData.startsWith("../")) {
+    withoutData = withoutData.slice(3);
+    contextIndex -= 1;
+  }
+  const currentContext = contextStack[Math.max(0, contextIndex)] ?? "";
+  if (withoutData === "this" || withoutData === ".") return currentContext || null;
+  if (withoutData.startsWith("this.")) {
+    return currentContext ? `${currentContext}.${withoutData.slice(5)}` : withoutData.slice(5);
+  }
+  const root = withoutData.split(".")[0] ?? "";
+  if (currentContext && root && !withoutData.includes(".") && root !== currentContext.split(".")[0]) {
+    return `${currentContext}.${withoutData}`;
+  }
+  if (currentContext && root && !withoutData.startsWith(`${currentContext}.`) && root !== currentContext.split(".")[0]) {
+    return `${currentContext}.${withoutData}`;
+  }
+  return withoutData;
+}
+function addTemplateExpressionPaths(expression, contextStack, placeholders) {
+  const tokens = expressionTokens(expression);
+  if (tokens.length === 0) return;
+  const relevant = TEMPLATE_HELPERS.has(tokens[0] ?? "") ? tokens.slice(1) : tokens;
+  for (const token of relevant) {
+    const normalized = normalizeTemplatePath(token, contextStack);
+    if (normalized) placeholders.add(normalized);
+  }
+}
+function findTemplatePlaceholders(template) {
+  const placeholders = /* @__PURE__ */ new Set();
+  const contextStack = [];
+  const pattern = /\{\{\s*([\s\S]*?)\s*\}\}/g;
+  let match;
+  while ((match = pattern.exec(template)) !== null) {
+    const expression = (match[1] ?? "").trim();
+    if (!expression || expression === "else") continue;
+    if (expression.startsWith("/")) {
+      const closing = expression.slice(1).trim();
+      if (closing === "each" || closing === "with") contextStack.pop();
+      continue;
+    }
+    if (expression.startsWith("#")) {
+      const [block, ...rest] = expressionTokens(expression.slice(1));
+      const blockExpression = rest.join(" ");
+      if (blockExpression) addTemplateExpressionPaths(blockExpression, contextStack, placeholders);
+      if (block === "each" || block === "with") {
+        const normalized = normalizeTemplatePath(blockExpression, contextStack);
+        if (normalized) contextStack.push(normalized);
+      }
+      continue;
+    }
+    addTemplateExpressionPaths(expression, contextStack, placeholders);
+  }
+  return [...placeholders];
+}
+function findDirectInterpolatedPaths(template) {
+  const direct = /* @__PURE__ */ new Set();
+  const contextStack = [];
+  const pattern = /\{\{\s*([\s\S]*?)\s*\}\}/g;
+  let match;
+  while ((match = pattern.exec(template)) !== null) {
+    const expression = (match[1] ?? "").trim();
+    if (!expression || expression === "else") continue;
+    if (expression.startsWith("/")) {
+      const closing = expression.slice(1).trim();
+      if (closing === "each" || closing === "with") contextStack.pop();
+      continue;
+    }
+    if (expression.startsWith("#")) {
+      const [block, ...rest] = expressionTokens(expression.slice(1));
+      const blockExpression = rest.join(" ");
+      if (block === "each" || block === "with") {
+        const normalized2 = normalizeTemplatePath(blockExpression, contextStack);
+        if (normalized2) contextStack.push(normalized2);
+      }
+      continue;
+    }
+    const tokens = expressionTokens(expression);
+    if (tokens.length !== 1 || TEMPLATE_HELPERS.has(tokens[0] ?? "")) continue;
+    const normalized = normalizeTemplatePath(tokens[0] ?? "", contextStack);
+    if (normalized) direct.add(normalized);
+  }
+  return [...direct];
+}
+function collectTemplateAuthoringWarnings(template, sampleData) {
+  const rawObjectInterpolationPaths = [];
+  const rawArrayInterpolationPaths = [];
+  for (const path of findDirectInterpolatedPaths(template)) {
+    const value = valueAtTemplatePath(sampleData, path);
+    if (Array.isArray(value)) rawArrayInterpolationPaths.push(path);
+    else if (isRecord3(value)) rawObjectInterpolationPaths.push(path);
+  }
+  const mobileRiskWarnings = [];
+  const verticalTextRiskWarnings = [];
+  const styleText = template.replace(/\s+/g, " ");
+  const fixedWidthPattern = /\b(?:width|min-width)\s*:\s*(\d{3,5})px/gi;
+  let widthMatch;
+  while ((widthMatch = fixedWidthPattern.exec(styleText)) !== null) {
+    const width = Number(widthMatch[1]);
+    if (Number.isFinite(width) && width > 360) {
+      mobileRiskWarnings.push(`Possible mobile overflow: fixed/min width ${width}px may exceed common phone viewport.`);
+    }
+    if (Number.isFinite(width) && width > 0 && width <= 72) {
+      verticalTextRiskWarnings.push(`Possible vertical text wrapping: narrow fixed width ${width}px can force letter-by-letter wrapping.`);
+    }
+  }
+  if (/grid-template-columns\s*:[^;]*(?:\d+px[^;]*){3,}/i.test(styleText)) {
+    mobileRiskWarnings.push("Possible mobile overflow: grid uses several fixed pixel columns.");
+  }
+  if (/white-space\s*:\s*nowrap/i.test(styleText)) {
+    mobileRiskWarnings.push("Possible mobile overflow: white-space nowrap can push long tracker content off screen.");
+  }
+  if (/\bposition\s*:\s*(?:absolute|fixed)\b/i.test(styleText)) {
+    mobileRiskWarnings.push("Possible mobile overflow: absolute/fixed positioning inside a template can escape small preview shells.");
+  }
+  if (/<svg\b[^>]*(?:width|height)\s*=\s*["']?(\d{3,5})/i.test(template)) {
+    mobileRiskWarnings.push("Possible mobile overflow: SVG has a large fixed width or height.");
+  }
+  if (/writing-mode\s*:/i.test(styleText)) {
+    verticalTextRiskWarnings.push("Possible vertical text wrapping: writing-mode is set in template CSS.");
+  }
+  if (/word-break\s*:\s*(?:break-all|break-word)/i.test(styleText)) {
+    verticalTextRiskWarnings.push("Possible vertical text wrapping: aggressive word-break can create letter-by-letter columns.");
+  }
+  if (/grid-template-columns\s*:[^;]*(?:\b\d{1,2}px\b|minmax\(\s*0\s*,\s*\d{1,2}px\s*\))/i.test(styleText)) {
+    verticalTextRiskWarnings.push("Possible vertical text wrapping: a very narrow grid column may squeeze labels.");
+  }
+  return {
+    rawObjectInterpolationPaths: [...new Set(rawObjectInterpolationPaths)],
+    rawArrayInterpolationPaths: [...new Set(rawArrayInterpolationPaths)],
+    mobileRiskWarnings: [...new Set(mobileRiskWarnings)],
+    verticalTextRiskWarnings: [...new Set(verticalTextRiskWarnings)]
+  };
+}
+function presetName(preset) {
+  return preset.name ?? "";
+}
+function presetId(preset) {
+  return "id" in preset && typeof preset.id === "string" ? preset.id : "validation_target";
+}
+function validatePresetReport(preset, options) {
+  const entries = [];
+  const missingPlaceholders = [];
+  const unusedSchemaFields = [];
+  const rawObjectInterpolationPaths = [];
+  const rawArrayInterpolationPaths = [];
+  const mobileRiskWarnings = [];
+  const verticalTextRiskWarnings = [];
+  const sanitizerWarningGroups = [];
+  const rendererRequirements = detectTemplateRendererRequirements(preset.htmlTemplate ?? "");
+  let sampleRenderResult = null;
+  if (preset.name?.trim()) {
+    entries.push({ severity: "pass", category: "Metadata", message: "Preset name exists." });
+  } else {
+    entries.push({ severity: "error", category: "Metadata", message: "Preset name is empty." });
+  }
+  if (preset.version?.trim()) {
+    entries.push({ severity: "pass", category: "Metadata", message: "Preset version exists." });
+  } else {
+    entries.push({ severity: "error", category: "Metadata", message: "Preset version is missing." });
+  }
+  if (isRecord3(preset.jsonSchema)) {
+    const rootKeys = Object.keys(preset.jsonSchema);
+    if (rootKeys.length > 0) {
+      entries.push({ severity: "pass", category: "Schema", message: `JSON schema has ${rootKeys.length} root field(s): ${rootKeys.slice(0, 10).join(", ")}${rootKeys.length > 10 ? "..." : ""}.` });
+    } else {
+      entries.push({ severity: "error", category: "Schema", message: "JSON schema is empty (no root fields)." });
+    }
+    const schemaJson = JSON.stringify(preset.jsonSchema, null, 2);
+    const schemaSize = schemaJson.length;
+    if (schemaSize > 5e4) {
+      entries.push({ severity: "warning", category: "Schema", message: `JSON schema is very large (${schemaSize.toLocaleString()} chars). Consider simplifying.` });
+    } else {
+      entries.push({ severity: "info", category: "Schema", message: `JSON schema size: ${schemaSize.toLocaleString()} chars.` });
+    }
+    const schemaObj = preset.jsonSchema;
+    if (Array.isArray(schemaObj.required)) {
+      const requiredFields = schemaObj.required.filter((f) => typeof f === "string");
+      const invalidRequired = requiredFields.filter((f) => !rootKeys.includes(f) && !(isRecord3(schemaObj.properties) && f in schemaObj.properties));
+      if (invalidRequired.length > 0) {
+        entries.push({ severity: "warning", category: "Schema", message: `Required fields not in schema properties: ${invalidRequired.join(", ")}.` });
+      }
+    }
+  } else {
+    entries.push({ severity: "error", category: "Schema", message: "JSON schema is not a valid object." });
+  }
+  const prompt = preset.promptInstructions ?? "";
+  if (prompt.trim()) {
+    entries.push({ severity: "pass", category: "Prompt", message: "Prompt instructions exist." });
+    const promptTokens = Math.ceil(prompt.length / 4);
+    entries.push({ severity: "info", category: "Prompt", message: `Estimated prompt tokens: ~${promptTokens.toLocaleString()}.` });
+    if (promptTokens > 8e3) {
+      entries.push({ severity: "warning", category: "Prompt", message: `Prompt is very large (~${promptTokens.toLocaleString()} tokens). Consider reducing if generation is slow.` });
+    }
+    const hasJsonInstruction = /json[\s-]*only|respond[\s]*(?:only[\s]*)?(?:with|in)[\s]*json|output[\s]*(?:must[\s]*be[\s]*)?json|no[\s]*(?:markdown|prose|explanation)/i.test(prompt);
+    if (!hasJsonInstruction) {
+      entries.push({ severity: "warning", category: "Prompt", message: "Prompt may not contain a clear JSON-only instruction. Consider adding 'Respond only with JSON' to prevent prose around the tracker output." });
+    }
+  } else {
+    entries.push({ severity: "error", category: "Prompt", message: "Prompt instructions are empty." });
+  }
+  const template = preset.htmlTemplate ?? "";
+  if (template.trim()) {
+    entries.push({ severity: "pass", category: "Template", message: "HTML template exists." });
+    entries.push({ severity: "info", category: "Template", message: `Template size: ${template.length.toLocaleString()} chars.` });
+    if (rendererRequirements.features.length > 0) {
+      entries.push({
+        severity: rendererRequirements.recommendedMode === "dev" ? "warning" : "info",
+        category: "Renderer",
+        message: `Template uses ${rendererRequirements.features.join(", ")}. Recommended mode: ${rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : "Trusted"}.`
+      });
+    }
+    for (const warning of rendererRequirements.warnings) {
+      entries.push({ severity: "warning", category: "Renderer", message: warning });
+    }
+    const sampleData = isRecord3(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema, options?.sampleMode ?? "normal") : {};
+    const authoringWarnings = collectTemplateAuthoringWarnings(template, sampleData);
+    rawObjectInterpolationPaths.push(...authoringWarnings.rawObjectInterpolationPaths);
+    rawArrayInterpolationPaths.push(...authoringWarnings.rawArrayInterpolationPaths);
+    mobileRiskWarnings.push(...authoringWarnings.mobileRiskWarnings);
+    verticalTextRiskWarnings.push(...authoringWarnings.verticalTextRiskWarnings);
+    for (const path of rawArrayInterpolationPaths) {
+      entries.push({
+        severity: "warning",
+        category: "Template Lint",
+        message: `This path appears to be an array and may render as raw JSON: ${path}. Use {{#each ${path}}}...{{/each}} or a chip/list helper.`
+      });
+    }
+    for (const path of rawObjectInterpolationPaths) {
+      entries.push({
+        severity: "warning",
+        category: "Template Lint",
+        message: `This path appears to be an object and may render as raw JSON: ${path}. Use {{#with ${path}}}...{{/with}}, {{json ${path}}}, or a field helper.`
+      });
+    }
+    for (const warning of mobileRiskWarnings) {
+      entries.push({ severity: "warning", category: "Mobile QA", message: warning });
+    }
+    for (const warning of verticalTextRiskWarnings) {
+      entries.push({ severity: "warning", category: "Mobile QA", message: warning });
+    }
+    if (isRecord3(preset.jsonSchema)) {
+      const schemaFields = collectSchemaFieldNames(preset.jsonSchema);
+      const templatePlaceholders = findTemplatePlaceholders(template);
+      for (const placeholder of templatePlaceholders) {
+        const rootField = placeholder.split(".")[0];
+        if (!schemaFields.some((f) => f === placeholder || f.startsWith(placeholder + ".") || f === rootField)) {
+          missingPlaceholders.push(placeholder);
+        }
+      }
+      if (missingPlaceholders.length > 0) {
+        entries.push({ severity: "warning", category: "Template", message: `Template references fields not in schema: ${missingPlaceholders.join(", ")}.` });
+      }
+      for (const field of schemaFields) {
+        const rootField = field.split(".")[0];
+        if (!templatePlaceholders.some((p) => p === field || p === rootField || field.startsWith(p + ".") || p.startsWith(field + "."))) {
+          unusedSchemaFields.push(field);
+        }
+      }
+      if (unusedSchemaFields.length > 0 && unusedSchemaFields.length <= 20) {
+        entries.push({ severity: "info", category: "Template", message: `Schema fields not referenced in template: ${unusedSchemaFields.join(", ")}.` });
+      }
+    }
+    sampleRenderResult = renderHtmlTemplate(
+      { template, snapshotData: sampleData, presetId: presetId(preset), presetName: presetName(preset) },
+      {
+        allowInlineStyles: options?.allowInlineStyles ?? true,
+        templateTrustMode: options?.allowInlineStyles === false ? "safe" : "trusted",
+        maxRenderedChars: options?.maxRenderedChars ?? 5e5,
+        deduplicateWarnings: true,
+        maxWarnings: 50
+      }
+    );
+    if (sampleRenderResult.ok) {
+      entries.push({ severity: "pass", category: "Template", message: "Template renders successfully with sample data." });
+      const renderedSize = sampleRenderResult.html.length;
+      entries.push({ severity: "info", category: "Template", message: `Rendered HTML size: ${renderedSize.toLocaleString()} chars.` });
+      if (renderedSize > 1e5) {
+        entries.push({ severity: "warning", category: "Template", message: "Rendered output is very large. May be slow on mobile devices." });
+      }
+    } else {
+      entries.push({ severity: "warning", category: "Template", message: `Template render failed with sample data: ${sampleRenderResult.errors.join("; ")}` });
+    }
+    if (sampleRenderResult && sampleRenderResult.warnings.length > 0) {
+      const warningGroups = /* @__PURE__ */ new Map();
+      for (const w of sampleRenderResult.warnings) {
+        const key = w.replace(/["'][^"']*["']/g, "...").replace(/\d+/g, "N");
+        warningGroups.set(key, (warningGroups.get(key) ?? 0) + 1);
+      }
+      for (const [group, count] of warningGroups) {
+        const label = count > 1 ? `(\xD7${count}) ${group}` : group;
+        sanitizerWarningGroups.push(label);
+      }
+      if (sanitizerWarningGroups.length > 0) {
+        entries.push({ severity: "warning", category: "Sanitizer", message: `${sanitizerWarningGroups.length} sanitizer warning group(s).` });
+      }
+    }
+  } else {
+    entries.push({ severity: "info", category: "Template", message: "No HTML template. Text fallback will be used for display." });
+  }
+  const schemaPreset = {
+    id: presetId(preset),
+    name: preset.name ?? "",
+    description: "description" in preset && typeof preset.description === "string" ? preset.description : "",
+    version: preset.version ?? "1.0",
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    jsonSchema: isRecord3(preset.jsonSchema) ? preset.jsonSchema : {},
+    promptInstructions: preset.promptInstructions ?? "",
+    htmlTemplate: preset.htmlTemplate ?? "",
+    notes: preset.notes ?? "",
+    origin: "origin" in preset && typeof preset.origin === "string" ? preset.origin : "user_created"
+  };
+  const stats = estimatePresetStats(schemaPreset);
+  const packSizeEstimate = JSON.stringify(preset).length;
+  const errorCount = entries.filter((e) => e.severity === "error").length;
+  const warningCount = entries.filter((e) => e.severity === "warning").length;
+  const passCount = entries.filter((e) => e.severity === "pass").length;
+  return {
+    ok: errorCount === 0,
+    entries,
+    errorCount,
+    warningCount,
+    passCount,
+    estimatedPromptTokens: stats.estimatedTokens,
+    estimatedRenderedChars: stats.estimatedRenderedChars,
+    estimatedPackSizeChars: packSizeEstimate,
+    missingPlaceholders,
+    unusedSchemaFields,
+    rawObjectInterpolationPaths,
+    rawArrayInterpolationPaths,
+    mobileRiskWarnings,
+    verticalTextRiskWarnings,
+    sanitizerWarningGroups,
+    rendererRequirements,
+    sampleRenderResult
+  };
+}
 
 // src/shared/snapshotFormat.ts
 function isRecord4(value) {
@@ -1628,9 +2489,9 @@ function renderOnlyPresetFromLock(lock) {
     origin: "user_imported"
   };
 }
-function findByNameVersion(presets, presetName, presetVersion) {
-  if (!presetName || !presetVersion) return null;
-  return presets.find((preset) => preset.name === presetName && preset.version === presetVersion) ?? null;
+function findByNameVersion(presets, presetName2, presetVersion) {
+  if (!presetName2 || !presetVersion) return null;
+  return presets.find((preset) => preset.name === presetName2 && preset.version === presetVersion) ?? null;
 }
 function resolvePresetForSnapshot(source, installedPresets, activePreset) {
   const snapshot = snapshotFromSource(source);
@@ -2475,6 +3336,68 @@ var STYLES = `
 .ltracker-nav-chip {
   background: color-mix(in srgb, currentColor 5%, transparent);
 }
+.ltracker-render-lab {
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 6px;
+  margin-top: 12px;
+  padding: 10px;
+}
+.ltracker-render-lab-stage {
+  border: 1px dashed color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 6px;
+  box-sizing: border-box;
+  margin: 10px auto 0;
+  max-width: 100%;
+  overflow: auto;
+  padding: 8px;
+}
+.ltracker-render-lab-stage.ltd-bg-plain_dark {
+  background: #111318;
+}
+.ltracker-render-lab-stage.ltd-bg-chat {
+  background: linear-gradient(180deg, rgba(36,38,48,.95), rgba(18,20,28,.95));
+}
+.ltracker-render-lab-stage.ltd-bg-checker {
+  background-color: #151515;
+  background-image:
+    linear-gradient(45deg, rgba(255,255,255,.08) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255,255,255,.08) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255,255,255,.08) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255,255,255,.08) 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+.ltracker-render-lab-preview {
+  box-sizing: border-box;
+  margin: 0 auto;
+  min-height: 80px;
+  overflow: auto;
+}
+.ltracker-render-lab-preview.ltd-lab-inline_contained {
+  max-width: 420px;
+}
+.ltracker-render-lab-preview.ltd-lab-inline_wide,
+.ltracker-render-lab-preview.ltd-lab-popover_body,
+.ltracker-render-lab-preview.ltd-lab-fullscreen_reader_body {
+  width: 100%;
+}
+.ltracker-template-chip {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 4px;
+  line-height: 1.2;
+  margin: 2px;
+  max-width: 100%;
+  padding: 2px 7px;
+  vertical-align: middle;
+}
+.ltracker-template-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .ltracker-section {
   scroll-margin-top: 12px;
 }
@@ -3088,6 +4011,16 @@ function emptyState() {
       lastPresetValidationWarningCount: 0,
       lastPresetValidationEstimatedTokens: null,
       lastPresetValidationEstimatedRenderedChars: null,
+      lastPresetLintAt: null,
+      lastPresetLintWarningCount: 0,
+      lastPresetLintErrorCount: 0,
+      lastPresetLintRawObjectPaths: [],
+      lastPresetLintMobileRiskCount: 0,
+      lastPresetRenderLabViewport: null,
+      lastPresetRenderLabSurface: null,
+      lastPresetRenderLabResult: null,
+      lastPresetRenderLabRenderedChars: null,
+      lastPresetRenderLabWarnings: [],
       connectionProfileSelected: false,
       effectiveTrackerConnectionMode: "active_quiet",
       effectiveTrackerConnectionReason: "default",
@@ -3212,6 +4145,11 @@ function setup(ctx) {
   let stagedValidationReport = null;
   let stagedSampleSnapshot = null;
   let stagedSampleRenderResult = null;
+  let renderLabViewport = "phone_narrow";
+  let renderLabCustomWidth = 360;
+  let renderLabSurface = "inline_wide";
+  let renderLabBackground = "chat";
+  let renderLabSampleMode = "stress";
   let activePopoverElement = null;
   let activePopoverEntry = null;
   let activeReaderElement = null;
@@ -4780,11 +5718,11 @@ function setup(ctx) {
     };
     return draft;
   }
-  function selectPreset(presetId) {
+  function selectPreset(presetId2) {
     send({
       type: "select_preset",
       chatId: activeChatId(),
-      presetId,
+      presetId: presetId2,
       requestId: requestId("preset-select")
     });
   }
@@ -4877,7 +5815,95 @@ function setup(ctx) {
     send({
       type: "generate_sample_snapshot",
       chatId: activeChatId(),
+      sampleMode: renderLabSampleMode,
       requestId: requestId("preset-sample-snapshot")
+    });
+  }
+  function renderLabWidthPx() {
+    if (renderLabViewport === "phone_narrow") return 360;
+    if (renderLabViewport === "phone_large") return 430;
+    if (renderLabViewport === "tablet") return 768;
+    if (renderLabViewport === "desktop") return 1100;
+    return Math.min(1800, Math.max(260, Math.round(renderLabCustomWidth || 360)));
+  }
+  function renderLabTargetPreset() {
+    return stagedImportPack?.preset ?? state.activePreset;
+  }
+  function buildRenderLabPreview() {
+    const preset = renderLabTargetPreset();
+    const schema = isRecord6(preset.jsonSchema) ? preset.jsonSchema : {};
+    const sampleData = generateSampleSnapshot(schema, renderLabSampleMode);
+    const report = validatePresetReport(preset, {
+      allowInlineStyles: true,
+      maxRenderedChars: state.settings.budget.renderedHtmlMaxChars,
+      sampleMode: renderLabSampleMode
+    });
+    const rendered = renderHtmlTemplate(
+      {
+        template: preset.htmlTemplate ?? "",
+        snapshotData: sampleData,
+        presetId: "id" in preset && typeof preset.id === "string" ? preset.id : "render_lab",
+        presetName: preset.name ?? "Render Lab Preset"
+      },
+      {
+        allowInlineStyles: true,
+        templateTrustMode: "trusted",
+        missingValuePlaceholder: state.settings.renderer.missingValuePlaceholder,
+        maxRenderedChars: state.settings.budget.renderedHtmlMaxChars,
+        deduplicateWarnings: true,
+        maxWarnings: 80
+      }
+    );
+    const warnings = [
+      ...report.rawArrayInterpolationPaths.map((path) => `Raw array interpolation risk: ${path}`),
+      ...report.rawObjectInterpolationPaths.map((path) => `Raw object interpolation risk: ${path}`),
+      ...report.mobileRiskWarnings,
+      ...report.verticalTextRiskWarnings,
+      ...rendered.warnings,
+      ...rendered.errors
+    ];
+    return {
+      preset,
+      sampleData,
+      report,
+      html: rendered.html || `<pre>${escapeHtml2(rendered.textFallback)}</pre>`,
+      warnings,
+      result: rendered.html ? "rendered" : "fallback"
+    };
+  }
+  function renderLabReportText() {
+    const lab = buildRenderLabPreview();
+    return [
+      `Preset: ${lab.preset.name ?? "Unnamed"}`,
+      `Sample mode: ${renderLabSampleMode}`,
+      `Viewport: ${renderLabViewport} (${renderLabWidthPx()}px)`,
+      `Surface: ${renderLabSurface}`,
+      `Result: ${lab.result}`,
+      `Errors: ${lab.report.errorCount}`,
+      `Warnings: ${lab.report.warningCount}`,
+      `Prompt tokens: ~${lab.report.estimatedPromptTokens}`,
+      `Rendered chars: ${lab.html.length}`,
+      `Raw array paths: ${lab.report.rawArrayInterpolationPaths.join(", ") || "none"}`,
+      `Raw object paths: ${lab.report.rawObjectInterpolationPaths.join(", ") || "none"}`,
+      `Mobile risks: ${lab.report.mobileRiskWarnings.join(" | ") || "none"}`,
+      `Vertical text risks: ${lab.report.verticalTextRiskWarnings.join(" | ") || "none"}`,
+      `Renderer features: ${lab.report.rendererRequirements.features.join(", ") || "basic"}`,
+      `Renderer warnings: ${lab.report.rendererRequirements.warnings.join(" | ") || "none"}`,
+      `Render warnings: ${lab.warnings.join(" | ") || "none"}`
+    ].join("\n");
+  }
+  function recordRenderLabDiagnostics(result) {
+    localDiagnostics({
+      lastPresetRenderLabViewport: renderLabViewport,
+      lastPresetRenderLabSurface: renderLabSurface,
+      lastPresetRenderLabResult: result.result,
+      lastPresetRenderLabRenderedChars: result.html.length,
+      lastPresetRenderLabWarnings: result.warnings.slice(0, 20),
+      lastPresetLintAt: (/* @__PURE__ */ new Date()).toISOString(),
+      lastPresetLintWarningCount: result.report.warningCount,
+      lastPresetLintErrorCount: result.report.errorCount,
+      lastPresetLintRawObjectPaths: [...result.report.rawObjectInterpolationPaths, ...result.report.rawArrayInterpolationPaths],
+      lastPresetLintMobileRiskCount: result.report.mobileRiskWarnings.length + result.report.verticalTextRiskWarnings.length
     });
   }
   function exportPresetPackFrontend(includeSettings) {
@@ -4939,7 +5965,7 @@ function setup(ctx) {
   function executeImportPresetPack() {
     if (!stagedImportPack || !stagedImportRawText) return;
     const nameInput = tab.root.querySelector("[data-import-review-name]");
-    const presetName = nameInput?.value.trim() || stagedImportPack.preset?.name || "Imported Preset";
+    const presetName2 = nameInput?.value.trim() || stagedImportPack.preset?.name || "Imported Preset";
     const installModeSelect = tab.root.querySelector("[data-import-review-install-mode]");
     const installMode = installModeSelect?.value || "new";
     const trustModeSelect = tab.root.querySelector("[data-import-review-trust-mode]");
@@ -4952,7 +5978,7 @@ function setup(ctx) {
       importText: stagedImportRawText,
       requestId: requestId("preset-import-pack")
     };
-    if (presetName) msg.presetName = presetName;
+    if (presetName2) msg.presetName = presetName2;
     if (installMode === "overwrite") {
       const overwriteSelect = tab.root.querySelector("[data-import-review-overwrite-target]");
       if (overwriteSelect?.value) {
@@ -5387,6 +6413,95 @@ function setup(ctx) {
       recommendedConnection.max_tokens !== void 0 ? `max_tokens ${recommendedConnection.max_tokens}` : null,
       recommendedConnection.reasoning?.source ? `reasoning ${recommendedConnection.reasoning.source}` : null
     ].filter((item) => Boolean(item)).join(" / ") : null;
+    const renderLab = buildRenderLabPreview();
+    const renderLabWidth = renderLabWidthPx();
+    const renderLabWarningsHtml = renderLab.warnings.length > 0 ? `
+        <details class="ltracker-details" style="margin-top: 8px;" open>
+          <summary>Render warnings (${renderLab.warnings.length})</summary>
+          <ul style="font-size: 10px; margin: 6px 0 0 16px; padding: 0;">
+            ${renderLab.warnings.slice(0, 30).map((warning) => `<li>${escapeHtml2(warning)}</li>`).join("")}
+          </ul>
+        </details>
+      ` : `<p class="ltracker-note">No Render Lab warnings for this sample.</p>`;
+    const renderLabRequirements = renderLab.report.rendererRequirements.features.length > 0 ? renderLab.report.rendererRequirements.features.join(", ") : "Basic HTML";
+    const renderLabHtml = `
+      <div class="ltracker-render-lab" data-render-lab-root>
+        <div class="ltracker-section-title">
+          <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold;">Preset Render Lab</span>
+          <span class="ltracker-chip">Preview only</span>
+        </div>
+        <div class="ltracker-settings">
+          <label class="ltracker-field">
+            Sample data
+            <select data-render-lab="sampleMode">
+              <option value="minimal"${selected(renderLabSampleMode === "minimal")}>Minimal</option>
+              <option value="normal"${selected(renderLabSampleMode === "normal")}>Normal</option>
+              <option value="stress"${selected(renderLabSampleMode === "stress")}>Stress / Max Arrays</option>
+              <option value="mobile_torture"${selected(renderLabSampleMode === "mobile_torture")}>Mobile Torture</option>
+              <option value="cast_heavy"${selected(renderLabSampleMode === "cast_heavy")}>Cast Heavy</option>
+              <option value="world_heavy"${selected(renderLabSampleMode === "world_heavy")}>World Heavy</option>
+            </select>
+          </label>
+          <label class="ltracker-field">
+            Viewport
+            <select data-render-lab="viewport">
+              <option value="phone_narrow"${selected(renderLabViewport === "phone_narrow")}>Phone narrow - 360px</option>
+              <option value="phone_large"${selected(renderLabViewport === "phone_large")}>Phone large - 430px</option>
+              <option value="tablet"${selected(renderLabViewport === "tablet")}>Tablet - 768px</option>
+              <option value="desktop"${selected(renderLabViewport === "desktop")}>Desktop - 1100px</option>
+              <option value="custom"${selected(renderLabViewport === "custom")}>Custom width</option>
+            </select>
+          </label>
+          <label class="ltracker-field">
+            Custom width
+            <input type="number" min="260" max="1800" step="10" data-render-lab="customWidth" value="${escapeHtml2(String(renderLabCustomWidth))}">
+          </label>
+          <label class="ltracker-field">
+            Display shell
+            <select data-render-lab="surface">
+              <option value="inline_contained"${selected(renderLabSurface === "inline_contained")}>Inline contained</option>
+              <option value="inline_wide"${selected(renderLabSurface === "inline_wide")}>Inline wide</option>
+              <option value="popover_body"${selected(renderLabSurface === "popover_body")}>Popover body</option>
+              <option value="fullscreen_reader_body"${selected(renderLabSurface === "fullscreen_reader_body")}>Fullscreen reader body</option>
+            </select>
+          </label>
+          <label class="ltracker-field">
+            Background
+            <select data-render-lab="background">
+              <option value="chat"${selected(renderLabBackground === "chat")}>Simulated chat</option>
+              <option value="plain_dark"${selected(renderLabBackground === "plain_dark")}>Plain dark</option>
+              <option value="checker"${selected(renderLabBackground === "checker")}>Transparent checker</option>
+            </select>
+          </label>
+        </div>
+        <div class="ltracker-grid ltracker-details" style="margin-top: 8px;">
+          ${renderRow("Preset under test", renderLab.preset.name ?? "Unnamed")}
+          ${renderRow("Viewport width", `${renderLabWidth}px`)}
+          ${renderRow("Renderer requirements", renderLabRequirements)}
+          ${renderRow("Recommended mode", renderLab.report.rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : renderLab.report.rendererRequirements.recommendedMode)}
+          ${renderRow("Raw array paths", renderLab.report.rawArrayInterpolationPaths.join(", ") || null)}
+          ${renderRow("Raw object paths", renderLab.report.rawObjectInterpolationPaths.join(", ") || null)}
+          ${renderRow("Mobile QA", `${renderLab.report.mobileRiskWarnings.length + renderLab.report.verticalTextRiskWarnings.length} warning(s)`)}
+          ${renderRow("Estimated prompt tokens", `~${renderLab.report.estimatedPromptTokens.toLocaleString()}`)}
+          ${renderRow("Rendered chars", renderLab.html.length.toLocaleString())}
+        </div>
+        <div class="ltracker-render-lab-stage ltd-bg-${escapeHtml2(renderLabBackground)}" style="width: ${escapeHtml2(String(renderLabWidth))}px;">
+          <div class="ltracker-render-lab-preview ltd-lab-${escapeHtml2(renderLabSurface)}" data-render-lab-preview>
+            ${renderLab.html}
+          </div>
+        </div>
+        ${renderLabWarningsHtml}
+        <details class="ltracker-details" style="margin-top: 8px;">
+          <summary>Sanitized HTML</summary>
+          <pre class="ltracker-json" style="max-height: 180px; font-size: 10px;">${escapeHtml2(renderLab.html)}</pre>
+        </details>
+        <div class="ltracker-actions" style="margin-top: 8px;">
+          <button class="ltracker-button" type="button" data-action="copy-render-lab-html">Copy sanitized HTML</button>
+          <button class="ltracker-button" type="button" data-action="copy-render-lab-sample">Copy sample JSON</button>
+          <button class="ltracker-button" type="button" data-action="copy-render-lab-report">Copy lint report</button>
+        </div>
+      </div>
+    `;
     let importReviewHtml = "";
     if (stagedImportPack) {
       const pack = stagedImportPack;
@@ -5418,6 +6533,17 @@ function setup(ctx) {
       }
       const recDetailsHtml = recDetailsList.length > 0 ? `<div class="ltracker-rec-details" style="font-size: 10px; color: #aaa; margin-top: 4px; padding-left: 10px;">Applying recommendations will update:<ul>${recDetailsList.map((item) => `<li>${escapeHtml2(item)}</li>`).join("")}</ul></div>` : "";
       const rendererRequirements = detectTemplateRendererRequirements(preset?.htmlTemplate ?? "");
+      const importValidation = preset ? validatePresetReport(preset, {
+        allowInlineStyles: true,
+        maxRenderedChars: state.settings.budget.renderedHtmlMaxChars,
+        sampleMode: renderLabSampleMode
+      }) : null;
+      const importQaSignals = importValidation ? [
+        importValidation.rawArrayInterpolationPaths.length > 0 ? `Possible raw arrays: ${importValidation.rawArrayInterpolationPaths.join(", ")}` : null,
+        importValidation.rawObjectInterpolationPaths.length > 0 ? `Possible raw objects: ${importValidation.rawObjectInterpolationPaths.join(", ")}` : null,
+        importValidation.mobileRiskWarnings.length > 0 ? `Mobile overflow risks: ${importValidation.mobileRiskWarnings.length}` : null,
+        importValidation.verticalTextRiskWarnings.length > 0 ? `Vertical text risks: ${importValidation.verticalTextRiskWarnings.length}` : null
+      ].filter((item) => Boolean(item)) : [];
       const rendererRequirementsHtml = rendererRequirements.features.length > 0 || rendererRequirements.warnings.length > 0 ? `
           <div class="ltracker-rec-details" style="font-size: 11px; color: #ddd; margin-bottom: 12px; border: 1px solid rgba(155,92,255,.35); padding: 8px; border-radius: 6px;">
             <strong>This preset uses:</strong>
@@ -5425,6 +6551,8 @@ function setup(ctx) {
               ${rendererRequirements.features.map((feature) => `<li>${escapeHtml2(feature)}</li>`).join("") || "<li>Basic HTML template features</li>"}
             </ul>
             <div>Recommended mode: ${escapeHtml2(rendererRequirements.recommendedMode === "dev" ? "Trusted; JavaScript remains stripped until future Dev Mode" : rendererRequirements.recommendedMode === "trusted" ? "Trusted" : "Safe")}</div>
+            ${importValidation ? `<div>Estimated prompt tokens: ~${escapeHtml2(importValidation.estimatedPromptTokens.toLocaleString())} / rendered size: ${escapeHtml2(importValidation.estimatedRenderedChars.toLocaleString())} chars / schema fields: ${escapeHtml2(String(importValidation.unusedSchemaFields.length + importValidation.missingPlaceholders.length))} QA paths checked</div>` : ""}
+            ${importQaSignals.length > 0 ? `<div style="color: #fbbc05; margin-top: 4px;">Mobile QA status: review recommended. ${escapeHtml2(importQaSignals.join(" / "))}</div>` : `<div style="color: #34a853; margin-top: 4px;">Mobile QA status: no obvious raw-object or mobile layout warnings in sample preview.</div>`}
             ${rendererRequirements.warnings.map((warning) => `<div style="color: #fbbc05; margin-top: 4px;">${escapeHtml2(warning)}</div>`).join("")}
           </div>
         ` : "";
@@ -5519,6 +6647,17 @@ function setup(ctx) {
             </ul>
           </details>
         ` : "";
+      const authoringLintHtml = rep.rawArrayInterpolationPaths.length > 0 || rep.rawObjectInterpolationPaths.length > 0 || rep.mobileRiskWarnings.length > 0 || rep.verticalTextRiskWarnings.length > 0 ? `
+          <details style="margin-top: 5px;" open>
+            <summary style="font-size: 11px; color: #fbbc05; cursor: pointer;">Preset Authoring Warnings</summary>
+            <ul style="font-size: 10px; margin: 4px 0 0 15px; padding: 0; color: #aaa;">
+              ${rep.rawArrayInterpolationPaths.map((path) => `<li>${escapeHtml2(`Raw array interpolation risk: ${path}. Use #each or fieldChipList/chipList.`)}</li>`).join("")}
+              ${rep.rawObjectInterpolationPaths.map((path) => `<li>${escapeHtml2(`Raw object interpolation risk: ${path}. Use #with, json, or a field helper.`)}</li>`).join("")}
+              ${rep.mobileRiskWarnings.map((warning) => `<li>${escapeHtml2(warning)}</li>`).join("")}
+              ${rep.verticalTextRiskWarnings.map((warning) => `<li>${escapeHtml2(warning)}</li>`).join("")}
+            </ul>
+          </details>
+        ` : "";
       const rendererReqHtml = rep.rendererRequirements.features.length > 0 || rep.rendererRequirements.warnings.length > 0 ? `
           <div style="font-size: 11px; color: #ddd; margin-top: 8px; border: 1px solid rgba(155,92,255,.25); padding: 6px; border-radius: 4px;">
             Renderer requirements: ${escapeHtml2(rep.rendererRequirements.features.join(", ") || "Basic HTML")}
@@ -5542,6 +6681,7 @@ function setup(ctx) {
 
           ${placeholdersHtml}
           ${unusedHtml}
+          ${authoringLintHtml}
           ${warningGroupsHtml}
           ${rendererReqHtml}
 
@@ -6360,6 +7500,7 @@ function setup(ctx) {
                 Render With Sample Snapshot
               </button>
             </div>
+            ${renderLabHtml}
             ${validationReportHtml}
             ${sampleSnapshotHtml}
           </div>
@@ -6682,6 +7823,16 @@ function setup(ctx) {
               ${renderRow("Ultra mode", diagnostics.ultraModeEnabled ? "yes" : "no")}
               ${renderRow("Last preset estimated tokens", diagnostics.lastPresetEstimatedTokens)}
               ${renderRow("Last preset estimated chars", diagnostics.lastPresetEstimatedRenderedChars)}
+              ${renderRow("Last preset lint at", diagnostics.lastPresetLintAt)}
+              ${renderRow("Last preset lint warnings", diagnostics.lastPresetLintWarningCount)}
+              ${renderRow("Last preset lint errors", diagnostics.lastPresetLintErrorCount)}
+              ${renderRow("Last preset lint raw paths", diagnostics.lastPresetLintRawObjectPaths.join(", "))}
+              ${renderRow("Last preset mobile risks", diagnostics.lastPresetLintMobileRiskCount)}
+              ${renderRow("Render Lab viewport", diagnostics.lastPresetRenderLabViewport)}
+              ${renderRow("Render Lab surface", diagnostics.lastPresetRenderLabSurface)}
+              ${renderRow("Render Lab result", diagnostics.lastPresetRenderLabResult)}
+              ${renderRow("Render Lab rendered chars", diagnostics.lastPresetRenderLabRenderedChars)}
+              ${renderRow("Render Lab warnings", diagnostics.lastPresetRenderLabWarnings.join(", "))}
             </div>
           </details>
           <details class="ltracker-details">
@@ -6878,6 +8029,21 @@ function setup(ctx) {
     if (action === "copy-sample-snapshot") {
       void copyText(stagedSampleSnapshot ? JSON.stringify(stagedSampleSnapshot, null, 2) : null, "sample snapshot JSON");
     }
+    if (action === "copy-render-lab-html") {
+      const lab = buildRenderLabPreview();
+      recordRenderLabDiagnostics(lab);
+      void copyText(lab.html, "Render Lab sanitized HTML");
+    }
+    if (action === "copy-render-lab-sample") {
+      const lab = buildRenderLabPreview();
+      recordRenderLabDiagnostics(lab);
+      void copyText(JSON.stringify(lab.sampleData, null, 2), "Render Lab sample JSON");
+    }
+    if (action === "copy-render-lab-report") {
+      const lab = buildRenderLabPreview();
+      recordRenderLabDiagnostics(lab);
+      void copyText(renderLabReportText(), "Render Lab lint report");
+    }
     if (action === "undo-delete" && recentlyDeletedBanner) {
       send({
         type: "restore_deleted_tracker",
@@ -6959,9 +8125,34 @@ Detail: ${err.detail}` : ""}` : "No error recorded.";
     render();
     return true;
   };
+  const updateRenderLabControl = (element) => {
+    const control = element instanceof HTMLElement ? element.closest("[data-render-lab]") : null;
+    if (!control) return false;
+    const key = control.dataset.renderLab;
+    const value = control.value;
+    if (key === "sampleMode" && (value === "minimal" || value === "normal" || value === "stress" || value === "mobile_torture" || value === "cast_heavy" || value === "world_heavy")) {
+      renderLabSampleMode = value;
+    } else if (key === "viewport" && (value === "phone_narrow" || value === "phone_large" || value === "tablet" || value === "desktop" || value === "custom")) {
+      renderLabViewport = value;
+    } else if (key === "surface" && (value === "inline_contained" || value === "inline_wide" || value === "popover_body" || value === "fullscreen_reader_body")) {
+      renderLabSurface = value;
+    } else if (key === "background" && (value === "plain_dark" || value === "chat" || value === "checker")) {
+      renderLabBackground = value;
+    } else if (key === "customWidth") {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) renderLabCustomWidth = Math.min(1800, Math.max(260, Math.round(numeric)));
+    } else {
+      return false;
+    }
+    const lab = buildRenderLabPreview();
+    recordRenderLabDiagnostics(lab);
+    render();
+    return true;
+  };
   const onInput = (event) => {
     const historyInput = event.target instanceof HTMLElement ? event.target.closest("[data-history-filter]") : null;
     if (historyInput && updateHistoryFilter(historyInput)) return;
+    if (updateRenderLabControl(event.target)) return;
     if (isSettingsControl(event.target)) {
       scheduleSettingsAutosave();
       if (isDisplaySurfaceControl(event.target)) applyDisplaySettingsOptimistically(false);
@@ -6972,6 +8163,7 @@ Detail: ${err.detail}` : ""}` : "No error recorded.";
   const onChange = (event) => {
     const historyInput = event.target instanceof HTMLElement ? event.target.closest("[data-history-filter]") : null;
     if (historyInput && updateHistoryFilter(historyInput)) return;
+    if (updateRenderLabControl(event.target)) return;
     if (isSettingsControl(event.target)) {
       scheduleSettingsAutosave();
       if (isDisplaySurfaceControl(event.target)) applyDisplaySettingsOptimistically(true);

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20 - Preset Authoring Studio + Template Helper Pack + Mobile Render QA
+- Added helper pack for cleaner array/object rendering.
+- Added helpers for chip lists, joins, plucking fields, safe classes, clamped meter widths, and fallback values.
+- Improved nested loop rendering for cast relations, pockets, and other object arrays.
+- Added preset lint warnings for raw object/array interpolation, mobile overflow risk, and vertical text risk.
+- Added a Preset Render Lab with phone/tablet/desktop viewport previews.
+- Added stronger sample snapshot stress modes for mobile and cast-heavy templates.
+- Improved import review with renderer requirements and mobile QA signals.
+- Expanded safe scoped CSS support for professional HUD layouts.
+- Kept JavaScript disabled outside future explicit Dev Mode.
+- Preserved preset-locked rendering, display surfaces, and Trusted Renderer behavior.
+
 ## 0.19.2 - Preset-Locked Snapshot Rendering
 - Added preset render locks to generated tracker snapshots.
 - Captured preset identity, template hash, and template copy at generation time.

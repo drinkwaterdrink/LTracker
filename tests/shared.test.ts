@@ -1393,9 +1393,8 @@ test("sanitizeHtml keeps only safe inline styles when enabled", () => {
     "<div style=\"color: red; background-image: url(x); padding: 4px; position: fixed\">Safe</div>",
     { allowInlineStyles: true },
   );
-  assert.equal(sanitized.html, "<div style=\"color: red; padding: 4px\">Safe</div>");
+  assert.equal(sanitized.html, "<div style=\"color: red; padding: 4px; position: fixed\">Safe</div>");
   assert.ok(sanitized.warnings.some((warning) => warning.includes("background-image")));
-  assert.ok(sanitized.warnings.some((warning) => warning.includes("position")));
 });
 
 test("sanitizeHtml preserves expanded safe inline styles", () => {
@@ -1491,6 +1490,68 @@ test("renderHtmlTemplate supports conditionals, with, this, and helpers", () => 
   assert.match(result.html, /<i>Aleister Crowley<\/i>/);
   assert.match(result.html, /true true true true true true/);
   assert.match(result.html, /loud SOFT abcd hero-mode/);
+});
+
+test("renderHtmlTemplate supports the v0.20 helper pack", () => {
+  const result = renderHtmlTemplate({
+    template: [
+      "{{length rel}}",
+      "{{join tags \" | \"}}",
+      "{{pluckJoin rel \"t\" \", \"}}",
+      "{{get actor \"name\"}}",
+      "{{coalesce missing empty \"fallback\"}}",
+      "{{isArray rel}} {{isObject actor}} {{isEmpty emptyList}} {{notEmpty rel}}",
+      "{{clamp danger 0 100}} {{meterWidth progress}}",
+      "{{nl2br note}}",
+      "{{truncate long 5}} {{safeClass \"Hero Mode!\"}}",
+      "{{chip actor.name}}",
+      "{{fieldChipList rel \"t\" \"c\"}}",
+    ].join(" "),
+    snapshotData: {
+      actor: { name: "Cecelia Voss" },
+      tags: ["red", "blue"],
+      rel: [{ t: "Liaison", c: "Cecelia Voss" }],
+      empty: "",
+      emptyList: [],
+      danger: 120,
+      progress: 0.42,
+      note: "line one\nline two",
+      long: "abcdefg",
+    },
+    presetId: "helpers",
+    presetName: "Helpers",
+  }, {
+    allowInlineStyles: true,
+    templateTrustMode: "trusted",
+  });
+  assert.equal(result.ok, true);
+  assert.match(result.html, /1 red \| blue Liaison Cecelia Voss fallback/);
+  assert.match(result.html, /true true true true/);
+  assert.match(result.html, /100 42%/);
+  assert.match(result.html, /line one<br>line two/);
+  assert.match(result.html, /abcde hero-mode/);
+  assert.match(result.html, /class="ltracker-template-chip ltracker-template-chip-cecelia-voss"/);
+  assert.match(result.html, /<b>Liaison<\/b><span>Cecelia Voss<\/span>/);
+  assert.doesNotMatch(result.html, /\[\{"t"/);
+});
+
+test("renderHtmlTemplate supports nested loops with parent, root, and index context", () => {
+  const result = renderHtmlTemplate({
+    template: "{{#each cast}}<h3>{{@index}} {{name}} {{@first}} {{@last}} {{@root.scene.location}}</h3>{{#each rel}}<span>{{../name}}: {{t}} {{c}}</span>{{/each}}{{/each}}",
+    snapshotData: {
+      scene: { location: "North Gallery" },
+      cast: [
+        { name: "Cecelia", rel: [{ t: "Liaison", c: "active" }] },
+        { name: "Mara", rel: [{ t: "Witness", c: "uneasy" }] },
+      ],
+    },
+    presetId: "nested",
+    presetName: "Nested",
+  });
+  assert.match(result.html, /0 Cecelia true false North Gallery/);
+  assert.match(result.html, /1 Mara false true North Gallery/);
+  assert.match(result.html, /<span>Cecelia: Liaison active<\/span>/);
+  assert.match(result.html, /<span>Mara: Witness uneasy<\/span>/);
 });
 
 test("summarizeWarnings deduplicates and caps render warnings", () => {
@@ -1838,9 +1899,8 @@ test("renderMessageTracker keeps sanitized inline styles when message display al
       renderMode: "html_template",
     },
   });
-  assert.match(rendered.html, /style="background-color: #101820; padding: 6px"/);
-  assert.doesNotMatch(rendered.html, /position/);
-  assert.ok(rendered.warnings.some((warning) => warning.includes("position")));
+  assert.match(rendered.html, /style="background-color: #101820; padding: 6px; position: fixed"/);
+  assert.equal(rendered.warnings.some((warning) => warning.includes("position")), false);
 });
 
 test("renderMessageTracker widget is compact and omits copy buttons by default", () => {
@@ -2630,6 +2690,71 @@ test("validatePresetReport understands data-prefixed paths, loops, conditionals,
   assert.equal(report.unusedSchemaFields.length, 0);
 });
 
+test("validatePresetReport warns about raw array/object interpolation and mobile risks", () => {
+  const preset: TrackerSchemaPreset = {
+    id: "qa",
+    name: "QA",
+    description: "QA test",
+    version: "1.0",
+    createdAt: "2026-06-28",
+    updatedAt: "2026-06-28",
+    jsonSchema: {
+      type: "object",
+      properties: {
+        rel: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              t: { type: "string" },
+              c: { type: "string" },
+            },
+          },
+        },
+        pockets: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              t: { type: "string" },
+              c: { type: "string" },
+            },
+          },
+        },
+        world: {
+          type: "object",
+          properties: {
+            items: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+    },
+    htmlTemplate: "<style>.hud{min-width:480px;white-space:nowrap;writing-mode:vertical-rl;word-break:break-all}.tiny{width:44px}</style><section>{{rel}}{{pockets}}{{world}}</section>",
+    promptInstructions: "Respond only with JSON.",
+    origin: "user_created",
+  };
+  const report = validatePresetReport(preset, { sampleMode: "stress" });
+  assert.deepEqual(report.rawArrayInterpolationPaths.sort(), ["pockets", "rel"]);
+  assert.deepEqual(report.rawObjectInterpolationPaths, ["world"]);
+  assert.ok(report.mobileRiskWarnings.length >= 2);
+  assert.ok(report.verticalTextRiskWarnings.length >= 2);
+  assert.ok(report.entries.some((entry) => entry.message.includes("Use {{#each rel}}")));
+});
+
+test("generateSampleSnapshot supports authoring stress modes", () => {
+  const minimal = generateSampleSnapshot({}, "minimal");
+  const stress = generateSampleSnapshot({}, "stress");
+  const mobile = generateSampleSnapshot({}, "mobile_torture");
+  const castHeavy = generateSampleSnapshot({}, "cast_heavy");
+  const worldHeavy = generateSampleSnapshot({}, "world_heavy");
+  assert.ok(Array.isArray(minimal.cast));
+  assert.ok(Array.isArray(stress.cast));
+  assert.ok((stress.cast as unknown[]).length >= 3);
+  assert.match(JSON.stringify(mobile), /HyperAdministrativelyOverInstrumentalized/);
+  assert.ok(((castHeavy.cast as unknown[]) ?? []).length >= 4);
+  assert.ok(Array.isArray((worldHeavy.world as Record<string, unknown>).items));
+});
+
 test("renderer requirement detection recommends Trusted and flags JavaScript-like content", () => {
   const requirements = detectTemplateRendererRequirements("<style>.hud{display:grid}</style><svg viewBox=\"0 0 1 1\"></svg>{{#if data.ok}}ok{{/if}}");
   assert.equal(requirements.usesScopedCss, true);
@@ -2648,6 +2773,8 @@ test("import review surfaces renderer requirements and never offers Dev Mode aut
   assert.match(frontend, /detectTemplateRendererRequirements/);
   assert.match(frontend, /This preset uses:/);
   assert.match(frontend, /Recommended mode:/);
+  assert.match(frontend, /Mobile QA status:/);
+  assert.match(frontend, /Possible raw arrays:/);
   const importReviewTrustSelect = /<select data-import-review-trust-mode>[\s\S]*?<\/select>/.exec(frontend)?.[0] ?? "";
   assert.match(importReviewTrustSelect, /<option value="trusted"/);
   assert.match(importReviewTrustSelect, /<option value="safe"/);
@@ -2658,12 +2785,31 @@ test("import review surfaces renderer requirements and never offers Dev Mode aut
   assert.doesNotMatch(backend, /options\.trustMode === "dev"/);
 });
 
+test("frontend exposes a storage-free Preset Render Lab", () => {
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  assert.match(frontend, /Preset Render Lab/);
+  assert.match(frontend, /data-render-lab="sampleMode"/);
+  assert.match(frontend, /data-render-lab="viewport"/);
+  assert.match(frontend, /data-render-lab="surface"/);
+  assert.match(frontend, /copy-render-lab-html/);
+  assert.match(frontend, /copy-render-lab-sample/);
+  assert.match(frontend, /copy-render-lab-report/);
+  assert.match(frontend, /generateSampleSnapshot\(schema, renderLabSampleMode\)/);
+  assert.match(frontend, /renderHtmlTemplate\(/);
+  assert.match(frontend, /recordRenderLabDiagnostics/);
+  assert.doesNotMatch(frontend, /type: "render_lab/);
+});
+
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
-    "Version: `0.19.2`",
-    "Current release: `0.19.2 Preset-Locked Snapshot Rendering`",
+    "Version: `0.20`",
+    "Current release: `0.20 Preset Authoring Studio + Template Helper Pack + Mobile Render QA`",
     "Preset-Locked Snapshot Rendering",
+    "Template Helper Pack",
+    "Preset Render Lab",
+    "Sample Snapshot Stress Modes",
+    "Mobile-safe preset design",
     "Settings Reference",
     "Tracker Connection Settings",
     "Recommended setup",
@@ -2709,10 +2855,15 @@ test("README settings reference covers the major setting groups", () => {
     "{{#unless field}}",
     "{{#with object}}",
     "{{this}}",
+    "{{@index}}",
     "{{default value \"fallback\"}}",
+    "{{fieldChipList array \"labelField\" \"contentField\"}}",
+    "{{meterWidth value}}",
     "Trusted SVG allowlist",
     "Preset Import Review And Validation",
     "This preset uses:",
+    "Possible raw object interpolation",
+    "Possible mobile overflow",
     "Recommended mode: Trusted",
     "spindle.registerInterceptor",
     "context_handler",
@@ -2753,11 +2904,11 @@ test("README settings reference covers the major setting groups", () => {
     "messageDisplay.minimizedMaxHeightPx",
     "messageDisplay.maxRenderedChars",
     "expandedWidth.expandedWidthMode",
-    "0.20 Dev Mode Templates / Sandbox Experiments",
     "0.21 Sequential + Partial Regeneration",
     "0.22 Cleanup / Repair / Pending Fields",
-    "0.23 World Books, Character Exclusions, Import/Export Polish",
-    "0.24 YAML / Macro Support / Advanced Compatibility",
+    "0.23 World Books, Character Exclusions, and Context Filters",
+    "0.24 Dev Mode JS Sandbox Experiments",
+    "0.25 Preset Marketplace / Pack Collections / Advanced Export Polish",
   ]) {
     assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
@@ -3014,25 +3165,29 @@ test("v0.17 Preset Pack Import/Export + Validation + Snapshot tests", () => {
   assert.equal((snapshot.list as unknown[]).length, 2); // array size constraint
 });
 
-test("v0.19.2 Release Completion Verification", () => {
+test("v0.20 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.19.2");
-  assert.equal(spindleJson.version, "0.19.2");
-  assert.equal(EXTENSION_VERSION, "0.19.2");
+  assert.equal(packageJson.version, "0.20");
+  assert.equal(spindleJson.version, "0.20");
+  assert.equal(EXTENSION_VERSION, "0.20");
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.20 - Preset Authoring Studio \+ Template Helper Pack \+ Mobile Render QA/);
   assert.match(changelog, /## 0\.19\.2 - Preset-Locked Snapshot Rendering/);
   assert.match(changelog, /## 0\.19\.1 - Display Surface Repair \/ Chat-Width Inline Fix/);
   assert.match(changelog, /## 0\.19 - Trusted Renderer Freedom \/ Power Template Compatibility/);
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.19\.2`/);
-  assert.match(readme, /Current release: `0\.19\.2 Preset-Locked Snapshot Rendering`/);
+  assert.match(readme, /Version: `0\.20`/);
+  assert.match(readme, /Current release: `0\.20 Preset Authoring Studio \+ Template Helper Pack \+ Mobile Render QA`/);
   assert.match(readme, /Preset-Locked Snapshot Rendering/);
+  assert.match(readme, /Template Helper Pack/);
+  assert.match(readme, /Preset Render Lab/);
+  assert.match(readme, /Mobile Torture/);
   assert.match(readme, /Changing the active preset later does not repaint old trackers/);
   assert.match(readme, /Which display mode should I use\?/);
   assert.match(readme, /Display surface: Inline wide/);

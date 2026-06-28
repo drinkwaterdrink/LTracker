@@ -228,7 +228,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.19.2";
+var EXTENSION_VERSION = "0.20";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -469,6 +469,14 @@ var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "word-break",
   "white-space",
   "opacity",
+  "position",
+  "top",
+  "right",
+  "bottom",
+  "left",
+  "z-index",
+  "inset",
+  "aspect-ratio",
   "transform",
   "transform-origin",
   "transition",
@@ -480,7 +488,18 @@ var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "animation-duration",
   "animation-timing-function",
   "animation-iteration-count",
-  "filter"
+  "filter",
+  "place-items",
+  "place-content",
+  "justify-self",
+  "align-self",
+  "text-overflow",
+  "isolation",
+  "contain",
+  "pointer-events",
+  "user-select",
+  "backdrop-filter",
+  "-webkit-backdrop-filter"
 ]);
 var INLINE_HELPERS = /* @__PURE__ */ new Set([
   "default",
@@ -493,12 +512,36 @@ var INLINE_HELPERS = /* @__PURE__ */ new Set([
   "or",
   "not",
   "class",
+  "safeClass",
   "lower",
   "upper",
-  "truncate"
+  "truncate",
+  "length",
+  "join",
+  "pluck",
+  "pluckJoin",
+  "get",
+  "coalesce",
+  "isArray",
+  "isObject",
+  "isEmpty",
+  "notEmpty",
+  "clamp",
+  "meterWidth",
+  "nl2br",
+  "chip",
+  "chipList",
+  "fieldChip",
+  "fieldChipList"
 ]);
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function safeHtml(html) {
+  return { __ltrackerSafeHtml: true, html };
+}
+function isSafeHtmlValue(value) {
+  return isRecord2(value) && value.__ltrackerSafeHtml === true && typeof value.html === "string";
 }
 function escapeHtml(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -533,8 +576,26 @@ function valueAtPath(source, path) {
 function resolvePath(ctx, path) {
   const trimmed = path.trim();
   if (!trimmed || trimmed === "." || trimmed === "this") return ctx.current;
+  if (trimmed === "@index") return ctx.index ?? 0;
+  if (trimmed === "@first") return (ctx.index ?? 0) === 0;
+  if (trimmed === "@last") return typeof ctx.index === "number" && typeof ctx.length === "number" ? ctx.index === ctx.length - 1 : false;
+  if (trimmed === "@root") return ctx.root;
+  if (trimmed.startsWith("@root.")) return valueAtPath(ctx.root, trimmed.slice(6));
   if (trimmed.startsWith("this.")) return valueAtPath(ctx.current, trimmed.slice(5));
   if (trimmed.startsWith("data.")) return valueAtPath(ctx.root, trimmed.slice(5));
+  let relative = trimmed;
+  let targetCtx = ctx;
+  while (relative.startsWith("../")) {
+    targetCtx = targetCtx.parent ?? targetCtx;
+    relative = relative.slice(3);
+  }
+  if (relative !== trimmed) {
+    if (!relative || relative === "." || relative === "this") return targetCtx.current;
+    if (relative.startsWith("this.")) return valueAtPath(targetCtx.current, relative.slice(5));
+    const parentValue = valueAtPath(targetCtx.current, relative);
+    if (parentValue !== void 0) return parentValue;
+    return valueAtPath(targetCtx.root, relative);
+  }
   const currentValue = valueAtPath(ctx.current, trimmed);
   if (currentValue !== void 0) return currentValue;
   return valueAtPath(ctx.root, trimmed);
@@ -580,6 +641,41 @@ function compareNumber(value) {
 function sanitizeClass(value) {
   return valueToText(value, "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
 }
+function arrayFromUnknown(value) {
+  return Array.isArray(value) ? value : [];
+}
+function valueLength(value) {
+  if (Array.isArray(value) || typeof value === "string") return value.length;
+  if (isRecord2(value)) return Object.keys(value).length;
+  return truthy(value) ? 1 : 0;
+}
+function isEmptyValue(value) {
+  if (value === false || value === null || value === void 0 || value === "" || value === 0) return true;
+  if (Array.isArray(value) || typeof value === "string") return value.length === 0;
+  if (isRecord2(value)) return Object.keys(value).length === 0;
+  return false;
+}
+function fieldValue(value, field) {
+  const path = valueToText(field, "").trim();
+  if (!path) return void 0;
+  return valueAtPath(value, path);
+}
+function joinValues(values, separator, placeholder) {
+  const sep = valueToText(separator ?? ", ", ", ");
+  return values.map((value) => valueToText(value, placeholder)).filter(Boolean).join(sep);
+}
+function chipMarkup(label, content) {
+  const labelText = valueToText(label, "").trim();
+  const contentText = valueToText(content, "").trim();
+  if (!labelText && !contentText) return "";
+  const className = sanitizeClass(labelText || contentText);
+  const extraClass = className ? ` ltracker-template-chip-${escapeHtml(className)}` : "";
+  const body = contentText ? `<b>${escapeHtml(labelText || contentText)}</b><span>${escapeHtml(contentText)}</span>` : `<span>${escapeHtml(labelText)}</span>`;
+  return `<span class="ltracker-template-chip${extraClass}">${body}</span>`;
+}
+function fieldChipListMarkup(value, labelField, contentField) {
+  return arrayFromUnknown(value).map((item) => chipMarkup(fieldValue(item, labelField), fieldValue(item, contentField))).filter(Boolean).join("");
+}
 function evalExpression(ctx, expression, placeholder) {
   const tokens = tokenizeExpression(expression);
   if (tokens.length === 0) return void 0;
@@ -608,7 +704,7 @@ function evalExpression(ctx, expression, placeholder) {
   if (helper === "and") return args.every(truthy);
   if (helper === "or") return args.some(truthy);
   if (helper === "not") return !truthy(args[0]);
-  if (helper === "class") return sanitizeClass(args[0]);
+  if (helper === "class" || helper === "safeClass") return sanitizeClass(args[0]);
   if (helper === "lower") return valueToText(args[0], placeholder).toLowerCase();
   if (helper === "upper") return valueToText(args[0], placeholder).toUpperCase();
   if (helper === "truncate") {
@@ -616,6 +712,38 @@ function evalExpression(ctx, expression, placeholder) {
     const limit = compareNumber(args[1]) ?? 80;
     return Array.from(text).slice(0, Math.max(0, Math.round(limit))).join("");
   }
+  if (helper === "length") return valueLength(args[0]);
+  if (helper === "join") return joinValues(arrayFromUnknown(args[0]), args[1] ?? ", ", placeholder);
+  if (helper === "pluck") return arrayFromUnknown(args[0]).map((item) => fieldValue(item, args[1]));
+  if (helper === "pluckJoin") return joinValues(arrayFromUnknown(args[0]).map((item) => fieldValue(item, args[1])), args[2] ?? ", ", placeholder);
+  if (helper === "get") return fieldValue(args[0], args[1]);
+  if (helper === "coalesce") return args.find((arg) => !isEmptyValue(arg)) ?? placeholder;
+  if (helper === "isArray") return Array.isArray(args[0]);
+  if (helper === "isObject") return isRecord2(args[0]);
+  if (helper === "isEmpty") return isEmptyValue(args[0]);
+  if (helper === "notEmpty") return !isEmptyValue(args[0]);
+  if (helper === "clamp") {
+    const value = compareNumber(args[0]);
+    const min = compareNumber(args[1]) ?? 0;
+    const max = compareNumber(args[2]) ?? 100;
+    if (value === null) return placeholder;
+    return Math.min(Math.max(value, Math.min(min, max)), Math.max(min, max));
+  }
+  if (helper === "meterWidth") {
+    const value = compareNumber(args[0]);
+    if (value === null) return placeholder;
+    const percent = Math.abs(value) <= 1 ? value * 100 : value;
+    return `${Math.round(Math.min(100, Math.max(0, percent)))}%`;
+  }
+  if (helper === "nl2br") {
+    return safeHtml(escapeHtml(valueToText(args[0], placeholder)).replace(/\r?\n/g, "<br>"));
+  }
+  if (helper === "chip") return safeHtml(chipMarkup(args[0]));
+  if (helper === "chipList") {
+    return safeHtml(arrayFromUnknown(args[0]).map((item) => chipMarkup(item)).filter(Boolean).join(""));
+  }
+  if (helper === "fieldChip") return safeHtml(chipMarkup(fieldValue(args[0], args[1]), fieldValue(args[0], args[2])));
+  if (helper === "fieldChipList") return safeHtml(fieldChipListMarkup(args[0], args[1], args[2]));
   return void 0;
 }
 function activeNodes(frame) {
@@ -681,20 +809,27 @@ function renderNodes(nodes, ctx, placeholder) {
       continue;
     }
     if (node.type === "mustache") {
-      output += escapeHtml(valueToText(evalExpression(ctx, node.expression, placeholder), placeholder));
+      const value2 = evalExpression(ctx, node.expression, placeholder);
+      output += isSafeHtmlValue(value2) ? value2.html : escapeHtml(valueToText(value2, placeholder));
       continue;
     }
     const value = evalExpression(ctx, node.expression, placeholder);
     if (node.kind === "each") {
       if (Array.isArray(value) && value.length > 0) {
-        output += value.map((item) => renderNodes(node.body, { root: ctx.root, current: item }, placeholder)).join("");
+        output += value.map((item, index) => renderNodes(node.body, {
+          root: ctx.root,
+          current: item,
+          parent: ctx,
+          index,
+          length: value.length
+        }, placeholder)).join("");
       } else {
         output += renderNodes(node.inverse, ctx, placeholder);
       }
       continue;
     }
     if (node.kind === "with") {
-      output += truthy(value) ? renderNodes(node.body, { root: ctx.root, current: value }, placeholder) : renderNodes(node.inverse, ctx, placeholder);
+      output += truthy(value) ? renderNodes(node.body, { root: ctx.root, current: value, parent: ctx }, placeholder) : renderNodes(node.inverse, ctx, placeholder);
       continue;
     }
     const condition = truthy(value);
@@ -1105,13 +1240,16 @@ function detectTemplateRendererRequirements(template) {
   const usesInlineStyles = /\sstyle\s*=/i.test(template);
   const usesInlineSvg = /<\s*svg\b/i.test(template);
   const usesConditionals = /\{\{\s*#(?:if|unless|with)\b|\{\{\s*else\s*\}\}/i.test(template);
-  const usesHelpers = /\{\{\s*(?:default|percent|json|eq|gt|lt|and|or|not|class|lower|upper|truncate)\b/i.test(template);
+  const helperPattern = new RegExp(`\\{\\{\\s*(?:${[...INLINE_HELPERS].map((helper) => helper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
+  const usesHelpers = helperPattern.test(template);
+  const usesNestedLoops = /\{\{\s*#each\b[\s\S]*\{\{\s*#each\b/i.test(template);
   const hasJavaScriptLikeContent = detectJavaScriptLike(template);
   const features = [
     usesScopedCss ? "Scoped CSS" : null,
     usesInlineStyles ? "Inline styles" : null,
     usesInlineSvg ? "Inline SVG" : null,
     usesConditionals ? "Conditionals" : null,
+    usesNestedLoops ? "Nested loops" : null,
     usesHelpers ? "Template helpers" : null
   ].filter((item) => Boolean(item));
   const warnings = hasJavaScriptLikeContent ? ["This preset contains JavaScript-like content. JavaScript will be stripped unless Dev Mode is explicitly enabled in a future phase."] : [];
@@ -2885,12 +3023,219 @@ function generateSampleForProperty(fieldName, prop, depth) {
   }
   return sampleValueForField(fieldName, depth);
 }
-function generateSampleSnapshot(jsonSchema) {
+function trackerStressData(mode) {
+  const longWord = "HyperAdministrativelyOverInstrumentalizedContinuityCheckpoint";
+  const commonCast = [
+    {
+      name: "Cecelia Voss",
+      role: "Political liaison",
+      desc: "Composed, watchful, and tracking every private reaction in the room.",
+      rel: [
+        { t: "Liaison", c: "Cecelia Voss" },
+        { t: "Trust", c: "Cautious but rising" }
+      ],
+      pockets: [
+        { t: "cigarettes", c: "right hand" },
+        { t: "folded writ", c: "inside coat" }
+      ]
+    },
+    {
+      name: mode === "mobile_torture" ? `Maximilian-${longWord}` : "Mara Ell",
+      role: "Witness",
+      desc: mode === "mobile_torture" ? `A long visual description with ${longWord} and several clauses that should reveal cramped mobile layouts.` : "Nervous but attentive, with one unresolved answer still hidden.",
+      rel: [
+        { t: mode === "mobile_torture" ? `LongRelationLabel-${longWord}` : "Pressure", c: "Knows more than she admits" }
+      ],
+      pockets: [
+        { t: mode === "mobile_torture" ? `Pocket-${longWord}` : "silver key", c: "left pocket" }
+      ]
+    }
+  ];
+  const worldItems = [
+    { t: "storm lantern", c: "low oil" },
+    { t: "sealed contract", c: "unsigned" },
+    { t: "weather", c: "rain pressing against the windows" }
+  ];
+  const base = {
+    time: { clock: "23:18", day: "Thursday", pressure: 72 },
+    loc: {
+      name: mode === "mobile_torture" ? `Northwestern-${longWord}-Observation Balcony` : "North Gallery",
+      weather: "Hard rain, amber lamps, glass fogging at the edges."
+    },
+    scene: {
+      location: mode === "mobile_torture" ? `Northwestern-${longWord}-Observation Balcony` : "North Gallery",
+      time: "late night",
+      mood: "charged but contained",
+      alert: mode === "mobile_torture" ? `Very long alert: ${longWord} ${longWord} ${longWord}.` : "A promised answer is overdue."
+    },
+    cast: commonCast,
+    rel: commonCast[0]?.rel ?? [],
+    relations: commonCast[0]?.rel ?? [],
+    pockets: commonCast[0]?.pockets ?? [],
+    world: {
+      items: worldItems,
+      alerts: [
+        { t: "Door", c: "Unlocked from the wrong side" },
+        { t: "Ledger", c: "Missing final page" }
+      ]
+    },
+    meters: {
+      danger: 63,
+      intimacy: 41,
+      suspicion: 78
+    },
+    notes: [
+      "One optional field is intentionally absent in some samples.",
+      mode === "mobile_torture" ? `Long unbroken token ${longWord}${longWord}` : "Use this to test wrapping."
+    ],
+    empty_list: [],
+    missing_optional_demo: null
+  };
+  if (mode === "minimal") {
+    return {
+      time: { clock: "09:00" },
+      loc: { name: "Small room" },
+      scene: { location: "Small room", time: "morning" },
+      cast: [commonCast[0]],
+      rel: [],
+      pockets: []
+    };
+  }
+  if (mode === "cast_heavy") {
+    return {
+      ...base,
+      cast: [
+        ...commonCast,
+        {
+          name: "Tamsin Vale",
+          role: "Guard captain",
+          desc: "Scanning exits and counting lies.",
+          rel: [{ t: "Command", c: "Controls the room" }],
+          pockets: [{ t: "brass whistle", c: "belt" }]
+        },
+        {
+          name: "Oren Pike",
+          role: "Messenger",
+          desc: "Carrying a letter he has not read.",
+          rel: [{ t: "Risk", c: "May bolt if pressed" }],
+          pockets: [{ t: "sealed letter", c: "satchel" }]
+        }
+      ]
+    };
+  }
+  if (mode === "world_heavy") {
+    return {
+      ...base,
+      world: {
+        items: [
+          ...worldItems,
+          { t: "north door", c: "barred" },
+          { t: "old bell", c: "rings without being touched" },
+          { t: "ledger ink", c: "fresh" }
+        ],
+        factions: [
+          { t: "Wardens", c: "watching" },
+          { t: "Archivists", c: "withholding records" }
+        ]
+      }
+    };
+  }
+  if (mode === "stress" || mode === "mobile_torture") {
+    return {
+      ...base,
+      cast: [
+        ...commonCast,
+        {
+          name: "Dr. Halden Cross",
+          role: "Archivist",
+          desc: "Carries the last known map and refuses to say who drew it.",
+          rel: [
+            { t: "Debt", c: "Owes Cecelia a dangerous favor" },
+            { t: "Fear", c: "The map names him" }
+          ],
+          pockets: [
+            { t: "map tube", c: "under arm" },
+            { t: "burnt match", c: "waistcoat" }
+          ]
+        }
+      ]
+    };
+  }
+  return base;
+}
+function mergeSampleModeData(base, mode) {
+  const modeData = trackerStressData(mode);
+  if (mode === "normal") {
+    return {
+      ...modeData,
+      ...base,
+      cast: Array.isArray(base.cast) ? base.cast : modeData.cast,
+      rel: Array.isArray(base.rel) ? base.rel : modeData.rel,
+      relations: Array.isArray(base.relations) ? base.relations : modeData.relations,
+      pockets: Array.isArray(base.pockets) ? base.pockets : modeData.pockets,
+      world: isRecord7(base.world) ? { ...modeData.world, ...base.world } : modeData.world
+    };
+  }
+  return {
+    ...base,
+    ...modeData,
+    world: isRecord7(base.world) && isRecord7(modeData.world) ? { ...base.world, ...modeData.world } : modeData.world
+  };
+}
+function generateSampleSnapshot(jsonSchema, mode = "normal") {
   const result = generateSampleFromSchema(jsonSchema, 0);
-  return isRecord7(result) ? result : { data: result };
+  const base = isRecord7(result) ? result : { data: result };
+  return mergeSampleModeData(base, mode);
 }
 var SCHEMA_META_KEYS = /* @__PURE__ */ new Set(["type", "properties", "required", "description", "items", "default", "enum"]);
-var TEMPLATE_HELPERS = /* @__PURE__ */ new Set(["default", "percent", "json", "eq", "gt", "lt", "and", "or", "not", "class", "lower", "upper", "truncate"]);
+var TEMPLATE_HELPERS = /* @__PURE__ */ new Set([
+  "default",
+  "percent",
+  "json",
+  "eq",
+  "gt",
+  "lt",
+  "and",
+  "or",
+  "not",
+  "class",
+  "safeClass",
+  "lower",
+  "upper",
+  "truncate",
+  "length",
+  "join",
+  "pluck",
+  "pluckJoin",
+  "get",
+  "coalesce",
+  "isArray",
+  "isObject",
+  "isEmpty",
+  "notEmpty",
+  "clamp",
+  "meterWidth",
+  "nl2br",
+  "chip",
+  "chipList",
+  "fieldChip",
+  "fieldChipList"
+]);
+function valueAtTemplatePath(source, path) {
+  if (!path) return source;
+  let current = source;
+  for (const part of path.split(".")) {
+    if (!part) continue;
+    if (Array.isArray(current) && /^\d+$/.test(part)) {
+      current = current[Number(part)];
+    } else if (isRecord7(current)) {
+      current = current[part];
+    } else {
+      return void 0;
+    }
+  }
+  return current;
+}
 function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
   if (depth > 5) return [];
   if (isRecord7(schema.properties)) {
@@ -2933,9 +3278,17 @@ function normalizeTemplatePath(path, contextStack) {
   const trimmed = path.trim();
   if (!trimmed || isLiteralToken(trimmed)) return null;
   if (TEMPLATE_HELPERS.has(trimmed)) return null;
+  if (trimmed.startsWith("@root.")) return trimmed.slice(6);
+  if (trimmed === "@root") return null;
+  if (trimmed === "@index" || trimmed === "@first" || trimmed === "@last") return null;
   if (trimmed.startsWith("data.")) return trimmed.slice(5);
-  const withoutData = trimmed;
-  const currentContext = contextStack[contextStack.length - 1] ?? "";
+  let withoutData = trimmed;
+  let contextIndex = contextStack.length - 1;
+  while (withoutData.startsWith("../")) {
+    withoutData = withoutData.slice(3);
+    contextIndex -= 1;
+  }
+  const currentContext = contextStack[Math.max(0, contextIndex)] ?? "";
   if (withoutData === "this" || withoutData === ".") return currentContext || null;
   if (withoutData.startsWith("this.")) {
     return currentContext ? `${currentContext}.${withoutData.slice(5)}` : withoutData.slice(5);
@@ -2985,6 +3338,85 @@ function findTemplatePlaceholders(template) {
   }
   return [...placeholders];
 }
+function findDirectInterpolatedPaths(template) {
+  const direct = /* @__PURE__ */ new Set();
+  const contextStack = [];
+  const pattern = /\{\{\s*([\s\S]*?)\s*\}\}/g;
+  let match;
+  while ((match = pattern.exec(template)) !== null) {
+    const expression = (match[1] ?? "").trim();
+    if (!expression || expression === "else") continue;
+    if (expression.startsWith("/")) {
+      const closing = expression.slice(1).trim();
+      if (closing === "each" || closing === "with") contextStack.pop();
+      continue;
+    }
+    if (expression.startsWith("#")) {
+      const [block, ...rest] = expressionTokens(expression.slice(1));
+      const blockExpression = rest.join(" ");
+      if (block === "each" || block === "with") {
+        const normalized2 = normalizeTemplatePath(blockExpression, contextStack);
+        if (normalized2) contextStack.push(normalized2);
+      }
+      continue;
+    }
+    const tokens = expressionTokens(expression);
+    if (tokens.length !== 1 || TEMPLATE_HELPERS.has(tokens[0] ?? "")) continue;
+    const normalized = normalizeTemplatePath(tokens[0] ?? "", contextStack);
+    if (normalized) direct.add(normalized);
+  }
+  return [...direct];
+}
+function collectTemplateAuthoringWarnings(template, sampleData) {
+  const rawObjectInterpolationPaths = [];
+  const rawArrayInterpolationPaths = [];
+  for (const path of findDirectInterpolatedPaths(template)) {
+    const value = valueAtTemplatePath(sampleData, path);
+    if (Array.isArray(value)) rawArrayInterpolationPaths.push(path);
+    else if (isRecord7(value)) rawObjectInterpolationPaths.push(path);
+  }
+  const mobileRiskWarnings = [];
+  const verticalTextRiskWarnings = [];
+  const styleText = template.replace(/\s+/g, " ");
+  const fixedWidthPattern = /\b(?:width|min-width)\s*:\s*(\d{3,5})px/gi;
+  let widthMatch;
+  while ((widthMatch = fixedWidthPattern.exec(styleText)) !== null) {
+    const width = Number(widthMatch[1]);
+    if (Number.isFinite(width) && width > 360) {
+      mobileRiskWarnings.push(`Possible mobile overflow: fixed/min width ${width}px may exceed common phone viewport.`);
+    }
+    if (Number.isFinite(width) && width > 0 && width <= 72) {
+      verticalTextRiskWarnings.push(`Possible vertical text wrapping: narrow fixed width ${width}px can force letter-by-letter wrapping.`);
+    }
+  }
+  if (/grid-template-columns\s*:[^;]*(?:\d+px[^;]*){3,}/i.test(styleText)) {
+    mobileRiskWarnings.push("Possible mobile overflow: grid uses several fixed pixel columns.");
+  }
+  if (/white-space\s*:\s*nowrap/i.test(styleText)) {
+    mobileRiskWarnings.push("Possible mobile overflow: white-space nowrap can push long tracker content off screen.");
+  }
+  if (/\bposition\s*:\s*(?:absolute|fixed)\b/i.test(styleText)) {
+    mobileRiskWarnings.push("Possible mobile overflow: absolute/fixed positioning inside a template can escape small preview shells.");
+  }
+  if (/<svg\b[^>]*(?:width|height)\s*=\s*["']?(\d{3,5})/i.test(template)) {
+    mobileRiskWarnings.push("Possible mobile overflow: SVG has a large fixed width or height.");
+  }
+  if (/writing-mode\s*:/i.test(styleText)) {
+    verticalTextRiskWarnings.push("Possible vertical text wrapping: writing-mode is set in template CSS.");
+  }
+  if (/word-break\s*:\s*(?:break-all|break-word)/i.test(styleText)) {
+    verticalTextRiskWarnings.push("Possible vertical text wrapping: aggressive word-break can create letter-by-letter columns.");
+  }
+  if (/grid-template-columns\s*:[^;]*(?:\b\d{1,2}px\b|minmax\(\s*0\s*,\s*\d{1,2}px\s*\))/i.test(styleText)) {
+    verticalTextRiskWarnings.push("Possible vertical text wrapping: a very narrow grid column may squeeze labels.");
+  }
+  return {
+    rawObjectInterpolationPaths: [...new Set(rawObjectInterpolationPaths)],
+    rawArrayInterpolationPaths: [...new Set(rawArrayInterpolationPaths)],
+    mobileRiskWarnings: [...new Set(mobileRiskWarnings)],
+    verticalTextRiskWarnings: [...new Set(verticalTextRiskWarnings)]
+  };
+}
 function presetName(preset) {
   return preset.name ?? "";
 }
@@ -2995,6 +3427,10 @@ function validatePresetReport(preset, options) {
   const entries = [];
   const missingPlaceholders = [];
   const unusedSchemaFields = [];
+  const rawObjectInterpolationPaths = [];
+  const rawArrayInterpolationPaths = [];
+  const mobileRiskWarnings = [];
+  const verticalTextRiskWarnings = [];
   const sanitizerWarningGroups = [];
   const rendererRequirements = detectTemplateRendererRequirements(preset.htmlTemplate ?? "");
   let sampleRenderResult = null;
@@ -3062,6 +3498,32 @@ function validatePresetReport(preset, options) {
     for (const warning of rendererRequirements.warnings) {
       entries.push({ severity: "warning", category: "Renderer", message: warning });
     }
+    const sampleData = isRecord7(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema, options?.sampleMode ?? "normal") : {};
+    const authoringWarnings = collectTemplateAuthoringWarnings(template, sampleData);
+    rawObjectInterpolationPaths.push(...authoringWarnings.rawObjectInterpolationPaths);
+    rawArrayInterpolationPaths.push(...authoringWarnings.rawArrayInterpolationPaths);
+    mobileRiskWarnings.push(...authoringWarnings.mobileRiskWarnings);
+    verticalTextRiskWarnings.push(...authoringWarnings.verticalTextRiskWarnings);
+    for (const path of rawArrayInterpolationPaths) {
+      entries.push({
+        severity: "warning",
+        category: "Template Lint",
+        message: `This path appears to be an array and may render as raw JSON: ${path}. Use {{#each ${path}}}...{{/each}} or a chip/list helper.`
+      });
+    }
+    for (const path of rawObjectInterpolationPaths) {
+      entries.push({
+        severity: "warning",
+        category: "Template Lint",
+        message: `This path appears to be an object and may render as raw JSON: ${path}. Use {{#with ${path}}}...{{/with}}, {{json ${path}}}, or a field helper.`
+      });
+    }
+    for (const warning of mobileRiskWarnings) {
+      entries.push({ severity: "warning", category: "Mobile QA", message: warning });
+    }
+    for (const warning of verticalTextRiskWarnings) {
+      entries.push({ severity: "warning", category: "Mobile QA", message: warning });
+    }
     if (isRecord7(preset.jsonSchema)) {
       const schemaFields = collectSchemaFieldNames(preset.jsonSchema);
       const templatePlaceholders = findTemplatePlaceholders(template);
@@ -3084,7 +3546,6 @@ function validatePresetReport(preset, options) {
         entries.push({ severity: "info", category: "Template", message: `Schema fields not referenced in template: ${unusedSchemaFields.join(", ")}.` });
       }
     }
-    const sampleData = isRecord7(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema) : {};
     sampleRenderResult = renderHtmlTemplate(
       { template, snapshotData: sampleData, presetId: presetId(preset), presetName: presetName(preset) },
       {
@@ -3151,6 +3612,10 @@ function validatePresetReport(preset, options) {
     estimatedPackSizeChars: packSizeEstimate,
     missingPlaceholders,
     unusedSchemaFields,
+    rawObjectInterpolationPaths,
+    rawArrayInterpolationPaths,
+    mobileRiskWarnings,
+    verticalTextRiskWarnings,
     sanitizerWarningGroups,
     rendererRequirements,
     sampleRenderResult
@@ -4878,7 +5343,17 @@ function defaultDiagnostics(chatId) {
     lastPresetValidationErrorCount: 0,
     lastPresetValidationWarningCount: 0,
     lastPresetValidationEstimatedTokens: null,
-    lastPresetValidationEstimatedRenderedChars: null
+    lastPresetValidationEstimatedRenderedChars: null,
+    lastPresetLintAt: null,
+    lastPresetLintWarningCount: 0,
+    lastPresetLintErrorCount: 0,
+    lastPresetLintRawObjectPaths: [],
+    lastPresetLintMobileRiskCount: 0,
+    lastPresetRenderLabViewport: null,
+    lastPresetRenderLabSurface: null,
+    lastPresetRenderLabResult: null,
+    lastPresetRenderLabRenderedChars: null,
+    lastPresetRenderLabWarnings: []
   };
 }
 function stringOrNull4(value) {
@@ -5202,7 +5677,17 @@ function repairDiagnostics(value, chatId) {
     lastPresetValidationErrorCount: typeof value.lastPresetValidationErrorCount === "number" && Number.isFinite(value.lastPresetValidationErrorCount) ? Math.max(0, Math.round(value.lastPresetValidationErrorCount)) : 0,
     lastPresetValidationWarningCount: typeof value.lastPresetValidationWarningCount === "number" && Number.isFinite(value.lastPresetValidationWarningCount) ? Math.max(0, Math.round(value.lastPresetValidationWarningCount)) : 0,
     lastPresetValidationEstimatedTokens: numberOrNull2(value.lastPresetValidationEstimatedTokens),
-    lastPresetValidationEstimatedRenderedChars: numberOrNull2(value.lastPresetValidationEstimatedRenderedChars)
+    lastPresetValidationEstimatedRenderedChars: numberOrNull2(value.lastPresetValidationEstimatedRenderedChars),
+    lastPresetLintAt: stringOrNull4(value.lastPresetLintAt),
+    lastPresetLintWarningCount: typeof value.lastPresetLintWarningCount === "number" && Number.isFinite(value.lastPresetLintWarningCount) ? Math.max(0, Math.round(value.lastPresetLintWarningCount)) : 0,
+    lastPresetLintErrorCount: typeof value.lastPresetLintErrorCount === "number" && Number.isFinite(value.lastPresetLintErrorCount) ? Math.max(0, Math.round(value.lastPresetLintErrorCount)) : 0,
+    lastPresetLintRawObjectPaths: stringArray(value.lastPresetLintRawObjectPaths),
+    lastPresetLintMobileRiskCount: typeof value.lastPresetLintMobileRiskCount === "number" && Number.isFinite(value.lastPresetLintMobileRiskCount) ? Math.max(0, Math.round(value.lastPresetLintMobileRiskCount)) : 0,
+    lastPresetRenderLabViewport: value.lastPresetRenderLabViewport === "phone_narrow" || value.lastPresetRenderLabViewport === "phone_large" || value.lastPresetRenderLabViewport === "tablet" || value.lastPresetRenderLabViewport === "desktop" || value.lastPresetRenderLabViewport === "custom" ? value.lastPresetRenderLabViewport : null,
+    lastPresetRenderLabSurface: value.lastPresetRenderLabSurface === "inline_contained" || value.lastPresetRenderLabSurface === "inline_wide" || value.lastPresetRenderLabSurface === "popover_body" || value.lastPresetRenderLabSurface === "fullscreen_reader_body" ? value.lastPresetRenderLabSurface : null,
+    lastPresetRenderLabResult: stringOrNull4(value.lastPresetRenderLabResult),
+    lastPresetRenderLabRenderedChars: numberOrNull2(value.lastPresetRenderLabRenderedChars),
+    lastPresetRenderLabWarnings: stringArray(value.lastPresetRenderLabWarnings)
   };
 }
 async function getSettings(userId) {
@@ -7841,7 +8326,12 @@ async function validatePresetReportHandler(chatId, userId, draftValue, requestId
     lastPresetValidationErrorCount: report.errorCount,
     lastPresetValidationWarningCount: report.warningCount,
     lastPresetValidationEstimatedTokens: report.estimatedPromptTokens,
-    lastPresetValidationEstimatedRenderedChars: report.estimatedRenderedChars
+    lastPresetValidationEstimatedRenderedChars: report.estimatedRenderedChars,
+    lastPresetLintAt: now,
+    lastPresetLintWarningCount: report.warningCount,
+    lastPresetLintErrorCount: report.errorCount,
+    lastPresetLintRawObjectPaths: [...report.rawObjectInterpolationPaths, ...report.rawArrayInterpolationPaths],
+    lastPresetLintMobileRiskCount: report.mobileRiskWarnings.length + report.verticalTextRiskWarnings.length
   });
   const response = {
     type: "preset_pack_validation_report",
@@ -7850,13 +8340,13 @@ async function validatePresetReportHandler(chatId, userId, draftValue, requestId
   };
   send(response, userId);
 }
-async function generateSampleSnapshotHandler(chatId, userId, requestId) {
+async function generateSampleSnapshotHandler(chatId, userId, sampleMode, requestId) {
   const resolvedChatId = await presetOperationChatId(chatId, userId);
   const presets = await loadPresetCatalog(userId);
   const activeState = await loadActivePresetState(resolvedChatId, userId);
   const activePreset = presetById(presets, activeState.selectedPresetId) ?? DEFAULT_TRACKER_PRESET;
   const settings = await getSettings(userId);
-  const snapshotData = generateSampleSnapshot(activePreset.jsonSchema);
+  const snapshotData = generateSampleSnapshot(activePreset.jsonSchema, sampleMode ?? "normal");
   let renderResult = null;
   if (activePreset.htmlTemplate?.trim()) {
     renderResult = renderHtmlTemplate(
@@ -8618,7 +9108,7 @@ spindle.onFrontendMessage((payload, userId) => {
         return;
       }
       if (payload.type === "generate_sample_snapshot") {
-        await generateSampleSnapshotHandler(chatId, userId, payload.requestId);
+        await generateSampleSnapshotHandler(chatId, userId, payload.sampleMode, payload.requestId);
         return;
       }
       if (payload.type === "render_template") {

@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.19.2`
+Version: `0.20`
 
-Current release: `0.19.2 Preset-Locked Snapshot Rendering`
+Current release: `0.20 Preset Authoring Studio + Template Helper Pack + Mobile Render QA`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -17,6 +17,9 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Display surfaces for inline contained, inline wide, anchored popover, fullscreen reader, and drawer-only use.
 - Preset-locked snapshot rendering so existing trackers keep the preset/template they were generated with.
 - Trusted renderer support for scoped CSS, safe inline styles, safe inline SVG, details/summary drawers, conditionals, loops, and helpers.
+- Preset Render Lab for phone/tablet/desktop viewport previews with stress sample data.
+- Template Helper Pack for chip lists, joins, field plucking, fallbacks, clamped meter widths, and mobile-safe class names.
+- Preset QA warnings for raw array/object interpolation, mobile overflow risk, and vertical text risk.
 - Safe Mode for shared or unknown presets, with full style-block removal so raw CSS is not shown as text.
 - Preset pack import/export, import review, validation reports, sample snapshot rendering, and Ultra Tracker Mode budgets.
 
@@ -146,7 +149,7 @@ class, aria-hidden, role
 
 ### Dev Mode
 
-Dev Mode is a future explicit opt-in sandbox experiment. Imported presets cannot enable Dev Mode automatically. JavaScript remains disabled in v0.19; if script-like content is detected, LTracker strips it and warns:
+Dev Mode is a future explicit opt-in sandbox experiment. Imported presets cannot enable Dev Mode automatically. JavaScript remains disabled in v0.20; if script-like content is detected, LTracker strips it and warns:
 
 ```text
 JavaScript requires Dev Mode and was not executed.
@@ -165,12 +168,18 @@ Supported template syntax:
 {{#unless field}}...{{/unless}}
 {{#with object}}...{{/with}}
 {{this}}
+{{@index}}
+{{@first}}
+{{@last}}
+{{@root.path}}
+{{../parentField}}
 ```
 
 Supported helpers:
 
 ```handlebars
 {{default value "fallback"}}
+{{coalesce a b c "fallback"}}
 {{percent value}}
 {{json value}}
 {{eq a b}}
@@ -180,12 +189,115 @@ Supported helpers:
 {{or a b}}
 {{not a}}
 {{class value}}
+{{safeClass value}}
 {{lower value}}
 {{upper value}}
 {{truncate value 80}}
+{{length value}}
+{{join array ", "}}
+{{pluck array "field"}}
+{{pluckJoin array "field" ", "}}
+{{get object "field"}}
+{{isArray value}}
+{{isObject value}}
+{{isEmpty value}}
+{{notEmpty value}}
+{{clamp value 0 100}}
+{{meterWidth value}}
+{{nl2br value}}
+{{chip value}}
+{{chipList array}}
+{{fieldChip object "labelField" "contentField"}}
+{{fieldChipList array "labelField" "contentField"}}
 ```
 
 Missing values render as the configured missing value placeholder and do not crash rendering. Falsey values are `false`, `null`, `undefined`, `""`, `0`, and empty arrays. Non-empty strings, non-zero numbers, `true`, non-empty arrays, and objects are truthy.
+
+## Template Helper Pack
+
+The 0.20 helper pack is meant for complex HUD-style presets that need to render arrays and nested objects cleanly without raw JSON blobs. Directly writing `{{rel}}`, `{{pockets}}`, or `{{cast}}` can display objects as JSON text. Prefer loops or chip helpers.
+
+String array:
+
+```handlebars
+{{#each pockets}}
+  <span class="chip">{{this}}</span>
+{{/each}}
+```
+
+Object array:
+
+```handlebars
+{{#each rel}}
+  <span class="chip"><b>{{t}}</b>{{#if c}} - {{c}}{{/if}}</span>
+{{/each}}
+```
+
+Helper shorthand:
+
+```handlebars
+{{fieldChipList rel "t" "c"}}
+{{fieldChipList pockets "t" "c"}}
+{{pluckJoin cast "name" ", "}}
+```
+
+Nested tracker data:
+
+```handlebars
+{{#each cast}}
+  <section class="actor-card">
+    <h3>{{@index}}. {{name}}</h3>
+    <div>{{fieldChipList rel "t" "c"}}</div>
+    <div>{{fieldChipList pockets "t" "c"}}</div>
+  </section>
+{{/each}}
+```
+
+## Mobile-Safe Preset Design
+
+Use flexible widths, `minmax(0, 1fr)`, wrapping chip rails, and `overflow-x: auto` for dense HUD sections. Avoid large fixed widths, many fixed grid columns, `white-space: nowrap` on broad containers, and narrow fixed columns that can create letter-by-letter wrapping.
+
+Trusted Mode now allows scoped layout properties such as `position`, `inset`, `aspect-ratio`, `place-items`, `text-overflow`, `isolation`, `contain`, `pointer-events`, `user-select`, and `backdrop-filter`. Style blocks are still scoped to the preset root and external URLs, `@import`, remote fonts, events, and scripts remain blocked.
+
+## Preset Render Lab
+
+The Preset Render Lab lives in the drawer near Presets / Validate & Preview. It renders the active preset, or the staged import under review, without mutating chat, storage, snapshots, or embedded tags.
+
+Preview widths:
+
+- Phone narrow: `360px`
+- Phone large: `430px`
+- Tablet: `768px`
+- Desktop: `1100px`
+- Custom width
+
+Display shells:
+
+- Inline contained
+- Inline wide
+- Popover body
+- Fullscreen reader body
+
+Backgrounds:
+
+- Simulated chat
+- Plain dark
+- Transparent checker
+
+The lab shows sanitized HTML, renderer requirements, missing/unused fields, raw-object interpolation warnings, mobile QA warnings, rendered character count, estimated prompt tokens, and copy buttons for sanitized HTML, sample JSON, and the lint report.
+
+## Sample Snapshot Stress Modes
+
+Sample modes help preset authors reproduce layout problems without a real chat:
+
+- Minimal
+- Normal
+- Stress / Max Arrays
+- Mobile Torture
+- Cast Heavy
+- World Heavy
+
+Stress samples include cast entries, relation arrays, pocket arrays, long descriptions, long location/weather strings, alerts, empty arrays, missing optional values, and nested object arrays. Mobile Torture adds long words and labels to reveal clipping, overflow, and vertical text wrapping.
 
 ## Preset Import Review And Validation
 
@@ -196,6 +308,9 @@ This preset uses:
 - Scoped CSS
 - Inline SVG
 - Conditionals
+- Template helpers
+- Possible raw object interpolation
+- Possible mobile overflow
 Recommended mode: Trusted
 ```
 
@@ -208,7 +323,7 @@ Validate Preset understands:
 - `{{this}}` inside array loops
 - conditionals and helpers
 
-Validation reports true missing fields, true unused fields, estimated prompt/render size, sanitizer warning groups, and renderer requirements.
+Validation reports true missing fields, true unused fields, estimated prompt/render size, sanitizer warning groups, renderer requirements, raw array/object interpolation warnings, mobile overflow risk, and vertical text risk.
 
 ## Tracker Memory And Prompt Injection
 
@@ -320,17 +435,18 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 - Sequential generation, partial regeneration, cleanup/repair mode, World Books, character exclusions, and advanced import/export polish are future phases.
 - DOM injection can only attach to mounted messages; drawer history covers unavailable messages.
 - Some host themes may still constrain inline content. Inline wide records diagnostics for mount strategy and width constraints, and popover/fullscreen remain the reliable detached alternatives.
+- Mobile QA warnings are heuristic and should be confirmed in the Render Lab at `360px` and `430px`.
 - Embedded tracker tag mode only replaces or removes LTracker's own tag for the exact swipe key.
 - Diagnostics may contain sensitive chat-derived prompt and model output when raw/prompt saving is enabled.
 
 ## Roadmap
 
-1. `0.20 Dev Mode Templates / Sandbox Experiments`
-2. `0.21 Sequential + Partial Regeneration`
-3. `0.22 Cleanup / Repair / Pending Fields`
-4. `0.23 World Books, Character Exclusions, Import/Export Polish`
-5. `0.24 YAML / Macro Support / Advanced Compatibility`
+1. `0.21 Sequential + Partial Regeneration`
+2. `0.22 Cleanup / Repair / Pending Fields`
+3. `0.23 World Books, Character Exclusions, and Context Filters`
+4. `0.24 Dev Mode JS Sandbox Experiments`
+5. `0.25 Preset Marketplace / Pack Collections / Advanced Export Polish`
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.19`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.20`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

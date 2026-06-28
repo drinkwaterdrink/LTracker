@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.19.2";
+export const EXTENSION_VERSION = "0.20";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -15,6 +15,9 @@ export type LTrackerMemorySource = "message_history" | "sidecar_index" | "embedd
 export type LTrackerMemoryOrder = "oldest_to_newest" | "newest_to_oldest";
 export type LTrackerRenderSource = "latest_chat_snapshot" | "latest_message_snapshot";
 export type LTrackerRenderStatus = "rendered" | "fallback" | "no_template" | "no_snapshot" | "error";
+export type LTrackerSampleSnapshotMode = "minimal" | "normal" | "stress" | "mobile_torture" | "cast_heavy" | "world_heavy";
+export type LTrackerRenderLabViewport = "phone_narrow" | "phone_large" | "tablet" | "desktop" | "custom";
+export type LTrackerRenderLabSurface = "inline_contained" | "inline_wide" | "popover_body" | "fullscreen_reader_body";
 export type LTrackerMessageDisplayPlacement = "top" | "bottom";
 export type LTrackerMessageDisplaySource = "message_attached_snapshot" | "latest_chat_snapshot";
 export type LTrackerMessageDisplayRenderMode = "html_template" | "compact_text" | "pretty_json";
@@ -687,6 +690,16 @@ export interface LTrackerDiagnostics {
   lastPresetValidationWarningCount: number;
   lastPresetValidationEstimatedTokens: number | null;
   lastPresetValidationEstimatedRenderedChars: number | null;
+  lastPresetLintAt: string | null;
+  lastPresetLintWarningCount: number;
+  lastPresetLintErrorCount: number;
+  lastPresetLintRawObjectPaths: string[];
+  lastPresetLintMobileRiskCount: number;
+  lastPresetRenderLabViewport: LTrackerRenderLabViewport | null;
+  lastPresetRenderLabSurface: LTrackerRenderLabSurface | null;
+  lastPresetRenderLabResult: string | null;
+  lastPresetRenderLabRenderedChars: number | null;
+  lastPresetRenderLabWarnings: string[];
 }
 
 export interface PermissionState {
@@ -808,7 +821,7 @@ export type FrontendMessage =
   | { type: "export_preset_pack"; chatId: string | null; includeRecommendedSettings?: boolean; includeExampleSnapshot?: boolean; requestId: string }
   | { type: "validate_preset"; chatId: string | null; preset: TrackerPresetDraft; requestId: string }
   | { type: "validate_preset_report"; chatId: string | null; preset: TrackerPresetDraft; requestId: string }
-  | { type: "generate_sample_snapshot"; chatId: string | null; requestId: string }
+  | { type: "generate_sample_snapshot"; chatId: string | null; sampleMode?: LTrackerSampleSnapshotMode; requestId: string }
   | { type: "render_template"; chatId: string | null; source?: LTrackerRenderSource; requestId: string }
   | { type: "generate_message_tracker"; chatId: string | null; messageId: string; swipeKey?: string | null; requestId: string }
   | { type: "regenerate_message_tracker"; chatId: string | null; messageId: string; swipeKey?: string | null; requestId: string }

@@ -162,6 +162,14 @@ const SAFE_STYLE_PROPERTIES = new Set([
   "word-break",
   "white-space",
   "opacity",
+  "position",
+  "top",
+  "right",
+  "bottom",
+  "left",
+  "z-index",
+  "inset",
+  "aspect-ratio",
   "transform",
   "transform-origin",
   "transition",
@@ -174,6 +182,17 @@ const SAFE_STYLE_PROPERTIES = new Set([
   "animation-timing-function",
   "animation-iteration-count",
   "filter",
+  "place-items",
+  "place-content",
+  "justify-self",
+  "align-self",
+  "text-overflow",
+  "isolation",
+  "contain",
+  "pointer-events",
+  "user-select",
+  "backdrop-filter",
+  "-webkit-backdrop-filter",
 ]);
 
 const INLINE_HELPERS = new Set([
@@ -187,9 +206,27 @@ const INLINE_HELPERS = new Set([
   "or",
   "not",
   "class",
+  "safeClass",
   "lower",
   "upper",
   "truncate",
+  "length",
+  "join",
+  "pluck",
+  "pluckJoin",
+  "get",
+  "coalesce",
+  "isArray",
+  "isObject",
+  "isEmpty",
+  "notEmpty",
+  "clamp",
+  "meterWidth",
+  "nl2br",
+  "chip",
+  "chipList",
+  "fieldChip",
+  "fieldChipList",
 ]);
 
 export interface HtmlTemplateRenderInput {
@@ -250,10 +287,26 @@ interface ParseFrame {
 interface RenderContext {
   root: Record<string, unknown>;
   current: unknown;
+  parent?: RenderContext | null;
+  index?: number;
+  length?: number;
+}
+
+interface SafeHtmlValue {
+  __ltrackerSafeHtml: true;
+  html: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function safeHtml(html: string): SafeHtmlValue {
+  return { __ltrackerSafeHtml: true, html };
+}
+
+function isSafeHtmlValue(value: unknown): value is SafeHtmlValue {
+  return isRecord(value) && value.__ltrackerSafeHtml === true && typeof value.html === "string";
 }
 
 export function escapeHtml(value: string): string {
@@ -297,8 +350,28 @@ function valueAtPath(source: unknown, path: string): unknown {
 function resolvePath(ctx: RenderContext, path: string): unknown {
   const trimmed = path.trim();
   if (!trimmed || trimmed === "." || trimmed === "this") return ctx.current;
+  if (trimmed === "@index") return ctx.index ?? 0;
+  if (trimmed === "@first") return (ctx.index ?? 0) === 0;
+  if (trimmed === "@last") return typeof ctx.index === "number" && typeof ctx.length === "number" ? ctx.index === ctx.length - 1 : false;
+  if (trimmed === "@root") return ctx.root;
+  if (trimmed.startsWith("@root.")) return valueAtPath(ctx.root, trimmed.slice(6));
   if (trimmed.startsWith("this.")) return valueAtPath(ctx.current, trimmed.slice(5));
   if (trimmed.startsWith("data.")) return valueAtPath(ctx.root, trimmed.slice(5));
+
+  let relative = trimmed;
+  let targetCtx: RenderContext = ctx;
+  while (relative.startsWith("../")) {
+    targetCtx = targetCtx.parent ?? targetCtx;
+    relative = relative.slice(3);
+  }
+  if (relative !== trimmed) {
+    if (!relative || relative === "." || relative === "this") return targetCtx.current;
+    if (relative.startsWith("this.")) return valueAtPath(targetCtx.current, relative.slice(5));
+    const parentValue = valueAtPath(targetCtx.current, relative);
+    if (parentValue !== undefined) return parentValue;
+    return valueAtPath(targetCtx.root, relative);
+  }
+
   const currentValue = valueAtPath(ctx.current, trimmed);
   if (currentValue !== undefined) return currentValue;
   return valueAtPath(ctx.root, trimmed);
@@ -355,6 +428,53 @@ function sanitizeClass(value: unknown): string {
     .slice(0, 80);
 }
 
+function arrayFromUnknown(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function valueLength(value: unknown): number {
+  if (Array.isArray(value) || typeof value === "string") return value.length;
+  if (isRecord(value)) return Object.keys(value).length;
+  return truthy(value) ? 1 : 0;
+}
+
+function isEmptyValue(value: unknown): boolean {
+  if (value === false || value === null || value === undefined || value === "" || value === 0) return true;
+  if (Array.isArray(value) || typeof value === "string") return value.length === 0;
+  if (isRecord(value)) return Object.keys(value).length === 0;
+  return false;
+}
+
+function fieldValue(value: unknown, field: unknown): unknown {
+  const path = valueToText(field, "").trim();
+  if (!path) return undefined;
+  return valueAtPath(value, path);
+}
+
+function joinValues(values: unknown[], separator: unknown, placeholder: string): string {
+  const sep = valueToText(separator ?? ", ", ", ");
+  return values.map((value) => valueToText(value, placeholder)).filter(Boolean).join(sep);
+}
+
+function chipMarkup(label: unknown, content?: unknown): string {
+  const labelText = valueToText(label, "").trim();
+  const contentText = valueToText(content, "").trim();
+  if (!labelText && !contentText) return "";
+  const className = sanitizeClass(labelText || contentText);
+  const extraClass = className ? ` ltracker-template-chip-${escapeHtml(className)}` : "";
+  const body = contentText
+    ? `<b>${escapeHtml(labelText || contentText)}</b><span>${escapeHtml(contentText)}</span>`
+    : `<span>${escapeHtml(labelText)}</span>`;
+  return `<span class="ltracker-template-chip${extraClass}">${body}</span>`;
+}
+
+function fieldChipListMarkup(value: unknown, labelField: unknown, contentField: unknown): string {
+  return arrayFromUnknown(value)
+    .map((item) => chipMarkup(fieldValue(item, labelField), fieldValue(item, contentField)))
+    .filter(Boolean)
+    .join("");
+}
+
 function evalExpression(ctx: RenderContext, expression: string, placeholder: string): unknown {
   const tokens = tokenizeExpression(expression);
   if (tokens.length === 0) return undefined;
@@ -384,7 +504,7 @@ function evalExpression(ctx: RenderContext, expression: string, placeholder: str
   if (helper === "and") return args.every(truthy);
   if (helper === "or") return args.some(truthy);
   if (helper === "not") return !truthy(args[0]);
-  if (helper === "class") return sanitizeClass(args[0]);
+  if (helper === "class" || helper === "safeClass") return sanitizeClass(args[0]);
   if (helper === "lower") return valueToText(args[0], placeholder).toLowerCase();
   if (helper === "upper") return valueToText(args[0], placeholder).toUpperCase();
   if (helper === "truncate") {
@@ -392,6 +512,38 @@ function evalExpression(ctx: RenderContext, expression: string, placeholder: str
     const limit = compareNumber(args[1]) ?? 80;
     return Array.from(text).slice(0, Math.max(0, Math.round(limit))).join("");
   }
+  if (helper === "length") return valueLength(args[0]);
+  if (helper === "join") return joinValues(arrayFromUnknown(args[0]), args[1] ?? ", ", placeholder);
+  if (helper === "pluck") return arrayFromUnknown(args[0]).map((item) => fieldValue(item, args[1]));
+  if (helper === "pluckJoin") return joinValues(arrayFromUnknown(args[0]).map((item) => fieldValue(item, args[1])), args[2] ?? ", ", placeholder);
+  if (helper === "get") return fieldValue(args[0], args[1]);
+  if (helper === "coalesce") return args.find((arg) => !isEmptyValue(arg)) ?? placeholder;
+  if (helper === "isArray") return Array.isArray(args[0]);
+  if (helper === "isObject") return isRecord(args[0]);
+  if (helper === "isEmpty") return isEmptyValue(args[0]);
+  if (helper === "notEmpty") return !isEmptyValue(args[0]);
+  if (helper === "clamp") {
+    const value = compareNumber(args[0]);
+    const min = compareNumber(args[1]) ?? 0;
+    const max = compareNumber(args[2]) ?? 100;
+    if (value === null) return placeholder;
+    return Math.min(Math.max(value, Math.min(min, max)), Math.max(min, max));
+  }
+  if (helper === "meterWidth") {
+    const value = compareNumber(args[0]);
+    if (value === null) return placeholder;
+    const percent = Math.abs(value) <= 1 ? value * 100 : value;
+    return `${Math.round(Math.min(100, Math.max(0, percent)))}%`;
+  }
+  if (helper === "nl2br") {
+    return safeHtml(escapeHtml(valueToText(args[0], placeholder)).replace(/\r?\n/g, "<br>"));
+  }
+  if (helper === "chip") return safeHtml(chipMarkup(args[0]));
+  if (helper === "chipList") {
+    return safeHtml(arrayFromUnknown(args[0]).map((item) => chipMarkup(item)).filter(Boolean).join(""));
+  }
+  if (helper === "fieldChip") return safeHtml(chipMarkup(fieldValue(args[0], args[1]), fieldValue(args[0], args[2])));
+  if (helper === "fieldChipList") return safeHtml(fieldChipListMarkup(args[0], args[1], args[2]));
   return undefined;
 }
 
@@ -460,13 +612,20 @@ function renderNodes(nodes: TemplateNode[], ctx: RenderContext, placeholder: str
       continue;
     }
     if (node.type === "mustache") {
-      output += escapeHtml(valueToText(evalExpression(ctx, node.expression, placeholder), placeholder));
+      const value = evalExpression(ctx, node.expression, placeholder);
+      output += isSafeHtmlValue(value) ? value.html : escapeHtml(valueToText(value, placeholder));
       continue;
     }
     const value = evalExpression(ctx, node.expression, placeholder);
     if (node.kind === "each") {
       if (Array.isArray(value) && value.length > 0) {
-        output += value.map((item) => renderNodes(node.body, { root: ctx.root, current: item }, placeholder)).join("");
+        output += value.map((item, index) => renderNodes(node.body, {
+          root: ctx.root,
+          current: item,
+          parent: ctx,
+          index,
+          length: value.length,
+        }, placeholder)).join("");
       } else {
         output += renderNodes(node.inverse, ctx, placeholder);
       }
@@ -474,7 +633,7 @@ function renderNodes(nodes: TemplateNode[], ctx: RenderContext, placeholder: str
     }
     if (node.kind === "with") {
       output += truthy(value)
-        ? renderNodes(node.body, { root: ctx.root, current: value }, placeholder)
+        ? renderNodes(node.body, { root: ctx.root, current: value, parent: ctx }, placeholder)
         : renderNodes(node.inverse, ctx, placeholder);
       continue;
     }
@@ -964,13 +1123,16 @@ export function detectTemplateRendererRequirements(template: string): TemplateRe
   const usesInlineStyles = /\sstyle\s*=/i.test(template);
   const usesInlineSvg = /<\s*svg\b/i.test(template);
   const usesConditionals = /\{\{\s*#(?:if|unless|with)\b|\{\{\s*else\s*\}\}/i.test(template);
-  const usesHelpers = /\{\{\s*(?:default|percent|json|eq|gt|lt|and|or|not|class|lower|upper|truncate)\b/i.test(template);
+  const helperPattern = new RegExp(`\\{\\{\\s*(?:${[...INLINE_HELPERS].map((helper) => helper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
+  const usesHelpers = helperPattern.test(template);
+  const usesNestedLoops = /\{\{\s*#each\b[\s\S]*\{\{\s*#each\b/i.test(template);
   const hasJavaScriptLikeContent = detectJavaScriptLike(template);
   const features = [
     usesScopedCss ? "Scoped CSS" : null,
     usesInlineStyles ? "Inline styles" : null,
     usesInlineSvg ? "Inline SVG" : null,
     usesConditionals ? "Conditionals" : null,
+    usesNestedLoops ? "Nested loops" : null,
     usesHelpers ? "Template helpers" : null,
   ].filter((item): item is string => Boolean(item));
   const warnings = hasJavaScriptLikeContent

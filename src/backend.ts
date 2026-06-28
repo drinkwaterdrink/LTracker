@@ -720,6 +720,16 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastPresetValidationWarningCount: 0,
     lastPresetValidationEstimatedTokens: null,
     lastPresetValidationEstimatedRenderedChars: null,
+    lastPresetLintAt: null,
+    lastPresetLintWarningCount: 0,
+    lastPresetLintErrorCount: 0,
+    lastPresetLintRawObjectPaths: [],
+    lastPresetLintMobileRiskCount: 0,
+    lastPresetRenderLabViewport: null,
+    lastPresetRenderLabSurface: null,
+    lastPresetRenderLabResult: null,
+    lastPresetRenderLabRenderedChars: null,
+    lastPresetRenderLabWarnings: [],
   };
 }
 
@@ -1168,6 +1178,16 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastPresetValidationWarningCount: typeof value.lastPresetValidationWarningCount === "number" && Number.isFinite(value.lastPresetValidationWarningCount) ? Math.max(0, Math.round(value.lastPresetValidationWarningCount)) : 0,
     lastPresetValidationEstimatedTokens: numberOrNull(value.lastPresetValidationEstimatedTokens),
     lastPresetValidationEstimatedRenderedChars: numberOrNull(value.lastPresetValidationEstimatedRenderedChars),
+    lastPresetLintAt: stringOrNull(value.lastPresetLintAt),
+    lastPresetLintWarningCount: typeof value.lastPresetLintWarningCount === "number" && Number.isFinite(value.lastPresetLintWarningCount) ? Math.max(0, Math.round(value.lastPresetLintWarningCount)) : 0,
+    lastPresetLintErrorCount: typeof value.lastPresetLintErrorCount === "number" && Number.isFinite(value.lastPresetLintErrorCount) ? Math.max(0, Math.round(value.lastPresetLintErrorCount)) : 0,
+    lastPresetLintRawObjectPaths: stringArray(value.lastPresetLintRawObjectPaths),
+    lastPresetLintMobileRiskCount: typeof value.lastPresetLintMobileRiskCount === "number" && Number.isFinite(value.lastPresetLintMobileRiskCount) ? Math.max(0, Math.round(value.lastPresetLintMobileRiskCount)) : 0,
+    lastPresetRenderLabViewport: value.lastPresetRenderLabViewport === "phone_narrow" || value.lastPresetRenderLabViewport === "phone_large" || value.lastPresetRenderLabViewport === "tablet" || value.lastPresetRenderLabViewport === "desktop" || value.lastPresetRenderLabViewport === "custom" ? value.lastPresetRenderLabViewport : null,
+    lastPresetRenderLabSurface: value.lastPresetRenderLabSurface === "inline_contained" || value.lastPresetRenderLabSurface === "inline_wide" || value.lastPresetRenderLabSurface === "popover_body" || value.lastPresetRenderLabSurface === "fullscreen_reader_body" ? value.lastPresetRenderLabSurface : null,
+    lastPresetRenderLabResult: stringOrNull(value.lastPresetRenderLabResult),
+    lastPresetRenderLabRenderedChars: numberOrNull(value.lastPresetRenderLabRenderedChars),
+    lastPresetRenderLabWarnings: stringArray(value.lastPresetRenderLabWarnings),
   };
 }
 
@@ -4440,6 +4460,11 @@ async function validatePresetReportHandler(
     lastPresetValidationWarningCount: report.warningCount,
     lastPresetValidationEstimatedTokens: report.estimatedPromptTokens,
     lastPresetValidationEstimatedRenderedChars: report.estimatedRenderedChars,
+    lastPresetLintAt: now,
+    lastPresetLintWarningCount: report.warningCount,
+    lastPresetLintErrorCount: report.errorCount,
+    lastPresetLintRawObjectPaths: [...report.rawObjectInterpolationPaths, ...report.rawArrayInterpolationPaths],
+    lastPresetLintMobileRiskCount: report.mobileRiskWarnings.length + report.verticalTextRiskWarnings.length,
   });
 
   const response: BackendMessage = {
@@ -4453,6 +4478,7 @@ async function validatePresetReportHandler(
 async function generateSampleSnapshotHandler(
   chatId: string | null,
   userId: string,
+  sampleMode: Extract<FrontendMessage, { type: "generate_sample_snapshot" }>["sampleMode"],
   requestId: string,
 ): Promise<void> {
   const resolvedChatId = await presetOperationChatId(chatId, userId);
@@ -4461,7 +4487,7 @@ async function generateSampleSnapshotHandler(
   const activePreset = presetById(presets, activeState.selectedPresetId) ?? DEFAULT_TRACKER_PRESET;
   const settings = await getSettings(userId);
 
-  const snapshotData = generateSampleSnapshot(activePreset.jsonSchema);
+  const snapshotData = generateSampleSnapshot(activePreset.jsonSchema, sampleMode ?? "normal");
   let renderResult: HtmlTemplateRenderResult | null = null;
   if (activePreset.htmlTemplate?.trim()) {
     renderResult = renderHtmlTemplate(
@@ -5337,7 +5363,7 @@ spindle.onFrontendMessage((payload, userId) => {
         return;
       }
       if (payload.type === "generate_sample_snapshot") {
-        await generateSampleSnapshotHandler(chatId, userId, payload.requestId);
+        await generateSampleSnapshotHandler(chatId, userId, payload.sampleMode, payload.requestId);
         return;
       }
       if (payload.type === "render_template") {

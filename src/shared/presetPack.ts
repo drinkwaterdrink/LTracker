@@ -1,5 +1,6 @@
 import type {
   LTrackerSettings,
+  LTrackerSampleSnapshotMode,
   TrackerPresetDraft,
   TrackerSchemaPreset,
   TrackerPresetOrigin,
@@ -98,6 +99,10 @@ export interface PresetValidationReport {
   estimatedPackSizeChars: number;
   missingPlaceholders: string[];
   unusedSchemaFields: string[];
+  rawObjectInterpolationPaths: string[];
+  rawArrayInterpolationPaths: string[];
+  mobileRiskWarnings: string[];
+  verticalTextRiskWarnings: string[];
   sanitizerWarningGroups: string[];
   rendererRequirements: TemplateRendererRequirements;
   sampleRenderResult: HtmlTemplateRenderResult | null;
@@ -590,9 +595,178 @@ function generateSampleForProperty(fieldName: string, prop: Record<string, unkno
   return sampleValueForField(fieldName, depth);
 }
 
-export function generateSampleSnapshot(jsonSchema: Record<string, unknown>): Record<string, unknown> {
+function trackerStressData(mode: LTrackerSampleSnapshotMode): Record<string, unknown> {
+  const longWord = "HyperAdministrativelyOverInstrumentalizedContinuityCheckpoint";
+  const commonCast = [
+    {
+      name: "Cecelia Voss",
+      role: "Political liaison",
+      desc: "Composed, watchful, and tracking every private reaction in the room.",
+      rel: [
+        { t: "Liaison", c: "Cecelia Voss" },
+        { t: "Trust", c: "Cautious but rising" },
+      ],
+      pockets: [
+        { t: "cigarettes", c: "right hand" },
+        { t: "folded writ", c: "inside coat" },
+      ],
+    },
+    {
+      name: mode === "mobile_torture" ? `Maximilian-${longWord}` : "Mara Ell",
+      role: "Witness",
+      desc: mode === "mobile_torture"
+        ? `A long visual description with ${longWord} and several clauses that should reveal cramped mobile layouts.`
+        : "Nervous but attentive, with one unresolved answer still hidden.",
+      rel: [
+        { t: mode === "mobile_torture" ? `LongRelationLabel-${longWord}` : "Pressure", c: "Knows more than she admits" },
+      ],
+      pockets: [
+        { t: mode === "mobile_torture" ? `Pocket-${longWord}` : "silver key", c: "left pocket" },
+      ],
+    },
+  ];
+  const worldItems = [
+    { t: "storm lantern", c: "low oil" },
+    { t: "sealed contract", c: "unsigned" },
+    { t: "weather", c: "rain pressing against the windows" },
+  ];
+  const base: Record<string, unknown> = {
+    time: { clock: "23:18", day: "Thursday", pressure: 72 },
+    loc: {
+      name: mode === "mobile_torture" ? `Northwestern-${longWord}-Observation Balcony` : "North Gallery",
+      weather: "Hard rain, amber lamps, glass fogging at the edges.",
+    },
+    scene: {
+      location: mode === "mobile_torture" ? `Northwestern-${longWord}-Observation Balcony` : "North Gallery",
+      time: "late night",
+      mood: "charged but contained",
+      alert: mode === "mobile_torture"
+        ? `Very long alert: ${longWord} ${longWord} ${longWord}.`
+        : "A promised answer is overdue.",
+    },
+    cast: commonCast,
+    rel: commonCast[0]?.rel ?? [],
+    relations: commonCast[0]?.rel ?? [],
+    pockets: commonCast[0]?.pockets ?? [],
+    world: {
+      items: worldItems,
+      alerts: [
+        { t: "Door", c: "Unlocked from the wrong side" },
+        { t: "Ledger", c: "Missing final page" },
+      ],
+    },
+    meters: {
+      danger: 63,
+      intimacy: 41,
+      suspicion: 78,
+    },
+    notes: [
+      "One optional field is intentionally absent in some samples.",
+      mode === "mobile_torture" ? `Long unbroken token ${longWord}${longWord}` : "Use this to test wrapping.",
+    ],
+    empty_list: [],
+    missing_optional_demo: null,
+  };
+  if (mode === "minimal") {
+    return {
+      time: { clock: "09:00" },
+      loc: { name: "Small room" },
+      scene: { location: "Small room", time: "morning" },
+      cast: [commonCast[0]],
+      rel: [],
+      pockets: [],
+    };
+  }
+  if (mode === "cast_heavy") {
+    return {
+      ...base,
+      cast: [
+        ...commonCast,
+        {
+          name: "Tamsin Vale",
+          role: "Guard captain",
+          desc: "Scanning exits and counting lies.",
+          rel: [{ t: "Command", c: "Controls the room" }],
+          pockets: [{ t: "brass whistle", c: "belt" }],
+        },
+        {
+          name: "Oren Pike",
+          role: "Messenger",
+          desc: "Carrying a letter he has not read.",
+          rel: [{ t: "Risk", c: "May bolt if pressed" }],
+          pockets: [{ t: "sealed letter", c: "satchel" }],
+        },
+      ],
+    };
+  }
+  if (mode === "world_heavy") {
+    return {
+      ...base,
+      world: {
+        items: [
+          ...worldItems,
+          { t: "north door", c: "barred" },
+          { t: "old bell", c: "rings without being touched" },
+          { t: "ledger ink", c: "fresh" },
+        ],
+        factions: [
+          { t: "Wardens", c: "watching" },
+          { t: "Archivists", c: "withholding records" },
+        ],
+      },
+    };
+  }
+  if (mode === "stress" || mode === "mobile_torture") {
+    return {
+      ...base,
+      cast: [
+        ...commonCast,
+        {
+          name: "Dr. Halden Cross",
+          role: "Archivist",
+          desc: "Carries the last known map and refuses to say who drew it.",
+          rel: [
+            { t: "Debt", c: "Owes Cecelia a dangerous favor" },
+            { t: "Fear", c: "The map names him" },
+          ],
+          pockets: [
+            { t: "map tube", c: "under arm" },
+            { t: "burnt match", c: "waistcoat" },
+          ],
+        },
+      ],
+    };
+  }
+  return base;
+}
+
+function mergeSampleModeData(base: Record<string, unknown>, mode: LTrackerSampleSnapshotMode): Record<string, unknown> {
+  const modeData = trackerStressData(mode);
+  if (mode === "normal") {
+    return {
+      ...modeData,
+      ...base,
+      cast: Array.isArray(base.cast) ? base.cast : modeData.cast,
+      rel: Array.isArray(base.rel) ? base.rel : modeData.rel,
+      relations: Array.isArray(base.relations) ? base.relations : modeData.relations,
+      pockets: Array.isArray(base.pockets) ? base.pockets : modeData.pockets,
+      world: isRecord(base.world) ? { ...(modeData.world as Record<string, unknown>), ...base.world } : modeData.world,
+    };
+  }
+  return {
+    ...base,
+    ...modeData,
+    world: isRecord(base.world) && isRecord(modeData.world) ? { ...base.world, ...modeData.world } : modeData.world,
+  };
+}
+
+export function generateSampleSnapshot(
+  jsonSchema: Record<string, unknown>,
+  mode: LTrackerSampleSnapshotMode = "normal",
+): Record<string, unknown> {
   const result = generateSampleFromSchema(jsonSchema, 0);
-  return isRecord(result) ? result : { data: result };
+  const base = isRecord(result) ? result : { data: result };
+  return mergeSampleModeData(base, mode);
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +774,55 @@ export function generateSampleSnapshot(jsonSchema: Record<string, unknown>): Rec
 // ---------------------------------------------------------------------------
 
 const SCHEMA_META_KEYS = new Set(["type", "properties", "required", "description", "items", "default", "enum"]);
-const TEMPLATE_HELPERS = new Set(["default", "percent", "json", "eq", "gt", "lt", "and", "or", "not", "class", "lower", "upper", "truncate"]);
+const TEMPLATE_HELPERS = new Set([
+  "default",
+  "percent",
+  "json",
+  "eq",
+  "gt",
+  "lt",
+  "and",
+  "or",
+  "not",
+  "class",
+  "safeClass",
+  "lower",
+  "upper",
+  "truncate",
+  "length",
+  "join",
+  "pluck",
+  "pluckJoin",
+  "get",
+  "coalesce",
+  "isArray",
+  "isObject",
+  "isEmpty",
+  "notEmpty",
+  "clamp",
+  "meterWidth",
+  "nl2br",
+  "chip",
+  "chipList",
+  "fieldChip",
+  "fieldChipList",
+]);
+
+function valueAtTemplatePath(source: unknown, path: string): unknown {
+  if (!path) return source;
+  let current: unknown = source;
+  for (const part of path.split(".")) {
+    if (!part) continue;
+    if (Array.isArray(current) && /^\d+$/.test(part)) {
+      current = current[Number(part)];
+    } else if (isRecord(current)) {
+      current = current[part];
+    } else {
+      return undefined;
+    }
+  }
+  return current;
+}
 
 function collectSchemaFieldNames(schema: Record<string, unknown>, prefix = "", depth = 0): string[] {
   if (depth > 5) return [];
@@ -653,9 +875,17 @@ function normalizeTemplatePath(path: string, contextStack: string[]): string | n
   const trimmed = path.trim();
   if (!trimmed || isLiteralToken(trimmed)) return null;
   if (TEMPLATE_HELPERS.has(trimmed)) return null;
+  if (trimmed.startsWith("@root.")) return trimmed.slice(6);
+  if (trimmed === "@root") return null;
+  if (trimmed === "@index" || trimmed === "@first" || trimmed === "@last") return null;
   if (trimmed.startsWith("data.")) return trimmed.slice(5);
-  const withoutData = trimmed;
-  const currentContext = contextStack[contextStack.length - 1] ?? "";
+  let withoutData = trimmed;
+  let contextIndex = contextStack.length - 1;
+  while (withoutData.startsWith("../")) {
+    withoutData = withoutData.slice(3);
+    contextIndex -= 1;
+  }
+  const currentContext = contextStack[Math.max(0, contextIndex)] ?? "";
   if (withoutData === "this" || withoutData === ".") return currentContext || null;
   if (withoutData.startsWith("this.")) {
     return currentContext ? `${currentContext}.${withoutData.slice(5)}` : withoutData.slice(5);
@@ -708,6 +938,97 @@ function findTemplatePlaceholders(template: string): string[] {
   return [...placeholders];
 }
 
+function findDirectInterpolatedPaths(template: string): string[] {
+  const direct = new Set<string>();
+  const contextStack: string[] = [];
+  const pattern = /\{\{\s*([\s\S]*?)\s*\}\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(template)) !== null) {
+    const expression = (match[1] ?? "").trim();
+    if (!expression || expression === "else") continue;
+    if (expression.startsWith("/")) {
+      const closing = expression.slice(1).trim();
+      if (closing === "each" || closing === "with") contextStack.pop();
+      continue;
+    }
+    if (expression.startsWith("#")) {
+      const [block, ...rest] = expressionTokens(expression.slice(1));
+      const blockExpression = rest.join(" ");
+      if (block === "each" || block === "with") {
+        const normalized = normalizeTemplatePath(blockExpression, contextStack);
+        if (normalized) contextStack.push(normalized);
+      }
+      continue;
+    }
+    const tokens = expressionTokens(expression);
+    if (tokens.length !== 1 || TEMPLATE_HELPERS.has(tokens[0] ?? "")) continue;
+    const normalized = normalizeTemplatePath(tokens[0] ?? "", contextStack);
+    if (normalized) direct.add(normalized);
+  }
+  return [...direct];
+}
+
+function collectTemplateAuthoringWarnings(
+  template: string,
+  sampleData: Record<string, unknown>,
+): {
+  rawObjectInterpolationPaths: string[];
+  rawArrayInterpolationPaths: string[];
+  mobileRiskWarnings: string[];
+  verticalTextRiskWarnings: string[];
+} {
+  const rawObjectInterpolationPaths: string[] = [];
+  const rawArrayInterpolationPaths: string[] = [];
+  for (const path of findDirectInterpolatedPaths(template)) {
+    const value = valueAtTemplatePath(sampleData, path);
+    if (Array.isArray(value)) rawArrayInterpolationPaths.push(path);
+    else if (isRecord(value)) rawObjectInterpolationPaths.push(path);
+  }
+
+  const mobileRiskWarnings: string[] = [];
+  const verticalTextRiskWarnings: string[] = [];
+  const styleText = template.replace(/\s+/g, " ");
+  const fixedWidthPattern = /\b(?:width|min-width)\s*:\s*(\d{3,5})px/gi;
+  let widthMatch: RegExpExecArray | null;
+  while ((widthMatch = fixedWidthPattern.exec(styleText)) !== null) {
+    const width = Number(widthMatch[1]);
+    if (Number.isFinite(width) && width > 360) {
+      mobileRiskWarnings.push(`Possible mobile overflow: fixed/min width ${width}px may exceed common phone viewport.`);
+    }
+    if (Number.isFinite(width) && width > 0 && width <= 72) {
+      verticalTextRiskWarnings.push(`Possible vertical text wrapping: narrow fixed width ${width}px can force letter-by-letter wrapping.`);
+    }
+  }
+  if (/grid-template-columns\s*:[^;]*(?:\d+px[^;]*){3,}/i.test(styleText)) {
+    mobileRiskWarnings.push("Possible mobile overflow: grid uses several fixed pixel columns.");
+  }
+  if (/white-space\s*:\s*nowrap/i.test(styleText)) {
+    mobileRiskWarnings.push("Possible mobile overflow: white-space nowrap can push long tracker content off screen.");
+  }
+  if (/\bposition\s*:\s*(?:absolute|fixed)\b/i.test(styleText)) {
+    mobileRiskWarnings.push("Possible mobile overflow: absolute/fixed positioning inside a template can escape small preview shells.");
+  }
+  if (/<svg\b[^>]*(?:width|height)\s*=\s*["']?(\d{3,5})/i.test(template)) {
+    mobileRiskWarnings.push("Possible mobile overflow: SVG has a large fixed width or height.");
+  }
+  if (/writing-mode\s*:/i.test(styleText)) {
+    verticalTextRiskWarnings.push("Possible vertical text wrapping: writing-mode is set in template CSS.");
+  }
+  if (/word-break\s*:\s*(?:break-all|break-word)/i.test(styleText)) {
+    verticalTextRiskWarnings.push("Possible vertical text wrapping: aggressive word-break can create letter-by-letter columns.");
+  }
+  if (/grid-template-columns\s*:[^;]*(?:\b\d{1,2}px\b|minmax\(\s*0\s*,\s*\d{1,2}px\s*\))/i.test(styleText)) {
+    verticalTextRiskWarnings.push("Possible vertical text wrapping: a very narrow grid column may squeeze labels.");
+  }
+
+  return {
+    rawObjectInterpolationPaths: [...new Set(rawObjectInterpolationPaths)],
+    rawArrayInterpolationPaths: [...new Set(rawArrayInterpolationPaths)],
+    mobileRiskWarnings: [...new Set(mobileRiskWarnings)],
+    verticalTextRiskWarnings: [...new Set(verticalTextRiskWarnings)],
+  };
+}
+
 function presetName(preset: TrackerPresetDraft | TrackerSchemaPreset): string {
   return preset.name ?? "";
 }
@@ -721,11 +1042,16 @@ export function validatePresetReport(
   options?: {
     allowInlineStyles?: boolean;
     maxRenderedChars?: number;
+    sampleMode?: LTrackerSampleSnapshotMode;
   },
 ): PresetValidationReport {
   const entries: ValidationEntry[] = [];
   const missingPlaceholders: string[] = [];
   const unusedSchemaFields: string[] = [];
+  const rawObjectInterpolationPaths: string[] = [];
+  const rawArrayInterpolationPaths: string[] = [];
+  const mobileRiskWarnings: string[] = [];
+  const verticalTextRiskWarnings: string[] = [];
   const sanitizerWarningGroups: string[] = [];
   const rendererRequirements = detectTemplateRendererRequirements(preset.htmlTemplate ?? "");
   let sampleRenderResult: HtmlTemplateRenderResult | null = null;
@@ -806,6 +1132,36 @@ export function validatePresetReport(
       entries.push({ severity: "warning", category: "Renderer", message: warning });
     }
 
+    const sampleData = isRecord(preset.jsonSchema)
+      ? generateSampleSnapshot(preset.jsonSchema, options?.sampleMode ?? "normal")
+      : {};
+    const authoringWarnings = collectTemplateAuthoringWarnings(template, sampleData);
+    rawObjectInterpolationPaths.push(...authoringWarnings.rawObjectInterpolationPaths);
+    rawArrayInterpolationPaths.push(...authoringWarnings.rawArrayInterpolationPaths);
+    mobileRiskWarnings.push(...authoringWarnings.mobileRiskWarnings);
+    verticalTextRiskWarnings.push(...authoringWarnings.verticalTextRiskWarnings);
+
+    for (const path of rawArrayInterpolationPaths) {
+      entries.push({
+        severity: "warning",
+        category: "Template Lint",
+        message: `This path appears to be an array and may render as raw JSON: ${path}. Use {{#each ${path}}}...{{/each}} or a chip/list helper.`,
+      });
+    }
+    for (const path of rawObjectInterpolationPaths) {
+      entries.push({
+        severity: "warning",
+        category: "Template Lint",
+        message: `This path appears to be an object and may render as raw JSON: ${path}. Use {{#with ${path}}}...{{/with}}, {{json ${path}}}, or a field helper.`,
+      });
+    }
+    for (const warning of mobileRiskWarnings) {
+      entries.push({ severity: "warning", category: "Mobile QA", message: warning });
+    }
+    for (const warning of verticalTextRiskWarnings) {
+      entries.push({ severity: "warning", category: "Mobile QA", message: warning });
+    }
+
     // Check for missing/unused placeholders
     if (isRecord(preset.jsonSchema)) {
       const schemaFields = collectSchemaFieldNames(preset.jsonSchema);
@@ -833,7 +1189,6 @@ export function validatePresetReport(
     }
 
     // Try sample render
-    const sampleData = isRecord(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema) : {};
     sampleRenderResult = renderHtmlTemplate(
       { template, snapshotData: sampleData, presetId: presetId(preset), presetName: presetName(preset) },
       {
@@ -907,6 +1262,10 @@ export function validatePresetReport(
     estimatedPackSizeChars: packSizeEstimate,
     missingPlaceholders,
     unusedSchemaFields,
+    rawObjectInterpolationPaths,
+    rawArrayInterpolationPaths,
+    mobileRiskWarnings,
+    verticalTextRiskWarnings,
     sanitizerWarningGroups,
     rendererRequirements,
     sampleRenderResult,

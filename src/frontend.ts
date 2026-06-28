@@ -10,13 +10,14 @@ import {
 import {
   importPresetPack,
   validatePresetReport,
+  generateSampleSnapshot,
   sanitizePackFileName,
   exportPresetPack,
   PRESET_PACK_KIND,
   type PresetValidationReport,
   type PresetPackImportResult,
 } from "./shared/presetPack";
-import { detectTemplateRendererRequirements } from "./shared/htmlTemplateRenderer";
+import { detectTemplateRendererRequirements, renderHtmlTemplate } from "./shared/htmlTemplateRenderer";
 import {
   groupMessageTrackerHistory,
   MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
@@ -58,12 +59,16 @@ import type {
   LTrackerMessageDisplayPlacement,
   LTrackerMountPointStrategy,
   LTrackerRenderSource,
+  LTrackerRenderLabSurface,
+  LTrackerRenderLabViewport,
+  LTrackerSampleSnapshotMode,
   LTrackerSettings,
   LTrackerThinkingDisplay,
   TemplateTrustMode,
   MessageTrackerHistoryEntry,
   MessageAttachedSnapshot,
   TrackerPresetDraft,
+  TrackerSchemaPreset,
 } from "./shared/types";
 import {
   EXTENSION_VERSION,
@@ -128,6 +133,68 @@ const STYLES = `
 }
 .ltracker-nav-chip {
   background: color-mix(in srgb, currentColor 5%, transparent);
+}
+.ltracker-render-lab {
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 6px;
+  margin-top: 12px;
+  padding: 10px;
+}
+.ltracker-render-lab-stage {
+  border: 1px dashed color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 6px;
+  box-sizing: border-box;
+  margin: 10px auto 0;
+  max-width: 100%;
+  overflow: auto;
+  padding: 8px;
+}
+.ltracker-render-lab-stage.ltd-bg-plain_dark {
+  background: #111318;
+}
+.ltracker-render-lab-stage.ltd-bg-chat {
+  background: linear-gradient(180deg, rgba(36,38,48,.95), rgba(18,20,28,.95));
+}
+.ltracker-render-lab-stage.ltd-bg-checker {
+  background-color: #151515;
+  background-image:
+    linear-gradient(45deg, rgba(255,255,255,.08) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255,255,255,.08) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255,255,255,.08) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255,255,255,.08) 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+.ltracker-render-lab-preview {
+  box-sizing: border-box;
+  margin: 0 auto;
+  min-height: 80px;
+  overflow: auto;
+}
+.ltracker-render-lab-preview.ltd-lab-inline_contained {
+  max-width: 420px;
+}
+.ltracker-render-lab-preview.ltd-lab-inline_wide,
+.ltracker-render-lab-preview.ltd-lab-popover_body,
+.ltracker-render-lab-preview.ltd-lab-fullscreen_reader_body {
+  width: 100%;
+}
+.ltracker-template-chip {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 4px;
+  line-height: 1.2;
+  margin: 2px;
+  max-width: 100%;
+  padding: 2px 7px;
+  vertical-align: middle;
+}
+.ltracker-template-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ltracker-section {
   scroll-margin-top: 12px;
@@ -744,6 +811,16 @@ function emptyState(): FrontendState {
       lastPresetValidationWarningCount: 0,
       lastPresetValidationEstimatedTokens: null,
       lastPresetValidationEstimatedRenderedChars: null,
+      lastPresetLintAt: null,
+      lastPresetLintWarningCount: 0,
+      lastPresetLintErrorCount: 0,
+      lastPresetLintRawObjectPaths: [],
+      lastPresetLintMobileRiskCount: 0,
+      lastPresetRenderLabViewport: null,
+      lastPresetRenderLabSurface: null,
+      lastPresetRenderLabResult: null,
+      lastPresetRenderLabRenderedChars: null,
+      lastPresetRenderLabWarnings: [],
       connectionProfileSelected: false,
       effectiveTrackerConnectionMode: "active_quiet",
       effectiveTrackerConnectionReason: "default",
@@ -890,6 +967,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let stagedValidationReport: PresetValidationReport | null = null;
   let stagedSampleSnapshot: Record<string, unknown> | null = null;
   let stagedSampleRenderResult: import("./shared/htmlTemplateRenderer").HtmlTemplateRenderResult | null = null;
+  let renderLabViewport: LTrackerRenderLabViewport = "phone_narrow";
+  let renderLabCustomWidth = 360;
+  let renderLabSurface: LTrackerRenderLabSurface = "inline_wide";
+  let renderLabBackground: "plain_dark" | "chat" | "checker" = "chat";
+  let renderLabSampleMode: LTrackerSampleSnapshotMode = "stress";
 
   let activePopoverElement: HTMLElement | null = null;
   let activePopoverEntry: MessageTrackerHistoryEntry | null = null;
@@ -2780,7 +2862,107 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     send({
       type: "generate_sample_snapshot",
       chatId: activeChatId(),
+      sampleMode: renderLabSampleMode,
       requestId: requestId("preset-sample-snapshot"),
+    });
+  }
+
+  function renderLabWidthPx(): number {
+    if (renderLabViewport === "phone_narrow") return 360;
+    if (renderLabViewport === "phone_large") return 430;
+    if (renderLabViewport === "tablet") return 768;
+    if (renderLabViewport === "desktop") return 1100;
+    return Math.min(1800, Math.max(260, Math.round(renderLabCustomWidth || 360)));
+  }
+
+  function renderLabTargetPreset(): TrackerSchemaPreset | TrackerPresetDraft {
+    return stagedImportPack?.preset ?? state.activePreset;
+  }
+
+  function buildRenderLabPreview(): {
+    preset: TrackerSchemaPreset | TrackerPresetDraft;
+    sampleData: Record<string, unknown>;
+    report: PresetValidationReport;
+    html: string;
+    warnings: string[];
+    result: "rendered" | "fallback";
+  } {
+    const preset = renderLabTargetPreset();
+    const schema = isRecord(preset.jsonSchema) ? preset.jsonSchema : {};
+    const sampleData = generateSampleSnapshot(schema, renderLabSampleMode);
+    const report = validatePresetReport(preset, {
+      allowInlineStyles: true,
+      maxRenderedChars: state.settings.budget.renderedHtmlMaxChars,
+      sampleMode: renderLabSampleMode,
+    });
+    const rendered = renderHtmlTemplate(
+      {
+        template: preset.htmlTemplate ?? "",
+        snapshotData: sampleData,
+        presetId: "id" in preset && typeof preset.id === "string" ? preset.id : "render_lab",
+        presetName: preset.name ?? "Render Lab Preset",
+      },
+      {
+        allowInlineStyles: true,
+        templateTrustMode: "trusted",
+        missingValuePlaceholder: state.settings.renderer.missingValuePlaceholder,
+        maxRenderedChars: state.settings.budget.renderedHtmlMaxChars,
+        deduplicateWarnings: true,
+        maxWarnings: 80,
+      },
+    );
+    const warnings = [
+      ...report.rawArrayInterpolationPaths.map((path) => `Raw array interpolation risk: ${path}`),
+      ...report.rawObjectInterpolationPaths.map((path) => `Raw object interpolation risk: ${path}`),
+      ...report.mobileRiskWarnings,
+      ...report.verticalTextRiskWarnings,
+      ...rendered.warnings,
+      ...rendered.errors,
+    ];
+    return {
+      preset,
+      sampleData,
+      report,
+      html: rendered.html || `<pre>${escapeHtml(rendered.textFallback)}</pre>`,
+      warnings,
+      result: rendered.html ? "rendered" : "fallback",
+    };
+  }
+
+  function renderLabReportText(): string {
+    const lab = buildRenderLabPreview();
+    return [
+      `Preset: ${lab.preset.name ?? "Unnamed"}`,
+      `Sample mode: ${renderLabSampleMode}`,
+      `Viewport: ${renderLabViewport} (${renderLabWidthPx()}px)`,
+      `Surface: ${renderLabSurface}`,
+      `Result: ${lab.result}`,
+      `Errors: ${lab.report.errorCount}`,
+      `Warnings: ${lab.report.warningCount}`,
+      `Prompt tokens: ~${lab.report.estimatedPromptTokens}`,
+      `Rendered chars: ${lab.html.length}`,
+      `Raw array paths: ${lab.report.rawArrayInterpolationPaths.join(", ") || "none"}`,
+      `Raw object paths: ${lab.report.rawObjectInterpolationPaths.join(", ") || "none"}`,
+      `Mobile risks: ${lab.report.mobileRiskWarnings.join(" | ") || "none"}`,
+      `Vertical text risks: ${lab.report.verticalTextRiskWarnings.join(" | ") || "none"}`,
+      `Renderer features: ${lab.report.rendererRequirements.features.join(", ") || "basic"}`,
+      `Renderer warnings: ${lab.report.rendererRequirements.warnings.join(" | ") || "none"}`,
+      `Render warnings: ${lab.warnings.join(" | ") || "none"}`,
+    ].join("\n");
+  }
+
+  function recordRenderLabDiagnostics(result: ReturnType<typeof buildRenderLabPreview>): void {
+    localDiagnostics({
+      lastPresetRenderLabViewport: renderLabViewport,
+      lastPresetRenderLabSurface: renderLabSurface,
+      lastPresetRenderLabResult: result.result,
+      lastPresetRenderLabRenderedChars: result.html.length,
+      lastPresetRenderLabWarnings: result.warnings.slice(0, 20),
+      lastPresetLintAt: new Date().toISOString(),
+      lastPresetLintWarningCount: result.report.warningCount,
+      lastPresetLintErrorCount: result.report.errorCount,
+      lastPresetLintRawObjectPaths: [...result.report.rawObjectInterpolationPaths, ...result.report.rawArrayInterpolationPaths],
+      lastPresetLintMobileRiskCount: result.report.mobileRiskWarnings.length + result.report.verticalTextRiskWarnings.length,
     });
   }
 
@@ -3388,6 +3570,100 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         ].filter((item): item is string => Boolean(item)).join(" / ")
       : null;
 
+    const renderLab = buildRenderLabPreview();
+    const renderLabWidth = renderLabWidthPx();
+    const renderLabWarningsHtml = renderLab.warnings.length > 0
+      ? `
+        <details class="ltracker-details" style="margin-top: 8px;" open>
+          <summary>Render warnings (${renderLab.warnings.length})</summary>
+          <ul style="font-size: 10px; margin: 6px 0 0 16px; padding: 0;">
+            ${renderLab.warnings.slice(0, 30).map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}
+          </ul>
+        </details>
+      `
+      : `<p class="ltracker-note">No Render Lab warnings for this sample.</p>`;
+    const renderLabRequirements = renderLab.report.rendererRequirements.features.length > 0
+      ? renderLab.report.rendererRequirements.features.join(", ")
+      : "Basic HTML";
+    const renderLabHtml = `
+      <div class="ltracker-render-lab" data-render-lab-root>
+        <div class="ltracker-section-title">
+          <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold;">Preset Render Lab</span>
+          <span class="ltracker-chip">Preview only</span>
+        </div>
+        <div class="ltracker-settings">
+          <label class="ltracker-field">
+            Sample data
+            <select data-render-lab="sampleMode">
+              <option value="minimal"${selected(renderLabSampleMode === "minimal")}>Minimal</option>
+              <option value="normal"${selected(renderLabSampleMode === "normal")}>Normal</option>
+              <option value="stress"${selected(renderLabSampleMode === "stress")}>Stress / Max Arrays</option>
+              <option value="mobile_torture"${selected(renderLabSampleMode === "mobile_torture")}>Mobile Torture</option>
+              <option value="cast_heavy"${selected(renderLabSampleMode === "cast_heavy")}>Cast Heavy</option>
+              <option value="world_heavy"${selected(renderLabSampleMode === "world_heavy")}>World Heavy</option>
+            </select>
+          </label>
+          <label class="ltracker-field">
+            Viewport
+            <select data-render-lab="viewport">
+              <option value="phone_narrow"${selected(renderLabViewport === "phone_narrow")}>Phone narrow - 360px</option>
+              <option value="phone_large"${selected(renderLabViewport === "phone_large")}>Phone large - 430px</option>
+              <option value="tablet"${selected(renderLabViewport === "tablet")}>Tablet - 768px</option>
+              <option value="desktop"${selected(renderLabViewport === "desktop")}>Desktop - 1100px</option>
+              <option value="custom"${selected(renderLabViewport === "custom")}>Custom width</option>
+            </select>
+          </label>
+          <label class="ltracker-field">
+            Custom width
+            <input type="number" min="260" max="1800" step="10" data-render-lab="customWidth" value="${escapeHtml(String(renderLabCustomWidth))}">
+          </label>
+          <label class="ltracker-field">
+            Display shell
+            <select data-render-lab="surface">
+              <option value="inline_contained"${selected(renderLabSurface === "inline_contained")}>Inline contained</option>
+              <option value="inline_wide"${selected(renderLabSurface === "inline_wide")}>Inline wide</option>
+              <option value="popover_body"${selected(renderLabSurface === "popover_body")}>Popover body</option>
+              <option value="fullscreen_reader_body"${selected(renderLabSurface === "fullscreen_reader_body")}>Fullscreen reader body</option>
+            </select>
+          </label>
+          <label class="ltracker-field">
+            Background
+            <select data-render-lab="background">
+              <option value="chat"${selected(renderLabBackground === "chat")}>Simulated chat</option>
+              <option value="plain_dark"${selected(renderLabBackground === "plain_dark")}>Plain dark</option>
+              <option value="checker"${selected(renderLabBackground === "checker")}>Transparent checker</option>
+            </select>
+          </label>
+        </div>
+        <div class="ltracker-grid ltracker-details" style="margin-top: 8px;">
+          ${renderRow("Preset under test", renderLab.preset.name ?? "Unnamed")}
+          ${renderRow("Viewport width", `${renderLabWidth}px`)}
+          ${renderRow("Renderer requirements", renderLabRequirements)}
+          ${renderRow("Recommended mode", renderLab.report.rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : renderLab.report.rendererRequirements.recommendedMode)}
+          ${renderRow("Raw array paths", renderLab.report.rawArrayInterpolationPaths.join(", ") || null)}
+          ${renderRow("Raw object paths", renderLab.report.rawObjectInterpolationPaths.join(", ") || null)}
+          ${renderRow("Mobile QA", `${renderLab.report.mobileRiskWarnings.length + renderLab.report.verticalTextRiskWarnings.length} warning(s)`)}
+          ${renderRow("Estimated prompt tokens", `~${renderLab.report.estimatedPromptTokens.toLocaleString()}`)}
+          ${renderRow("Rendered chars", renderLab.html.length.toLocaleString())}
+        </div>
+        <div class="ltracker-render-lab-stage ltd-bg-${escapeHtml(renderLabBackground)}" style="width: ${escapeHtml(String(renderLabWidth))}px;">
+          <div class="ltracker-render-lab-preview ltd-lab-${escapeHtml(renderLabSurface)}" data-render-lab-preview>
+            ${renderLab.html}
+          </div>
+        </div>
+        ${renderLabWarningsHtml}
+        <details class="ltracker-details" style="margin-top: 8px;">
+          <summary>Sanitized HTML</summary>
+          <pre class="ltracker-json" style="max-height: 180px; font-size: 10px;">${escapeHtml(renderLab.html)}</pre>
+        </details>
+        <div class="ltracker-actions" style="margin-top: 8px;">
+          <button class="ltracker-button" type="button" data-action="copy-render-lab-html">Copy sanitized HTML</button>
+          <button class="ltracker-button" type="button" data-action="copy-render-lab-sample">Copy sample JSON</button>
+          <button class="ltracker-button" type="button" data-action="copy-render-lab-report">Copy lint report</button>
+        </div>
+      </div>
+    `;
+
     let importReviewHtml = "";
     if (stagedImportPack) {
       const pack = stagedImportPack;
@@ -3427,6 +3703,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         ? `<div class="ltracker-rec-details" style="font-size: 10px; color: #aaa; margin-top: 4px; padding-left: 10px;">Applying recommendations will update:<ul>${recDetailsList.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
         : "";
       const rendererRequirements = detectTemplateRendererRequirements(preset?.htmlTemplate ?? "");
+      const importValidation = preset ? validatePresetReport(preset, {
+        allowInlineStyles: true,
+        maxRenderedChars: state.settings.budget.renderedHtmlMaxChars,
+        sampleMode: renderLabSampleMode,
+      }) : null;
+      const importQaSignals = importValidation
+        ? [
+            importValidation.rawArrayInterpolationPaths.length > 0 ? `Possible raw arrays: ${importValidation.rawArrayInterpolationPaths.join(", ")}` : null,
+            importValidation.rawObjectInterpolationPaths.length > 0 ? `Possible raw objects: ${importValidation.rawObjectInterpolationPaths.join(", ")}` : null,
+            importValidation.mobileRiskWarnings.length > 0 ? `Mobile overflow risks: ${importValidation.mobileRiskWarnings.length}` : null,
+            importValidation.verticalTextRiskWarnings.length > 0 ? `Vertical text risks: ${importValidation.verticalTextRiskWarnings.length}` : null,
+          ].filter((item): item is string => Boolean(item))
+        : [];
       const rendererRequirementsHtml = rendererRequirements.features.length > 0 || rendererRequirements.warnings.length > 0
         ? `
           <div class="ltracker-rec-details" style="font-size: 11px; color: #ddd; margin-bottom: 12px; border: 1px solid rgba(155,92,255,.35); padding: 8px; border-radius: 6px;">
@@ -3435,6 +3724,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               ${rendererRequirements.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("") || "<li>Basic HTML template features</li>"}
             </ul>
             <div>Recommended mode: ${escapeHtml(rendererRequirements.recommendedMode === "dev" ? "Trusted; JavaScript remains stripped until future Dev Mode" : rendererRequirements.recommendedMode === "trusted" ? "Trusted" : "Safe")}</div>
+            ${importValidation ? `<div>Estimated prompt tokens: ~${escapeHtml(importValidation.estimatedPromptTokens.toLocaleString())} / rendered size: ${escapeHtml(importValidation.estimatedRenderedChars.toLocaleString())} chars / schema fields: ${escapeHtml(String(importValidation.unusedSchemaFields.length + importValidation.missingPlaceholders.length))} QA paths checked</div>` : ""}
+            ${importQaSignals.length > 0 ? `<div style="color: #fbbc05; margin-top: 4px;">Mobile QA status: review recommended. ${escapeHtml(importQaSignals.join(" / "))}</div>` : `<div style="color: #34a853; margin-top: 4px;">Mobile QA status: no obvious raw-object or mobile layout warnings in sample preview.</div>`}
             ${rendererRequirements.warnings.map((warning) => `<div style="color: #fbbc05; margin-top: 4px;">${escapeHtml(warning)}</div>`).join("")}
           </div>
         `
@@ -3542,6 +3833,22 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           </details>
         `
         : "";
+      const authoringLintHtml = rep.rawArrayInterpolationPaths.length > 0
+        || rep.rawObjectInterpolationPaths.length > 0
+        || rep.mobileRiskWarnings.length > 0
+        || rep.verticalTextRiskWarnings.length > 0
+        ? `
+          <details style="margin-top: 5px;" open>
+            <summary style="font-size: 11px; color: #fbbc05; cursor: pointer;">Preset Authoring Warnings</summary>
+            <ul style="font-size: 10px; margin: 4px 0 0 15px; padding: 0; color: #aaa;">
+              ${rep.rawArrayInterpolationPaths.map((path) => `<li>${escapeHtml(`Raw array interpolation risk: ${path}. Use #each or fieldChipList/chipList.`)}</li>`).join("")}
+              ${rep.rawObjectInterpolationPaths.map((path) => `<li>${escapeHtml(`Raw object interpolation risk: ${path}. Use #with, json, or a field helper.`)}</li>`).join("")}
+              ${rep.mobileRiskWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}
+              ${rep.verticalTextRiskWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}
+            </ul>
+          </details>
+        `
+        : "";
       const rendererReqHtml = rep.rendererRequirements.features.length > 0 || rep.rendererRequirements.warnings.length > 0
         ? `
           <div style="font-size: 11px; color: #ddd; margin-top: 8px; border: 1px solid rgba(155,92,255,.25); padding: 6px; border-radius: 4px;">
@@ -3568,6 +3875,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
           ${placeholdersHtml}
           ${unusedHtml}
+          ${authoringLintHtml}
           ${warningGroupsHtml}
           ${rendererReqHtml}
 
@@ -4391,6 +4699,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
                 Render With Sample Snapshot
               </button>
             </div>
+            ${renderLabHtml}
             ${validationReportHtml}
             ${sampleSnapshotHtml}
           </div>
@@ -4713,6 +5022,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               ${renderRow("Ultra mode", diagnostics.ultraModeEnabled ? "yes" : "no")}
               ${renderRow("Last preset estimated tokens", diagnostics.lastPresetEstimatedTokens)}
               ${renderRow("Last preset estimated chars", diagnostics.lastPresetEstimatedRenderedChars)}
+              ${renderRow("Last preset lint at", diagnostics.lastPresetLintAt)}
+              ${renderRow("Last preset lint warnings", diagnostics.lastPresetLintWarningCount)}
+              ${renderRow("Last preset lint errors", diagnostics.lastPresetLintErrorCount)}
+              ${renderRow("Last preset lint raw paths", diagnostics.lastPresetLintRawObjectPaths.join(", "))}
+              ${renderRow("Last preset mobile risks", diagnostics.lastPresetLintMobileRiskCount)}
+              ${renderRow("Render Lab viewport", diagnostics.lastPresetRenderLabViewport)}
+              ${renderRow("Render Lab surface", diagnostics.lastPresetRenderLabSurface)}
+              ${renderRow("Render Lab result", diagnostics.lastPresetRenderLabResult)}
+              ${renderRow("Render Lab rendered chars", diagnostics.lastPresetRenderLabRenderedChars)}
+              ${renderRow("Render Lab warnings", diagnostics.lastPresetRenderLabWarnings.join(", "))}
             </div>
           </details>
           <details class="ltracker-details">
@@ -4916,6 +5235,21 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (action === "copy-sample-snapshot") {
       void copyText(stagedSampleSnapshot ? JSON.stringify(stagedSampleSnapshot, null, 2) : null, "sample snapshot JSON");
     }
+    if (action === "copy-render-lab-html") {
+      const lab = buildRenderLabPreview();
+      recordRenderLabDiagnostics(lab);
+      void copyText(lab.html, "Render Lab sanitized HTML");
+    }
+    if (action === "copy-render-lab-sample") {
+      const lab = buildRenderLabPreview();
+      recordRenderLabDiagnostics(lab);
+      void copyText(JSON.stringify(lab.sampleData, null, 2), "Render Lab sample JSON");
+    }
+    if (action === "copy-render-lab-report") {
+      const lab = buildRenderLabPreview();
+      recordRenderLabDiagnostics(lab);
+      void copyText(renderLabReportText(), "Render Lab lint report");
+    }
     if (action === "undo-delete" && recentlyDeletedBanner) {
       send({
         type: "restore_deleted_tracker",
@@ -5000,11 +5334,39 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     return true;
   };
 
+  const updateRenderLabControl = (element: EventTarget | null): boolean => {
+    const control = element instanceof HTMLElement
+      ? element.closest<HTMLInputElement | HTMLSelectElement>("[data-render-lab]")
+      : null;
+    if (!control) return false;
+    const key = control.dataset.renderLab;
+    const value = control.value;
+    if (key === "sampleMode" && (value === "minimal" || value === "normal" || value === "stress" || value === "mobile_torture" || value === "cast_heavy" || value === "world_heavy")) {
+      renderLabSampleMode = value;
+    } else if (key === "viewport" && (value === "phone_narrow" || value === "phone_large" || value === "tablet" || value === "desktop" || value === "custom")) {
+      renderLabViewport = value;
+    } else if (key === "surface" && (value === "inline_contained" || value === "inline_wide" || value === "popover_body" || value === "fullscreen_reader_body")) {
+      renderLabSurface = value;
+    } else if (key === "background" && (value === "plain_dark" || value === "chat" || value === "checker")) {
+      renderLabBackground = value;
+    } else if (key === "customWidth") {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) renderLabCustomWidth = Math.min(1800, Math.max(260, Math.round(numeric)));
+    } else {
+      return false;
+    }
+    const lab = buildRenderLabPreview();
+    recordRenderLabDiagnostics(lab);
+    render();
+    return true;
+  };
+
   const onInput = (event: Event): void => {
     const historyInput = event.target instanceof HTMLElement
       ? event.target.closest<HTMLInputElement>("[data-history-filter]")
       : null;
     if (historyInput && updateHistoryFilter(historyInput)) return;
+    if (updateRenderLabControl(event.target)) return;
     if (isSettingsControl(event.target)) {
       scheduleSettingsAutosave();
       if (isDisplaySurfaceControl(event.target)) applyDisplaySettingsOptimistically(false);
@@ -5019,6 +5381,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ? event.target.closest<HTMLInputElement>("[data-history-filter]")
       : null;
     if (historyInput && updateHistoryFilter(historyInput)) return;
+    if (updateRenderLabControl(event.target)) return;
     if (isSettingsControl(event.target)) {
       scheduleSettingsAutosave();
       if (isDisplaySurfaceControl(event.target)) applyDisplaySettingsOptimistically(true);
