@@ -642,7 +642,7 @@ test("messageSnapshotIndexPath stores the per-chat index under message-snapshots
 
 test("embedded tracker tags build, replace, and remove by exact swipe", () => {
   const first = buildLTrackerTag("{\"scene\":{\"time\":\"one\"}}", "index-0");
-  assert.match(first, /<ltracker type="state" version="0\.\d+" swipe="index-0">/);
+  assert.match(first, /<ltracker type="state" version="0\.\d+(?:\.\d+)?" swipe="index-0">/);
   const content = upsertLTrackerTag("Assistant reply.", "{\"a\":1}", "index-0");
   const withSecond = upsertLTrackerTag(content.content, "{\"b\":2}", "index-1");
   const replaced = upsertLTrackerTag(withSecond.content, "{\"a\":3}", "index-0");
@@ -1536,6 +1536,37 @@ test("renderMessageTracker selects HTML template rendering when available", () =
   assert.match(rendered.json, /"messageId": "m2"/);
 });
 
+test("renderMessageTracker emits distinct display surface shell signatures", () => {
+  const base = {
+    messageId: "m2",
+    messageIndex: 7,
+    attachedSnapshot: sampleMessageSnapshot,
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+  };
+  const wide = renderMessageTracker({
+    ...base,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      displaySurface: "inline_wide",
+    },
+  });
+  assert.match(wide.domHtml, /data-ltracker-display-surface="inline_wide"/);
+  assert.match(wide.domHtml, /ltd-surface-inline-wide/);
+  assert.match(wide.domHtml, /ltd-chat-width/);
+
+  const popover = renderMessageTracker({
+    ...base,
+    settings: {
+      ...DEFAULT_SETTINGS.messageDisplay,
+      displaySurface: "anchored_popover",
+    },
+  });
+  assert.match(popover.domHtml, /data-ltracker-display-surface="anchored_popover"/);
+  assert.match(popover.domHtml, /ltd-surface-popover/);
+  assert.match(popover.domHtml, /ltd-overlay-shell/);
+});
+
 test("renderMessageTracker keeps sanitized inline styles when message display allows them", () => {
   const rendered = renderMessageTracker({
     messageId: "m2",
@@ -2018,7 +2049,7 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(settings.messageDisplay.useDomInjection, false);
   assert.equal(settings.messageDisplay.fallbackToIframeWidget, false);
   assert.equal(settings.messageDisplay.attachmentMode, "both");
-  assert.equal(settings.messageDisplay.displayMode, "inline_button_popover");
+  assert.equal(settings.messageDisplay.displayMode, "inline_full");
   assert.equal(settings.messageDisplay.displaySurface, "fullscreen_reader");
   assert.equal(settings.messageDisplay.placement, "bottom");
   assert.equal(settings.messageDisplay.source, "latest_chat_snapshot");
@@ -2088,6 +2119,29 @@ test("repairSettings migrates legacy display modes into displaySurface", () => {
   assert.equal(repairSettings({
     messageDisplay: { displayMode: "drawer_history_only" },
   }).messageDisplay.displaySurface, "drawer_only");
+});
+
+test("repairSettings keeps displaySurface authoritative over legacy displayMode", () => {
+  const repaired = repairSettings({
+    messageDisplay: {
+      displayMode: "inline_full",
+      displaySurface: "fullscreen_reader",
+    },
+    expandedWidth: {
+      expandedWidthMode: "contained",
+    },
+  });
+  assert.equal(repaired.messageDisplay.displaySurface, "fullscreen_reader");
+  assert.equal(repaired.messageDisplay.displayMode, "inline_full");
+
+  const popover = repairSettings({
+    messageDisplay: {
+      displayMode: "inline_full",
+      displaySurface: "anchored_popover",
+    },
+  });
+  assert.equal(popover.messageDisplay.displaySurface, "anchored_popover");
+  assert.equal(popover.messageDisplay.displayMode, "inline_button_popover");
 });
 
 test("repairSettings migrates old showCopyButton into drawer history debug copies", () => {
@@ -2352,8 +2406,8 @@ test("import review surfaces renderer requirements and never offers Dev Mode aut
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
-    "Version: `0.19`",
-    "Current release: `0.19 Trusted Renderer Freedom / Power Template Compatibility`",
+    "Version: `0.19.1`",
+    "Current release: `0.19.1 Display Surface Repair / Chat-Width Inline Fix`",
     "Settings Reference",
     "Tracker Connection Settings",
     "Recommended setup",
@@ -2518,6 +2572,7 @@ test("popover summary handler is scoped to LTracker shell summaries", () => {
   const frontend = readFileSync("src/frontend.ts", "utf8");
   assert.match(frontend, /querySelector<HTMLElement>\(":scope > details > summary"\)/);
   assert.doesNotMatch(frontend, /details\.querySelector\("summary"\)/);
+  assert.match(frontend, /target\.closest\("\[data-ltracker-dom-action\]"\)/);
   const rendered = renderHtmlTemplate({
     template: "<details><summary>User template drawer</summary><div>Still opens normally</div></details>",
     snapshotData: {},
@@ -2528,6 +2583,44 @@ test("popover summary handler is scoped to LTracker shell summaries", () => {
     templateTrustMode: "trusted",
   });
   assert.match(rendered.html, /<details><summary>User template drawer<\/summary><div>Still opens normally<\/div><\/details>/);
+});
+
+test("display surface repair uses wide mount strategy and reinjection signatures", () => {
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  assert.match(frontend, /function findWideMessageRow/);
+  assert.match(frontend, /resolveTrackerMountPoint\(messageElement, surface\)/);
+  assert.match(frontend, /surface === "inline_wide"/);
+  assert.match(frontend, /wide_message_row/);
+  assert.match(frontend, /wide_message_element/);
+  assert.match(frontend, /displaySurfaceMountStrategy/);
+  assert.match(frontend, /displaySurfaceParentWidthConstrained/);
+  assert.match(frontend, /lastDisplaySurfaceRehydratedAt/);
+  assert.match(frontend, /const signature = \[[\s\S]*surface[\s\S]*mount\.strategy[\s\S]*html/);
+});
+
+test("display surface changes apply optimistically and preview paths are functional", () => {
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  assert.match(frontend, /function applyDisplaySettingsOptimistically/);
+  assert.match(frontend, /isDisplaySurfaceControl\(event\.target\)\) applyDisplaySettingsOptimistically\(true\)/);
+  assert.match(frontend, /function openDisplayPreview/);
+  assert.match(frontend, /latestPreviewEntry/);
+  assert.match(frontend, /openDisplayPreview\(entry, "inline_contained"\)/);
+  assert.match(frontend, /openDisplayPreview\(entry, "inline_wide"\)/);
+  assert.match(frontend, /openPopover\(entry, target as HTMLElement, true\)/);
+  assert.match(frontend, /openFullscreenReader\(entry, true\)/);
+  assert.match(frontend, /No tracker snapshot available to preview\. Generate a tracker first\./);
+});
+
+test("fullscreen reader has fixed mobile close and clears overlay state", () => {
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  assert.match(frontend, /class="ltracker-reader-fixed-close"/);
+  assert.match(frontend, /top: max\(10px, env\(safe-area-inset-top\)\)/);
+  assert.match(frontend, /right: max\(10px, env\(safe-area-inset-right\)\)/);
+  assert.match(frontend, /min-width: 44px/);
+  assert.match(frontend, /min-height: 44px/);
+  assert.match(frontend, /activeReaderElement\.remove\(\)/);
+  assert.match(frontend, /activeReaderElement = null/);
+  assert.match(frontend, /ltracker-reader-content-wrapper" style="width: 100%; max-width: min\(100%, var\(--ltracker-reader-content-max, 1100px\)\)/);
 });
 
 test("0.16 performance, sanitation, nesting, and memory selection features", () => {
@@ -2665,22 +2758,25 @@ test("v0.17 Preset Pack Import/Export + Validation + Snapshot tests", () => {
   assert.equal((snapshot.list as unknown[]).length, 2); // array size constraint
 });
 
-test("v0.19 Release Completion Verification", () => {
+test("v0.19.1 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.19");
-  assert.equal(spindleJson.version, "0.19");
-  assert.equal(EXTENSION_VERSION, "0.19");
+  assert.equal(packageJson.version, "0.19.1");
+  assert.equal(spindleJson.version, "0.19.1");
+  assert.equal(EXTENSION_VERSION, "0.19.1");
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.19\.1 - Display Surface Repair \/ Chat-Width Inline Fix/);
   assert.match(changelog, /## 0\.19 - Trusted Renderer Freedom \/ Power Template Compatibility/);
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.19`/);
-  assert.match(readme, /Current release: `0\.19 Trusted Renderer Freedom \/ Power Template Compatibility`/);
+  assert.match(readme, /Version: `0\.19\.1`/);
+  assert.match(readme, /Current release: `0\.19\.1 Display Surface Repair \/ Chat-Width Inline Fix`/);
+  assert.match(readme, /Which display mode should I use\?/);
+  assert.match(readme, /Display surface: Inline wide/);
   assert.doesNotMatch(readme, /Current release: `0\.17/);
 
   // 4. Global stylesheet element presence check in frontend

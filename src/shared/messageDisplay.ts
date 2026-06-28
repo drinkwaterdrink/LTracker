@@ -35,6 +35,10 @@ export const MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON =
 
 export const LTRACKER_DOM_TRACKER_CSS = `
 .ltracker-dom-tracker { margin: 0 0 4px; border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 8px; background: color-mix(in srgb, currentColor 3%, transparent); color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 100%; }
+.ltracker-dom-tracker.ltd-chat-width { width: 100%; max-width: min(var(--ltracker-expanded-width, 1100px), 100%); box-sizing: border-box; margin-left: 0; margin-right: 0; }
+.ltracker-dom-tracker.ltd-surface-inline-contained { width: 100%; max-width: 100%; }
+.ltracker-dom-tracker.ltd-overlay-shell { display: inline-block; width: auto; max-width: 100%; }
+.ltracker-dom-tracker.ltd-overlay-shell .ltd-body, .ltracker-dom-tracker.ltd-overlay-shell .ltd-footer-actions { display: none !important; }
 .ltracker-dom-tracker.ltd-missing-tracker { display: inline-flex; border-radius: 999px; background: color-mix(in srgb, currentColor 5%, transparent); }
 .ltracker-dom-tracker details { margin: 0; min-width: 0; }
 .ltracker-dom-tracker summary { cursor: pointer; list-style: none; min-height: 26px; padding: 3px 5px; }
@@ -455,6 +459,15 @@ function buildDomHtml(
   const densityClass = settings.controlDensity === "comfortable" ? " ltd-comfortable" : " ltd-compact-density";
   const placementClass = settings.controlPlacement === "inside_tracker_header" ? " ltd-inside-header" : " ltd-message-header";
   const hasTrackerClass = rendered.controlState.hasTracker ? " ltd-has-tracker" : " ltd-missing-tracker";
+  const surfaceClass = settings.displaySurface === "inline_wide"
+    ? " ltd-surface-inline-wide ltd-chat-width"
+    : settings.displaySurface === "inline_contained"
+      ? " ltd-surface-inline-contained"
+      : settings.displaySurface === "anchored_popover"
+        ? " ltd-surface-popover ltd-overlay-shell"
+        : settings.displaySurface === "fullscreen_reader"
+          ? " ltd-surface-reader ltd-overlay-shell"
+          : " ltd-surface-drawer-only";
   const expandedActions = settings.showExpandedHeaderActions || !rendered.controlState.hasTracker;
   const bodyMarkup = rendered.controlState.hasTracker ? `<div class="ltd-body" style="overflow-x: auto; max-width: 100%;">${body}</div>` : "";
   const footerActions = settings.showBottomActionsInInlineTracker && rendered.controlState.hasTracker
@@ -474,7 +487,7 @@ function buildDomHtml(
     ? domButton("reader", "Open fullscreen reader", "reader", true)
     : "";
   return `
-<section class="ltracker-dom-tracker${compactClass}${densityClass}${placementClass}${hasTrackerClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}" data-ltracker-control-state="${escapeHtml(rendered.controlState.generationStatus)}">
+<section class="ltracker-dom-tracker${compactClass}${densityClass}${placementClass}${hasTrackerClass}${surfaceClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}" data-ltracker-display-surface="${escapeHtml(settings.displaySurface)}" data-ltracker-control-state="${escapeHtml(rendered.controlState.generationStatus)}">
   <details${open}>
     <summary>
       <span class="ltd-summary">

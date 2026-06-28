@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.19`
+Version: `0.19.1`
 
-Current release: `0.19 Trusted Renderer Freedom / Power Template Compatibility`
+Current release: `0.19.1 Display Surface Repair / Chat-Width Inline Fix`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -62,9 +62,9 @@ Use `Test Tracker Connection` after selecting a profile. It does not mutate chat
 `messageDisplay.displaySurface` controls where the tracker opens:
 
 - `inline_contained`: inline tracker constrained to message width.
-- `inline_wide`: inline tracker with the configured expanded width behavior.
+- `inline_wide`: inline tracker mounted as wide as the practical chat/message row.
 - `anchored_popover`: compact shell opens a floating popover.
-- `fullscreen_reader`: compact shell opens the fullscreen reader.
+- `fullscreen_reader`: compact shell opens the fullscreen reader with a fixed mobile close button.
 - `drawer_only`: no inline tracker, drawer history only.
 
 `expandedWidth.expandedWidthMode` controls sizing behavior for expanded inline surfaces:
@@ -72,6 +72,20 @@ Use `Test Tracker Connection` after selecting a profile. It does not mutate chat
 - `contained`
 - `wide`
 - `full_mobile`
+
+### Which display mode should I use?
+
+Recommended setup for the widest normal chat tracker:
+
+- Display surface: Inline wide
+- Expanded width mode: Full mobile on phone / Wide on desktop
+- Max expanded width: 1100-1800
+- Mobile margin: 0-6
+- Expanded max height: 90-95
+
+Display surface decides where the tracker opens. Expanded width mode only affects inline sizing. Max expanded width is a cap, not a guaranteed width.
+
+If inline wide is still narrow, the host message bubble is constraining it. LTracker now tries a wide message-row mount before falling back to the normal bubble. If the host DOM still prevents practical width, use anchored popover or fullscreen reader; both are detached from message-bubble constraints.
 
 Legacy `messageDisplay.displayMode` remains for migration and preset-pack compatibility. Old settings migrate as follows:
 
@@ -264,6 +278,14 @@ Common settings are repaired back to safe defaults if missing or malformed.
 | `messageDisplay.minimizedMaxHeightPx` | `0` | Legacy iframe minimized height. |
 | `messageDisplay.maxRenderedChars` | `250000` | Message render cap. |
 | `expandedWidth.expandedWidthMode` | `wide` | Inline sizing behavior. |
+| `expandedWidth.maxExpandedWidthPx` | `1100` | Maximum cap, not guaranteed width. |
+| `expandedWidth.mobileHorizontalMarginPx` | `4` | Viewport margin for mobile/full-width modes. |
+| `expandedWidth.expandedContentMaxHeightVh` | `90` | Max scroll body height. |
+| `expandedWidth.preferFullscreenOnMobile` | `true` | Only affects popover/overlay behavior. |
+| `expandedWidth.fullscreenBreakpointPx` | `640` | Width below which mobile behavior starts. |
+| `expandedWidth.popoverBackdrop` | `true` | Dark overlay behind popover. |
+| `expandedWidth.closeOnBackdropClick` | `true` | Clicking backdrop closes popover. |
+| `expandedWidth.closeOnEscape` | `true` | Desktop keyboard shortcut. |
 
 ## Install And Development
 
@@ -287,7 +309,8 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 - JavaScript remains disabled outside future explicit Dev Mode.
 - Sequential generation, partial regeneration, cleanup/repair mode, World Books, character exclusions, and advanced import/export polish are future phases.
-- DOM injection only attaches immediately to mounted message bubbles; drawer history covers unavailable bubbles.
+- DOM injection can only attach to mounted messages; drawer history covers unavailable messages.
+- Some host themes may still constrain inline content. Inline wide records diagnostics for mount strategy and width constraints, and popover/fullscreen remain the reliable detached alternatives.
 - Embedded tracker tag mode only replaces or removes LTracker's own tag for the exact swipe key.
 - Diagnostics may contain sensitive chat-derived prompt and model output when raw/prompt saving is enabled.
 

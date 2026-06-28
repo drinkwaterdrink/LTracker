@@ -572,6 +572,16 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     messageDisplayHydratedCount: 0,
     lastMessageDisplayHydratedAt: null,
     lastMessageDisplayError: null,
+    selectedDisplaySurface: DEFAULT_SETTINGS.messageDisplay.displaySurface,
+    resolvedDisplaySurface: DEFAULT_SETTINGS.messageDisplay.displaySurface,
+    displaySurfaceKind: "inline",
+    displaySurfaceMountStrategy: null,
+    displaySurfaceParentWidthConstrained: null,
+    displaySurfaceFallbackReason: null,
+    lastDisplaySurfaceRehydratedAt: null,
+    lastDisplayPreviewAction: null,
+    lastDisplayPreviewResult: null,
+    lastDisplayPreviewReason: null,
     messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
     messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
     messageSnapshotIndexCount: 0,
@@ -760,6 +770,20 @@ function messageDisplayPlacementOrNull(value: unknown): LTrackerMessageDisplayPl
   return value === "top" || value === "bottom" ? value : null;
 }
 
+function displaySurfaceOrNull(value: unknown): LTrackerDiagnostics["resolvedDisplaySurface"] {
+  return value === "inline_contained"
+    || value === "inline_wide"
+    || value === "anchored_popover"
+    || value === "fullscreen_reader"
+    || value === "drawer_only"
+    ? value
+    : null;
+}
+
+function displaySurfaceKindOrNull(value: unknown): LTrackerDiagnostics["displaySurfaceKind"] {
+  return value === "inline" || value === "overlay" || value === "drawer_only" ? value : null;
+}
+
 function messageWidgetPlacementResolved(value: unknown): LTrackerMessageWidgetPlacementResolved {
   return value === "top" || value === "bottom" || value === "host_default" || value === "unsupported"
     ? value
@@ -776,6 +800,9 @@ function mountPointStrategy(value: unknown): LTrackerDiagnostics["lastMountPoint
   return value === "official_message_body"
     || value === "official_message_element"
     || value === "bubble_adapter"
+    || value === "wide_message_row"
+    || value === "wide_message_element"
+    || value === "wide_bubble_fallback"
     || value === "widget_fallback"
     || value === "drawer_only"
     ? value
@@ -959,6 +986,16 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
       : 0,
     lastMessageDisplayHydratedAt: stringOrNull(value.lastMessageDisplayHydratedAt),
     lastMessageDisplayError: stringOrNull(value.lastMessageDisplayError),
+    selectedDisplaySurface: displaySurfaceOrNull(value.selectedDisplaySurface) ?? DEFAULT_SETTINGS.messageDisplay.displaySurface,
+    resolvedDisplaySurface: displaySurfaceOrNull(value.resolvedDisplaySurface) ?? DEFAULT_SETTINGS.messageDisplay.displaySurface,
+    displaySurfaceKind: displaySurfaceKindOrNull(value.displaySurfaceKind) ?? "inline",
+    displaySurfaceMountStrategy: mountPointStrategy(value.displaySurfaceMountStrategy),
+    displaySurfaceParentWidthConstrained: typeof value.displaySurfaceParentWidthConstrained === "boolean" ? value.displaySurfaceParentWidthConstrained : null,
+    displaySurfaceFallbackReason: stringOrNull(value.displaySurfaceFallbackReason),
+    lastDisplaySurfaceRehydratedAt: stringOrNull(value.lastDisplaySurfaceRehydratedAt),
+    lastDisplayPreviewAction: stringOrNull(value.lastDisplayPreviewAction),
+    lastDisplayPreviewResult: stringOrNull(value.lastDisplayPreviewResult),
+    lastDisplayPreviewReason: stringOrNull(value.lastDisplayPreviewReason),
     messageLocalUiSupported: typeof value.messageLocalUiSupported === "boolean"
       ? value.messageLocalUiSupported
       : MESSAGE_LOCAL_UI_SUPPORTED,
@@ -1057,7 +1094,7 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastHistoryCleanupAt: stringOrNull(value.lastHistoryCleanupAt),
     expandedWidthModeResolved: stringOrNull(value.expandedWidthModeResolved),
     lastExpandedTrackerWidthPx: numberOrNull(value.lastExpandedTrackerWidthPx),
-    lastDisplaySurface: value.lastDisplaySurface === "inline_contained" || value.lastDisplaySurface === "inline_wide" || value.lastDisplaySurface === "anchored_popover" || value.lastDisplaySurface === "fullscreen_reader" || value.lastDisplaySurface === "drawer_only" ? value.lastDisplaySurface : null,
+    lastDisplaySurface: displaySurfaceOrNull(value.lastDisplaySurface),
     lastPopoverOpenedAt: stringOrNull(value.lastPopoverOpenedAt),
     lastPopoverMessageId: stringOrNull(value.lastPopoverMessageId),
     lastPopoverSwipeKey: stringOrNull(value.lastPopoverSwipeKey),
@@ -1922,6 +1959,13 @@ async function buildState(
       messageDisplayMode,
       messageDisplayPlacement: settings.messageDisplay.placement,
       messageDisplayHydratedCount,
+      selectedDisplaySurface: settings.messageDisplay.displaySurface,
+      resolvedDisplaySurface: settings.messageDisplay.displaySurface,
+      displaySurfaceKind: settings.messageDisplay.displaySurface === "drawer_only"
+        ? "drawer_only"
+        : settings.messageDisplay.displaySurface === "anchored_popover" || settings.messageDisplay.displaySurface === "fullscreen_reader"
+          ? "overlay"
+          : "inline",
       lastMessageDisplayHydratedAt: messageDisplayHydratedCount > 0
         ? nowIso()
         : diagnostics.lastMessageDisplayHydratedAt,

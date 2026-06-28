@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.19";
+export const EXTENSION_VERSION = "0.19.1";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -32,7 +32,16 @@ export type LTrackerConnectionTestStatus = "idle" | "running" | "success" | "err
 export type LTrackerMessageDisplayMode = "dom_injection" | "message_widget" | "drawer_history" | "disabled";
 export type LTrackerMessageWidgetPlacementResolved = "top" | "bottom" | "host_default" | "unsupported";
 export type LTrackerMessageDisplayRenderer = "dom_injection" | "iframe_widget" | "drawer_history";
-export type LTrackerMountPointStrategy = "official_message_body" | "official_message_element" | "bubble_adapter" | "widget_fallback" | "drawer_only";
+export type LTrackerMountPointStrategy =
+  | "official_message_body"
+  | "official_message_element"
+  | "bubble_adapter"
+  | "wide_message_row"
+  | "wide_message_element"
+  | "wide_bubble_fallback"
+  | "widget_fallback"
+  | "drawer_only";
+export type LTrackerDisplaySurfaceKind = "inline" | "overlay" | "drawer_only";
 export type TemplateTrustMode = "safe" | "trusted" | "dev";
 export type LTrackerBudgetMode = "characters" | "estimated_tokens";
 export type LTrackerExpandedWidthMode = "contained" | "wide" | "full_mobile" | "popover";
@@ -513,6 +522,16 @@ export interface LTrackerDiagnostics {
   messageDisplayHydratedCount: number;
   lastMessageDisplayHydratedAt: string | null;
   lastMessageDisplayError: string | null;
+  selectedDisplaySurface: LTrackerDisplaySurface | null;
+  resolvedDisplaySurface: LTrackerDisplaySurface | null;
+  displaySurfaceKind: LTrackerDisplaySurfaceKind | null;
+  displaySurfaceMountStrategy: LTrackerMountPointStrategy | null;
+  displaySurfaceParentWidthConstrained: boolean | null;
+  displaySurfaceFallbackReason: string | null;
+  lastDisplaySurfaceRehydratedAt: string | null;
+  lastDisplayPreviewAction: string | null;
+  lastDisplayPreviewResult: string | null;
+  lastDisplayPreviewReason: string | null;
   messageLocalUiSupported: boolean;
   messageLocalUiFallbackReason: string | null;
   messageSnapshotIndexCount: number;

@@ -228,7 +228,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.19";
+var EXTENSION_VERSION = "0.19.1";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1552,6 +1552,7 @@ function buildDomHtml(rendered, settings) {
   const densityClass = settings.controlDensity === "comfortable" ? " ltd-comfortable" : " ltd-compact-density";
   const placementClass = settings.controlPlacement === "inside_tracker_header" ? " ltd-inside-header" : " ltd-message-header";
   const hasTrackerClass = rendered.controlState.hasTracker ? " ltd-has-tracker" : " ltd-missing-tracker";
+  const surfaceClass = settings.displaySurface === "inline_wide" ? " ltd-surface-inline-wide ltd-chat-width" : settings.displaySurface === "inline_contained" ? " ltd-surface-inline-contained" : settings.displaySurface === "anchored_popover" ? " ltd-surface-popover ltd-overlay-shell" : settings.displaySurface === "fullscreen_reader" ? " ltd-surface-reader ltd-overlay-shell" : " ltd-surface-drawer-only";
   const expandedActions = settings.showExpandedHeaderActions || !rendered.controlState.hasTracker;
   const bodyMarkup = rendered.controlState.hasTracker ? `<div class="ltd-body" style="overflow-x: auto; max-width: 100%;">${body}</div>` : "";
   const footerActions = settings.showBottomActionsInInlineTracker && rendered.controlState.hasTracker ? `<div class="ltd-footer-actions" style="display: flex; gap: 4px; justify-content: flex-end; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 5px 7px;">
@@ -1563,7 +1564,7 @@ function buildDomHtml(rendered, settings) {
   const title = rendered.controlState.hasTracker ? "L" : "";
   const readerButton = rendered.controlState.hasTracker ? domButton("reader", "Open fullscreen reader", "reader", true) : "";
   return `
-<section class="ltracker-dom-tracker${compactClass}${densityClass}${placementClass}${hasTrackerClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}" data-ltracker-control-state="${escapeHtml(rendered.controlState.generationStatus)}">
+<section class="ltracker-dom-tracker${compactClass}${densityClass}${placementClass}${hasTrackerClass}${surfaceClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}" data-ltracker-display-surface="${escapeHtml(settings.displaySurface)}" data-ltracker-control-state="${escapeHtml(rendered.controlState.generationStatus)}">
   <details${open}>
     <summary>
       <span class="ltd-summary">
@@ -3290,10 +3291,7 @@ function migrateDisplaySurface(displayMode, widthMode) {
   }
   return DEFAULT_SETTINGS.messageDisplay.displaySurface;
 }
-function displayModeForSurface(surface, fallback) {
-  if (fallback === "inline_button_popover" || fallback === "drawer_history_only" || fallback === "inline_full") {
-    return fallback;
-  }
+function displayModeForSurface(surface) {
   if (surface === "drawer_only") return "drawer_history_only";
   if (surface === "anchored_popover") return "inline_button_popover";
   return "inline_full";
@@ -3358,9 +3356,8 @@ function repairSettings(value) {
   const messageDisplaySourceSetting = messageDisplaySource.source === "latest_chat_snapshot" || messageDisplaySource.source === "message_attached_snapshot" ? messageDisplaySource.source : DEFAULT_SETTINGS.messageDisplay.source;
   const messageDisplayRenderMode = messageDisplaySource.renderMode === "compact_text" || messageDisplaySource.renderMode === "pretty_json" || messageDisplaySource.renderMode === "html_template" ? messageDisplaySource.renderMode : DEFAULT_SETTINGS.messageDisplay.renderMode;
   const messageDisplayAttachmentMode = messageDisplaySource.attachmentMode === "embedded_tracker_tag" || messageDisplaySource.attachmentMode === "both" || messageDisplaySource.attachmentMode === "sidecar_snapshot" ? messageDisplaySource.attachmentMode : DEFAULT_SETTINGS.messageDisplay.attachmentMode;
-  const messageDisplayDisplayMode = messageDisplaySource.displayMode === "inline_button_popover" || messageDisplaySource.displayMode === "drawer_history_only" || messageDisplaySource.displayMode === "inline_full" ? messageDisplaySource.displayMode : DEFAULT_SETTINGS.messageDisplay.displayMode;
   const messageDisplaySurface = displaySurface(messageDisplaySource.displaySurface) ?? migrateDisplaySurface(messageDisplaySource.displayMode, expandedWidthSource.expandedWidthMode);
-  const repairedMessageDisplayDisplayMode = displayModeForSurface(messageDisplaySurface, messageDisplaySource.displayMode ?? messageDisplayDisplayMode);
+  const repairedMessageDisplayDisplayMode = displayModeForSurface(messageDisplaySurface);
   const messageDisplayControlDensity = messageDisplaySource.controlDensity === "comfortable" || messageDisplaySource.controlDensity === "compact" ? messageDisplaySource.controlDensity : DEFAULT_SETTINGS.messageDisplay.controlDensity;
   const messageDisplayControlPlacement = messageDisplaySource.controlPlacement === "inside_tracker_header" || messageDisplaySource.controlPlacement === "message_header" ? messageDisplaySource.controlPlacement : DEFAULT_SETTINGS.messageDisplay.controlPlacement;
   const repairedBudgetUltra = typeof budgetSource.ultraModeEnabled === "boolean" ? budgetSource.ultraModeEnabled : DEFAULT_SETTINGS.budget.ultraModeEnabled;
@@ -4539,6 +4536,16 @@ function defaultDiagnostics(chatId) {
     messageDisplayHydratedCount: 0,
     lastMessageDisplayHydratedAt: null,
     lastMessageDisplayError: null,
+    selectedDisplaySurface: DEFAULT_SETTINGS.messageDisplay.displaySurface,
+    resolvedDisplaySurface: DEFAULT_SETTINGS.messageDisplay.displaySurface,
+    displaySurfaceKind: "inline",
+    displaySurfaceMountStrategy: null,
+    displaySurfaceParentWidthConstrained: null,
+    displaySurfaceFallbackReason: null,
+    lastDisplaySurfaceRehydratedAt: null,
+    lastDisplayPreviewAction: null,
+    lastDisplayPreviewResult: null,
+    lastDisplayPreviewReason: null,
     messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
     messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
     messageSnapshotIndexCount: 0,
@@ -4707,6 +4714,12 @@ function messageDisplayModeOrNull(value) {
 function messageDisplayPlacementOrNull(value) {
   return value === "top" || value === "bottom" ? value : null;
 }
+function displaySurfaceOrNull(value) {
+  return value === "inline_contained" || value === "inline_wide" || value === "anchored_popover" || value === "fullscreen_reader" || value === "drawer_only" ? value : null;
+}
+function displaySurfaceKindOrNull(value) {
+  return value === "inline" || value === "overlay" || value === "drawer_only" ? value : null;
+}
 function messageWidgetPlacementResolved(value) {
   return value === "top" || value === "bottom" || value === "host_default" || value === "unsupported" ? value : MESSAGE_LOCAL_UI_SUPPORTED ? "host_default" : "unsupported";
 }
@@ -4714,7 +4727,7 @@ function messageDisplayRenderer(value) {
   return value === "dom_injection" || value === "iframe_widget" || value === "drawer_history" ? value : "drawer_history";
 }
 function mountPointStrategy(value) {
-  return value === "official_message_body" || value === "official_message_element" || value === "bubble_adapter" || value === "widget_fallback" || value === "drawer_only" ? value : null;
+  return value === "official_message_body" || value === "official_message_element" || value === "bubble_adapter" || value === "wide_message_row" || value === "wide_message_element" || value === "wide_bubble_fallback" || value === "widget_fallback" || value === "drawer_only" ? value : null;
 }
 function inlineActionOrNull(value) {
   return value === "generate" || value === "regenerate" || value === "cancel" || value === "edit" || value === "delete" || value === "toggle" ? value : null;
@@ -4838,6 +4851,16 @@ function repairDiagnostics(value, chatId) {
     messageDisplayHydratedCount: typeof value.messageDisplayHydratedCount === "number" && Number.isFinite(value.messageDisplayHydratedCount) ? Math.max(0, Math.round(value.messageDisplayHydratedCount)) : 0,
     lastMessageDisplayHydratedAt: stringOrNull3(value.lastMessageDisplayHydratedAt),
     lastMessageDisplayError: stringOrNull3(value.lastMessageDisplayError),
+    selectedDisplaySurface: displaySurfaceOrNull(value.selectedDisplaySurface) ?? DEFAULT_SETTINGS.messageDisplay.displaySurface,
+    resolvedDisplaySurface: displaySurfaceOrNull(value.resolvedDisplaySurface) ?? DEFAULT_SETTINGS.messageDisplay.displaySurface,
+    displaySurfaceKind: displaySurfaceKindOrNull(value.displaySurfaceKind) ?? "inline",
+    displaySurfaceMountStrategy: mountPointStrategy(value.displaySurfaceMountStrategy),
+    displaySurfaceParentWidthConstrained: typeof value.displaySurfaceParentWidthConstrained === "boolean" ? value.displaySurfaceParentWidthConstrained : null,
+    displaySurfaceFallbackReason: stringOrNull3(value.displaySurfaceFallbackReason),
+    lastDisplaySurfaceRehydratedAt: stringOrNull3(value.lastDisplaySurfaceRehydratedAt),
+    lastDisplayPreviewAction: stringOrNull3(value.lastDisplayPreviewAction),
+    lastDisplayPreviewResult: stringOrNull3(value.lastDisplayPreviewResult),
+    lastDisplayPreviewReason: stringOrNull3(value.lastDisplayPreviewReason),
     messageLocalUiSupported: typeof value.messageLocalUiSupported === "boolean" ? value.messageLocalUiSupported : MESSAGE_LOCAL_UI_SUPPORTED,
     messageLocalUiFallbackReason: stringOrNull3(value.messageLocalUiFallbackReason) ?? MESSAGE_LOCAL_UI_FALLBACK_REASON,
     messageSnapshotIndexCount: typeof value.messageSnapshotIndexCount === "number" && Number.isFinite(value.messageSnapshotIndexCount) ? Math.max(0, Math.round(value.messageSnapshotIndexCount)) : 0,
@@ -4920,7 +4943,7 @@ function repairDiagnostics(value, chatId) {
     lastHistoryCleanupAt: stringOrNull3(value.lastHistoryCleanupAt),
     expandedWidthModeResolved: stringOrNull3(value.expandedWidthModeResolved),
     lastExpandedTrackerWidthPx: numberOrNull2(value.lastExpandedTrackerWidthPx),
-    lastDisplaySurface: value.lastDisplaySurface === "inline_contained" || value.lastDisplaySurface === "inline_wide" || value.lastDisplaySurface === "anchored_popover" || value.lastDisplaySurface === "fullscreen_reader" || value.lastDisplaySurface === "drawer_only" ? value.lastDisplaySurface : null,
+    lastDisplaySurface: displaySurfaceOrNull(value.lastDisplaySurface),
     lastPopoverOpenedAt: stringOrNull3(value.lastPopoverOpenedAt),
     lastPopoverMessageId: stringOrNull3(value.lastPopoverMessageId),
     lastPopoverSwipeKey: stringOrNull3(value.lastPopoverSwipeKey),
@@ -5598,6 +5621,9 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       messageDisplayMode,
       messageDisplayPlacement: settings.messageDisplay.placement,
       messageDisplayHydratedCount,
+      selectedDisplaySurface: settings.messageDisplay.displaySurface,
+      resolvedDisplaySurface: settings.messageDisplay.displaySurface,
+      displaySurfaceKind: settings.messageDisplay.displaySurface === "drawer_only" ? "drawer_only" : settings.messageDisplay.displaySurface === "anchored_popover" || settings.messageDisplay.displaySurface === "fullscreen_reader" ? "overlay" : "inline",
       lastMessageDisplayHydratedAt: messageDisplayHydratedCount > 0 ? nowIso() : diagnostics.lastMessageDisplayHydratedAt,
       messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
       messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,

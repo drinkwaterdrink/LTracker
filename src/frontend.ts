@@ -155,6 +155,60 @@ const STYLES = `
   cursor: not-allowed;
   opacity: 0.58;
 }
+.ltracker-reader-fixed-close {
+  align-items: center;
+  background: #ea4335;
+  border: 1px solid #ff8a80;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  font: 700 22px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  height: 44px;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0;
+  position: fixed;
+  right: max(10px, env(safe-area-inset-right));
+  top: max(10px, env(safe-area-inset-top));
+  width: 44px;
+  z-index: 1000002;
+}
+.ltracker-display-preview-overlay {
+  inset: 0;
+  pointer-events: none;
+  position: fixed;
+  z-index: 999998;
+}
+.ltracker-display-preview-panel {
+  background: #161616;
+  border: 1px solid #333;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  color: #eee;
+  display: flex;
+  flex-direction: column;
+  font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  max-height: 76vh;
+  overflow: hidden;
+  pointer-events: auto;
+  position: fixed;
+}
+.ltracker-display-preview-header {
+  align-items: center;
+  border-bottom: 1px solid #333;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 9px 12px;
+}
+.ltracker-display-preview-body {
+  overflow: auto;
+  padding: 12px;
+}
 .ltracker-panel {
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
   border-radius: 8px;
@@ -565,6 +619,16 @@ function emptyState(): FrontendState {
       messageDisplayHydratedCount: 0,
       lastMessageDisplayHydratedAt: null,
       lastMessageDisplayError: null,
+      selectedDisplaySurface: DEFAULT_SETTINGS.messageDisplay.displaySurface,
+      resolvedDisplaySurface: DEFAULT_SETTINGS.messageDisplay.displaySurface,
+      displaySurfaceKind: "inline",
+      displaySurfaceMountStrategy: null,
+      displaySurfaceParentWidthConstrained: null,
+      displaySurfaceFallbackReason: null,
+      lastDisplaySurfaceRehydratedAt: null,
+      lastDisplayPreviewAction: null,
+      lastDisplayPreviewResult: null,
+      lastDisplayPreviewReason: null,
       messageLocalUiSupported: false,
       messageLocalUiFallbackReason: null,
       messageSnapshotIndexCount: 0,
@@ -823,6 +887,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let activePopoverElement: HTMLElement | null = null;
   let activePopoverEntry: MessageTrackerHistoryEntry | null = null;
   let activeReaderElement: HTMLElement | null = null;
+  let activeDisplayPreviewElement: HTMLElement | null = null;
 
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
@@ -842,6 +907,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         }
         if (activeReaderElement) {
           closeFullscreenReader();
+        }
+        if (activeDisplayPreviewElement) {
+          closeDisplayPreview();
         }
       }
     }
@@ -971,6 +1039,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   function isSettingsControl(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
     return Boolean(target.closest("[data-setting], [data-auto-timing-setting], [data-budget-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-expanded-width-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning]"));
+  }
+
+  function isDisplaySurfaceControl(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    return Boolean(target.closest("[data-message-display-setting=\"displaySurface\"], [data-expanded-width-setting]"));
+  }
+
+  function applyDisplaySettingsOptimistically(renderAfter = false): void {
+    state = {
+      ...state,
+      settings: readSettings(),
+    };
+    hydrateMessageWidgets();
+    localDiagnostics({
+      selectedDisplaySurface: state.settings.messageDisplay.displaySurface,
+      resolvedDisplaySurface: resolveDisplaySurface(state.settings),
+      displaySurfaceKind: displaySurfaceKind(resolveDisplaySurface(state.settings)),
+      lastDisplaySurfaceRehydratedAt: new Date().toISOString(),
+    });
+    if (renderAfter) render();
   }
 
   function localDiagnostics(update: Partial<FrontendState["diagnostics"]>): void {
@@ -1198,26 +1286,65 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
   }
 
-  function resolveTrackerMountPoint(messageElement: Element): {
+  function displaySurfaceKind(surface: LTrackerDisplaySurface): "inline" | "overlay" | "drawer_only" {
+    if (surface === "drawer_only") return "drawer_only";
+    if (surface === "anchored_popover" || surface === "fullscreen_reader") return "overlay";
+    return "inline";
+  }
+
+  function elementWidth(element: Element): number {
+    if (!(element instanceof HTMLElement)) return 0;
+    return element.getBoundingClientRect().width || element.clientWidth || 0;
+  }
+
+  function findWideMessageRow(messageElement: Element): Element | null {
+    const doc = messageElement.ownerDocument || document;
+    const viewWidth = doc.defaultView?.innerWidth ?? 0;
+    let best: Element = messageElement;
+    let bestWidth = elementWidth(messageElement);
+    let current = messageElement.parentElement;
+    let hops = 0;
+    while (current && current !== doc.body && hops < 7) {
+      const width = elementWidth(current);
+      if (width > bestWidth + 24) {
+        best = current;
+        bestWidth = width;
+      }
+      if (viewWidth > 0 && width >= viewWidth * 0.72) break;
+      current = current.parentElement;
+      hops += 1;
+    }
+    return best;
+  }
+
+  function resolveTrackerMountPoint(messageElement: Element, surface: LTrackerDisplaySurface): {
     target: Element;
     strategy: LTrackerMountPointStrategy;
+    fallbackReason: string | null;
   } {
+    if (surface === "inline_wide") {
+      const wideTarget = findWideMessageRow(messageElement);
+      if (wideTarget && wideTarget !== messageElement) {
+        return { target: wideTarget, strategy: "wide_message_row", fallbackReason: null };
+      }
+      return { target: messageElement, strategy: "wide_message_element", fallbackReason: wideTarget ? null : "wide row search returned no usable parent" };
+    }
     const officialBody = queryMountPoint(
       messageElement,
       "[data-lumiverse-message-body], [data-message-body], [data-message-content], [data-chat-message-content]",
     );
     if (officialBody) {
-      return { target: officialBody, strategy: "official_message_body" };
+      return { target: officialBody, strategy: "official_message_body", fallbackReason: null };
     }
     const scopedBubble = queryMountPoint(messageElement, ":scope > div[class*='bubble']");
     if (scopedBubble) {
-      return { target: scopedBubble, strategy: "bubble_adapter" };
+      return { target: scopedBubble, strategy: "bubble_adapter", fallbackReason: null };
     }
     const nestedBubble = queryMountPoint(messageElement, "div[class*='bubble']");
     if (nestedBubble) {
-      return { target: nestedBubble, strategy: "bubble_adapter" };
+      return { target: nestedBubble, strategy: "bubble_adapter", fallbackReason: null };
     }
-    return { target: messageElement, strategy: "official_message_element" };
+    return { target: messageElement, strategy: "official_message_element", fallbackReason: null };
   }
 
   function positionForPlacement(placement: LTrackerMessageDisplayPlacement): InsertPosition {
@@ -1256,9 +1383,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
   }
 
-  function openPopover(entry: MessageTrackerHistoryEntry, anchorElement: HTMLElement): void {
+  function openPopover(entry: MessageTrackerHistoryEntry, anchorElement: HTMLElement, preview = false): void {
     closePopover();
     closeFullscreenReader();
+    closeDisplayPreview();
 
     const doc = anchorElement.ownerDocument || document;
     const overlay = doc.createElement("div");
@@ -1313,19 +1441,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       : entry.rendered.controlState.error ? `<span class="ltd-pill ltd-warning" data-ltracker-status>warning</span>` : "";
 
     panel.innerHTML = `
-      <div class="ltd-popover-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding: 8px 12px; background: #222; border-top-left-radius: 8px; border-top-right-radius: 8px;">
-        <div style="display: flex; align-items: center; gap: 8px; font-family: sans-serif;">
-          <span style="font-weight: bold; color: #9b5cff; font-size: 13px;">LTracker Popover</span>
-          <span style="font-size: 11px; color: #aaa; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(meta)}</span>
+      <div class="ltd-popover-header" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; min-width: 0; border-bottom: 1px solid #333; padding: 8px 10px 8px 12px; background: #222; border-top-left-radius: 8px; border-top-right-radius: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px; font-family: sans-serif; min-width: 0; flex: 1 1 auto; flex-wrap: wrap;">
+          <span style="font-weight: bold; color: #9b5cff; font-size: 13px;">${preview ? "LTracker Popover Preview" : "LTracker Popover"}</span>
+          <span style="font-size: 11px; color: #aaa; min-width: 0; max-width: min(42vw, 250px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(meta)}</span>
           ${elapsedMarkup}
           ${statusMarkup}
         </div>
-        <div class="ltd-popover-actions" style="display: flex; gap: 4px; align-items: center;">
+        <div class="ltd-popover-actions" style="display: flex; gap: 4px; align-items: center; flex: 0 0 auto;">
           <button class="ltd-icon-button" data-popover-action="reader" title="Open fullscreen reader" style="width: 22px; height: 22px; padding: 0;">${iconSvg("reader")}</button>
           <button class="ltd-icon-button" data-popover-action="toggle_regenerate" title="Regenerate" style="width: 22px; height: 22px; padding: 0;">${iconSvg(entry.rendered.isRegenerating ? "stop" : "refresh")}</button>
           <button class="ltd-icon-button" data-popover-action="edit" title="Edit" style="width: 22px; height: 22px; padding: 0;">${iconSvg("edit")}</button>
           <button class="ltd-icon-button" data-popover-action="delete" title="Delete" style="width: 22px; height: 22px; padding: 0;">${iconSvg("delete")}</button>
-          <button class="ltd-icon-button" data-popover-action="close" title="Close" style="background: #ea4335; border-color: #ea4335; color: #fff; width: 22px; height: 22px; padding: 0; font-weight: bold; font-size: 14px; line-height: 20px;">&times;</button>
+          <button class="ltd-icon-button" data-popover-action="close" title="Close" style="background: #ea4335; border-color: #ea4335; color: #fff; min-width: 44px; min-height: 44px; width: 44px; height: 44px; padding: 0; font-weight: bold; font-size: 20px; line-height: 1;">&times;</button>
         </div>
       </div>
       <div class="ltd-popover-body" style="padding: 12px; overflow-y: auto; background: #161616; flex: 1; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; overflow-x: auto; max-width: 100%;">
@@ -1346,6 +1474,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       display: "flex",
       flexDirection: "column",
       boxSizing: "border-box",
+      maxWidth: "calc(100vw - max(20px, env(safe-area-inset-left) + env(safe-area-inset-right)))",
+      maxHeight: "calc(100vh - max(20px, env(safe-area-inset-top) + env(safe-area-inset-bottom)))",
+      overflow: "hidden",
     });
 
     const anchorRect = anchorElement.getBoundingClientRect();
@@ -1355,10 +1486,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
     if (isMobile || (width.preferFullscreenOnMobile && isMobile)) {
       Object.assign(panel.style, {
-        width: `calc(100vw - ${width.mobileHorizontalMarginPx * 2}px)`,
+        width: `calc(100vw - ${Math.max(8, width.mobileHorizontalMarginPx * 2)}px)`,
         height: `${width.expandedContentMaxHeightVh}vh`,
-        bottom: `${width.mobileHorizontalMarginPx}px`,
-        left: `${width.mobileHorizontalMarginPx}px`,
+        bottom: `max(${Math.max(4, width.mobileHorizontalMarginPx)}px, env(safe-area-inset-bottom))`,
+        left: `max(${Math.max(4, width.mobileHorizontalMarginPx)}px, env(safe-area-inset-left))`,
+        right: `max(${Math.max(4, width.mobileHorizontalMarginPx)}px, env(safe-area-inset-right))`,
         position: "fixed",
       });
     } else {
@@ -1432,6 +1564,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       lastPopoverHeightPx: panel.offsetHeight || null,
       lastResolvedViewportWidth: viewWidth,
       lastResolvedViewportHeight: viewHeight,
+      lastDisplayPreviewAction: preview ? "popover" : state.diagnostics.lastDisplayPreviewAction,
+      lastDisplayPreviewResult: preview ? "opened" : state.diagnostics.lastDisplayPreviewResult,
+      lastDisplayPreviewReason: preview ? "Opened detached popover preview." : state.diagnostics.lastDisplayPreviewReason,
     });
   }
 
@@ -1443,9 +1578,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
   }
 
-  function openFullscreenReader(entry: MessageTrackerHistoryEntry): void {
+  function openFullscreenReader(entry: MessageTrackerHistoryEntry, preview = false): void {
     closePopover();
     closeFullscreenReader();
+    closeDisplayPreview();
 
     const doc = document;
     const overlay = doc.createElement("div");
@@ -1463,6 +1599,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       display: "flex",
       flexDirection: "column",
       boxSizing: "border-box",
+      overflow: "hidden",
     });
 
     const meta = [
@@ -1486,22 +1623,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const body = entry.rendered.html || `<pre class="ltd-pre" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(entry.rendered.textFallback)}</pre>`;
 
     overlay.innerHTML = `
-      <header class="ltracker-reader-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding: 10px 16px; background: #1a1a1a; font-family: sans-serif;">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <h2 style="margin: 0; font-size: 15px; font-weight: bold; color: #9b5cff;">LTracker Reader</h2>
-          <span style="font-size: 11px; color: #aaa; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(meta)}</span>
+      <button class="ltracker-reader-fixed-close" data-reader-action="close" title="Close Reader" aria-label="Close Reader">&times;</button>
+      <header class="ltracker-reader-header" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; min-width: 0; border-bottom: 1px solid #333; padding: calc(10px + env(safe-area-inset-top)) 64px 10px 16px; background: #1a1a1a; font-family: sans-serif; flex-wrap: wrap;">
+        <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 260px; flex-wrap: wrap;">
+          <h2 style="margin: 0; font-size: 15px; font-weight: bold; color: #9b5cff; min-width: 0;">${preview ? "LTracker Reader Preview" : "LTracker Reader"}</h2>
+          <span style="font-size: 11px; color: #aaa; min-width: 0; max-width: min(52vw, 350px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(meta)}</span>
           ${elapsedMarkup}
           ${statusMarkup}
         </div>
-        <div style="display: flex; gap: 6px; align-items: center;">
+        <div style="display: flex; gap: 6px; align-items: center; flex: 0 0 auto; padding-right: 44px;">
           <button class="ltd-icon-button" data-reader-action="toggle_regenerate" title="Regenerate" style="width: 24px; height: 24px; padding: 0;">${iconSvg(entry.rendered.isRegenerating ? "stop" : "refresh")}</button>
           <button class="ltd-icon-button" data-reader-action="edit" title="Edit" style="width: 24px; height: 24px; padding: 0;">${iconSvg("edit")}</button>
           <button class="ltd-icon-button" data-reader-action="delete" title="Delete" style="width: 24px; height: 24px; padding: 0;">${iconSvg("delete")}</button>
           <button class="ltd-icon-button" data-reader-action="close" title="Close Reader" style="background: #ea4335; border-color: #ea4335; color: #fff; width: auto; padding: 0 12px; font-weight: bold; height: 24px; font-size: 12px; line-height: 22px; cursor: pointer; border-radius: 6px;">Close</button>
         </div>
       </header>
-      <main class="ltracker-reader-body" style="flex: 1; padding: 18px; overflow-y: auto; background: #111; box-sizing: border-box;">
-        <div class="ltracker-reader-content-wrapper" style="max-width: 1000px; margin: 0 auto; overflow-x: auto; background: #161616; padding: 15px; border-radius: 8px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+      <main class="ltracker-reader-body" style="flex: 1; min-height: 0; padding: 18px; overflow-y: auto; background: #111; box-sizing: border-box;">
+        <div class="ltracker-reader-content-wrapper" style="width: 100%; max-width: min(100%, var(--ltracker-reader-content-max, 1100px)); margin: 0 auto; overflow-x: auto; box-sizing: border-box; background: #161616; padding: 15px; border-radius: 8px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
           ${body}
         </div>
       </main>
@@ -1539,6 +1677,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       lastReaderOpenedAt: new Date().toISOString(),
       lastReaderMessageId: entry.indexEntry.messageId,
       lastReaderSwipeKey: entry.indexEntry.swipeKey,
+      lastDisplayPreviewAction: preview ? "fullscreen" : state.diagnostics.lastDisplayPreviewAction,
+      lastDisplayPreviewResult: preview ? "opened" : state.diagnostics.lastDisplayPreviewResult,
+      lastDisplayPreviewReason: preview ? "Opened fullscreen reader preview." : state.diagnostics.lastDisplayPreviewReason,
     });
   }
 
@@ -1546,7 +1687,124 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (activeReaderElement) {
       activeReaderElement.remove();
       activeReaderElement = null;
+      localDiagnostics({
+        lastDisplayPreviewResult: state.diagnostics.lastDisplayPreviewAction === "fullscreen" ? "closed" : state.diagnostics.lastDisplayPreviewResult,
+      });
     }
+  }
+
+  function closeDisplayPreview(): void {
+    if (activeDisplayPreviewElement) {
+      activeDisplayPreviewElement.remove();
+      activeDisplayPreviewElement = null;
+    }
+  }
+
+  function renderEntryForSurface(entry: MessageTrackerHistoryEntry, surface: LTrackerDisplaySurface): MessageTrackerHistoryEntry {
+    const chatId = entry.snapshot?.chatId ?? state.chatId ?? activeChatId() ?? "";
+    return {
+      ...entry,
+      rendered: renderMessageTracker({
+        messageId: entry.indexEntry.messageId,
+        messageIndex: entry.indexEntry.messageIndex,
+        attachedSnapshot: entry.snapshot,
+        latestChatSnapshot: state.snapshot,
+        preset: state.activePreset,
+        settings: {
+          ...state.settings.messageDisplay,
+          displaySurface: surface,
+          displayMode: displayModeForSurface(surface),
+        },
+        swipeIdentity: {
+          chatId,
+          messageId: entry.indexEntry.messageId,
+          swipeKey: entry.indexEntry.swipeKey,
+          swipeIndex: entry.indexEntry.swipeIndex,
+          swipeId: entry.indexEntry.swipeId,
+          swipeContentHash: entry.indexEntry.swipeContentHash,
+          swipeKeySource: entry.indexEntry.swipeKeySource,
+        },
+        isRegenerating: entry.rendered.isRegenerating,
+        activeJobId: entry.rendered.activeJobId,
+        activeJobStartedAt: entry.rendered.generationStartedAt,
+      }),
+    };
+  }
+
+  function latestPreviewEntry(): MessageTrackerHistoryEntry | null {
+    const current = findHistoryEntry(
+      state.diagnostics.lastMessageControlMessageId ?? undefined,
+      state.diagnostics.lastMessageControlSwipeKey,
+    );
+    return current ?? allRenderableEntries()[0] ?? null;
+  }
+
+  function openDisplayPreview(entry: MessageTrackerHistoryEntry, surface: "inline_contained" | "inline_wide"): void {
+    closeDisplayPreview();
+    closePopover();
+    closeFullscreenReader();
+
+    const renderedEntry = renderEntryForSurface(entry, surface);
+    const doc = document;
+    const overlay = doc.createElement("div");
+    overlay.className = "ltracker-display-preview-overlay";
+    const width = state.settings.expandedWidth;
+    const panel = doc.createElement("section");
+    panel.className = "ltracker-display-preview-panel";
+    panel.style.right = surface === "inline_wide" ? `max(4px, env(safe-area-inset-right))` : "18px";
+    panel.style.left = surface === "inline_wide" ? `max(4px, env(safe-area-inset-left))` : "";
+    panel.style.bottom = `max(10px, env(safe-area-inset-bottom))`;
+    panel.style.width = surface === "inline_wide"
+      ? `calc(100vw - ${Math.max(8, width.mobileHorizontalMarginPx * 2)}px)`
+      : `min(420px, calc(100vw - 24px))`;
+    panel.style.maxWidth = surface === "inline_wide"
+      ? `min(${width.maxExpandedWidthPx}px, calc(100vw - 8px))`
+      : "min(420px, calc(100vw - 24px))";
+    panel.innerHTML = `
+      <div class="ltracker-display-preview-header">
+        <strong>${surface === "inline_wide" ? "Preview: Inline wide" : "Preview: Inline contained"}</strong>
+        <button class="ltracker-button" type="button" data-preview-action="close">Close</button>
+      </div>
+      <div class="ltracker-display-preview-body">
+        ${renderedEntry.rendered.domHtml}
+      </div>
+    `;
+    panel.addEventListener("click", (event) => {
+      const button = event.target instanceof HTMLElement ? event.target.closest("[data-preview-action]") : null;
+      if (button) {
+        closeDisplayPreview();
+        localDiagnostics({
+          lastDisplayPreviewResult: "closed",
+          lastDisplayPreviewReason: "Closed inline display preview.",
+        });
+      }
+    });
+    overlay.appendChild(panel);
+    doc.body.appendChild(overlay);
+    activeDisplayPreviewElement = overlay;
+    localDiagnostics({
+      lastDisplayPreviewAction: surface === "inline_wide" ? "wide" : "contained",
+      lastDisplayPreviewResult: "opened",
+      lastDisplayPreviewReason: surface === "inline_wide"
+        ? "Opened a chat-width inline preview without mutating chat storage."
+        : "Opened a contained inline preview without mutating chat storage.",
+    });
+  }
+
+  function widthConstraintDiagnostic(element: Element, surface: LTrackerDisplaySurface): { constrained: boolean | null; reason: string | null } {
+    if (!(element instanceof HTMLElement) || surface !== "inline_wide") return { constrained: null, reason: null };
+    const parent = element.parentElement;
+    const doc = element.ownerDocument || document;
+    const viewWidth = doc.defaultView?.innerWidth ?? 0;
+    if (!parent || viewWidth <= 0) return { constrained: null, reason: null };
+    const parentWidth = elementWidth(parent);
+    if (parentWidth > 0 && parentWidth < Math.min(viewWidth * 0.62, state.settings.expandedWidth.maxExpandedWidthPx * 0.6)) {
+      return {
+        constrained: true,
+        reason: `Parent width ${Math.round(parentWidth)}px is much narrower than viewport ${Math.round(viewWidth)}px.`,
+      };
+    }
+    return { constrained: false, reason: null };
   }
 
   function applyExpandedWidthMode(element: Element): void {
@@ -1554,23 +1812,30 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const width = state.settings.expandedWidth;
     const surface = resolveDisplaySurface(state.settings);
     const maxWidth = `${width.maxExpandedWidthPx}px`;
-    const contained = surface === "inline_contained" || width.expandedWidthMode === "contained";
+    const contained = surface === "inline_contained" || (surface === "inline_wide" && width.expandedWidthMode === "contained");
     const compactShell = surface === "anchored_popover" || surface === "fullscreen_reader";
-    element.style.maxWidth = contained || compactShell ? "100%" : maxWidth;
-    element.style.width = compactShell
-      ? "auto"
+    element.classList.toggle("ltd-chat-width", surface === "inline_wide");
+    element.classList.toggle("ltd-overlay-shell", compactShell);
+    element.style.setProperty("--ltracker-expanded-width", maxWidth);
+    element.style.maxWidth = contained || compactShell
+      ? "100%"
       : width.expandedWidthMode === "full_mobile"
-      ? `calc(100vw - ${width.mobileHorizontalMarginPx * 2}px)`
-      : "100%";
-    element.style.marginLeft = !compactShell && width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
-    element.style.marginRight = !compactShell && width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
+        ? `min(${maxWidth}, calc(100vw - ${width.mobileHorizontalMarginPx * 2}px))`
+        : `min(${maxWidth}, 100%)`;
+    element.style.width = compactShell ? "auto" : "100%";
+    element.style.marginLeft = "";
+    element.style.marginRight = "";
     element.style.setProperty("--ltracker-expanded-max-height", `${width.expandedContentMaxHeightVh}vh`);
+
+    const details = element.querySelector<HTMLDetailsElement>(":scope > details");
+    if (compactShell) details?.removeAttribute("open");
 
     const summary = element.querySelector<HTMLElement>(":scope > details > summary");
     if (summary) {
       summary.addEventListener("click", (e) => {
         const currentSurface = resolveDisplaySurface(state.settings);
         if (currentSurface !== "anchored_popover" && currentSurface !== "fullscreen_reader") return;
+        if (e.target instanceof HTMLElement && e.target.closest("[data-ltracker-dom-action]")) return;
         e.preventDefault();
         const messageId = element.dataset.ltrackerMessageId;
         const swipeKey = element.dataset.ltrackerSwipeKey;
@@ -1586,18 +1851,31 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
 
     localDiagnostics({
+      selectedDisplaySurface: state.settings.messageDisplay.displaySurface,
+      resolvedDisplaySurface: surface,
+      displaySurfaceKind: displaySurfaceKind(surface),
       expandedWidthModeResolved: width.expandedWidthMode,
       lastExpandedTrackerWidthPx: width.expandedWidthMode === "contained" ? null : width.maxExpandedWidthPx,
+      lastWidthModeResolved: width.expandedWidthMode,
     });
   }
 
   function hydrateDomInjections(): boolean {
+    const surface = resolveDisplaySurface(state.settings);
     if (
       !state.settings.messageDisplay.enabled
       || !state.settings.messageDisplay.useDomInjection
-      || resolveDisplaySurface(state.settings) === "drawer_only"
+      || surface === "drawer_only"
     ) {
       cleanupDomInjections();
+      localDiagnostics({
+        selectedDisplaySurface: state.settings.messageDisplay.displaySurface,
+        resolvedDisplaySurface: surface,
+        displaySurfaceKind: displaySurfaceKind(surface),
+        displaySurfaceMountStrategy: surface === "drawer_only" ? "drawer_only" : null,
+        displaySurfaceFallbackReason: surface === "drawer_only" ? "Drawer history only is selected." : null,
+        messageDisplayHydratedCount: 0,
+      });
       return false;
     }
     const keepKeys = new Set<string>();
@@ -1615,7 +1893,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       });
       if (!messageElement) continue;
       keepKeys.add(key);
-      const mount = resolveTrackerMountPoint(messageElement);
+      const mount = resolveTrackerMountPoint(messageElement, surface);
       const target = mount.target;
       const position = positionForPlacement(requestedPlacement);
       const signature = [
@@ -1627,12 +1905,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         entry.rendered.generationStartedAt,
         entry.rendered.activeJobId,
         entry.rendered.controlState.generationStatus,
-        state.settings.messageDisplay.displaySurface,
+        surface,
         state.settings.messageDisplay.displayMode,
         state.settings.expandedWidth.expandedWidthMode,
         state.settings.expandedWidth.maxExpandedWidthPx,
         state.settings.expandedWidth.mobileHorizontalMarginPx,
         state.settings.expandedWidth.expandedContentMaxHeightVh,
+        mount.strategy,
         html,
       ].join("\n");
       if (domSignatures.get(key) === signature) {
@@ -1644,6 +1923,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         domInjections.get(key)?.cleanup();
         const element = ctx.dom.inject(target, html, position);
         applyExpandedWidthMode(element);
+        const widthDiag = widthConstraintDiagnostic(element, surface);
         element.addEventListener("click", handleDomTrackerAction);
         domInjections.set(key, {
           element,
@@ -1654,10 +1934,20 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         });
         domSignatures.set(key, signature);
         localDiagnostics({
+          selectedDisplaySurface: state.settings.messageDisplay.displaySurface,
+          resolvedDisplaySurface: surface,
+          displaySurfaceKind: displaySurfaceKind(surface),
+          displaySurfaceMountStrategy: mount.strategy,
+          displaySurfaceParentWidthConstrained: widthDiag.constrained,
+          displaySurfaceFallbackReason: mount.fallbackReason ?? widthDiag.reason,
+          lastDisplaySurface: surface,
+          lastDisplaySurfaceRehydratedAt: new Date().toISOString(),
           lastPlacementResolved: requestedPlacement,
           lastPlacementRenderResult: "rendered",
           lastPlacementError: null,
           lastMountPointStrategy: mount.strategy,
+          lastWidthConstraintReason: widthDiag.reason,
+          lastWidthOverflowDetected: widthDiag.constrained,
           lastDomInjectionAt: new Date().toISOString(),
           lastDomInjectionError: null,
           lastMessageDisplayError: null,
@@ -1675,6 +1965,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           lastPlacementRenderResult: "failed",
           lastPlacementError: errorMessage(error),
           lastMountPointStrategy: mount.strategy,
+          displaySurfaceMountStrategy: mount.strategy,
+          displaySurfaceFallbackReason: errorMessage(error),
           lastDomInjectionError: errorMessage(error),
           lastMessageDisplayError: errorMessage(error),
         });
@@ -2940,6 +3232,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       && diagnostics.messageDisplayRenderer === "iframe_widget"
       ? `<p class="ltracker-note">${escapeHtml("Current Lumiverse widget API renders below messages.")}</p>`
       : "";
+    const currentDisplaySurface = resolveDisplaySurface(state.settings);
+    const overlaySurfaceSelected = currentDisplaySurface === "anchored_popover" || currentDisplaySurface === "fullscreen_reader";
+    const displaySurfaceNote = currentDisplaySurface === "inline_wide"
+      ? "Inline wide uses a wide message-row mount and width settings below."
+      : overlaySurfaceSelected
+        ? "Popover and fullscreen are detached from message-bubble width limits; width fields below apply to inline surfaces."
+        : currentDisplaySurface === "drawer_only"
+          ? "Drawer history only removes inline chat display."
+          : "Inline contained stays inside the normal message bubble.";
+    const inlineOnlySuffix = overlaySurfaceSelected || currentDisplaySurface === "drawer_only" ? " (inline only)" : "";
     const activePreset = state.activePreset;
     const activePresetIsBuiltIn = activePreset.origin === "built_in";
     const presetSchemaText = JSON.stringify(activePreset.jsonSchema, null, 2);
@@ -3766,6 +4068,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
                 <option value="drawer_only"${selected(state.settings.messageDisplay.displaySurface === "drawer_only")}>Drawer history only</option>
               </select>
             </label>
+            <p class="ltracker-note ltracker-field-wide">${escapeHtml(displaySurfaceNote)}</p>
             <label class="ltracker-field">
               Placement
               <select data-message-display-setting="placement">
@@ -3863,7 +4166,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               Generation duration
             </label>
             <label class="ltracker-field">
-              Expanded width mode
+              Expanded width mode${escapeHtml(inlineOnlySuffix)}
               <select data-expanded-width-setting="expandedWidthMode">
                 <option value="contained"${selected(state.settings.expandedWidth.expandedWidthMode === "contained")}>Contained</option>
                 <option value="wide"${selected(state.settings.expandedWidth.expandedWidthMode === "wide")}>Wide</option>
@@ -3871,15 +4174,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               </select>
             </label>
             <label class="ltracker-field">
-              Max expanded width
+              Max expanded width${escapeHtml(inlineOnlySuffix)}
               <input type="number" min="320" max="1800" step="20" data-expanded-width-setting="maxExpandedWidthPx" value="${escapeHtml(String(state.settings.expandedWidth.maxExpandedWidthPx))}">
             </label>
             <label class="ltracker-field">
-              Mobile margin
+              Mobile margin${escapeHtml(inlineOnlySuffix)}
               <input type="number" min="0" max="32" step="1" data-expanded-width-setting="mobileHorizontalMarginPx" value="${escapeHtml(String(state.settings.expandedWidth.mobileHorizontalMarginPx))}">
             </label>
             <label class="ltracker-field">
-              Expanded max height
+              Expanded max height${escapeHtml(inlineOnlySuffix)}
               <input type="number" min="30" max="95" step="1" data-expanded-width-setting="expandedContentMaxHeightVh" value="${escapeHtml(String(state.settings.expandedWidth.expandedContentMaxHeightVh))}">
             </label>
             <label class="ltracker-check">
@@ -4221,6 +4524,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
               ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
               ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
+              ${renderRow("Selected display surface", diagnostics.selectedDisplaySurface)}
+              ${renderRow("Resolved display surface", diagnostics.resolvedDisplaySurface)}
+              ${renderRow("Display surface kind", diagnostics.displaySurfaceKind)}
+              ${renderRow("Display surface mount", diagnostics.displaySurfaceMountStrategy)}
+              ${renderRow("Display surface constrained", diagnostics.displaySurfaceParentWidthConstrained === null ? null : diagnostics.displaySurfaceParentWidthConstrained ? "yes" : "no")}
+              ${renderRow("Display surface fallback", diagnostics.displaySurfaceFallbackReason)}
+              ${renderRow("Last surface rehydration", diagnostics.lastDisplaySurfaceRehydratedAt)}
+              ${renderRow("Last display preview action", diagnostics.lastDisplayPreviewAction)}
+              ${renderRow("Last display preview result", diagnostics.lastDisplayPreviewResult)}
+              ${renderRow("Last display preview reason", diagnostics.lastDisplayPreviewReason)}
               ${renderRow("Last message control render", diagnostics.lastMessageControlRenderAt)}
               ${renderRow("Last message control message", diagnostics.lastMessageControlMessageId)}
               ${renderRow("Last message control swipe", diagnostics.lastMessageControlSwipeKey)}
@@ -4588,19 +4901,24 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (action === "preview-display-surface") {
       const surface = (target as HTMLElement).dataset.surface;
-      const entry = state.messageSnapshotHistory[0] || null;
+      const entry = latestPreviewEntry();
       if (entry) {
         if (surface === "contained") {
-          setLocalError("Contained preview activated: check chat message bubbles.");
+          openDisplayPreview(entry, "inline_contained");
         } else if (surface === "wide") {
-          setLocalError("Wide preview activated: check chat message bubbles.");
+          openDisplayPreview(entry, "inline_wide");
         } else if (surface === "popover") {
-          openPopover(entry, target as HTMLElement);
+          openPopover(entry, target as HTMLElement, true);
         } else if (surface === "fullscreen") {
-          openFullscreenReader(entry);
+          openFullscreenReader(entry, true);
         }
       } else {
-        setLocalError("No message tracker history snapshot available to preview.");
+        localDiagnostics({
+          lastDisplayPreviewAction: surface ?? "unknown",
+          lastDisplayPreviewResult: "unavailable",
+          lastDisplayPreviewReason: "No tracker snapshot available to preview. Generate a tracker first.",
+        });
+        setLocalError("No tracker snapshot available to preview. Generate a tracker first.");
       }
     }
   };
@@ -4626,7 +4944,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ? event.target.closest<HTMLInputElement>("[data-history-filter]")
       : null;
     if (historyInput && updateHistoryFilter(historyInput)) return;
-    if (isSettingsControl(event.target)) scheduleSettingsAutosave();
+    if (isSettingsControl(event.target)) {
+      scheduleSettingsAutosave();
+      if (isDisplaySurfaceControl(event.target)) applyDisplaySettingsOptimistically(false);
+    }
   };
 
   tab.root.addEventListener("input", onInput);
@@ -4637,7 +4958,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ? event.target.closest<HTMLInputElement>("[data-history-filter]")
       : null;
     if (historyInput && updateHistoryFilter(historyInput)) return;
-    if (isSettingsControl(event.target)) scheduleSettingsAutosave();
+    if (isSettingsControl(event.target)) {
+      scheduleSettingsAutosave();
+      if (isDisplaySurfaceControl(event.target)) applyDisplaySettingsOptimistically(true);
+    }
     const target = event.target instanceof HTMLSelectElement
       ? event.target.closest<HTMLSelectElement>("[data-preset-select]")
       : null;
@@ -4717,6 +5041,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   cleanups.push(() => clearSettingsAutosaveTimer());
   cleanups.push(() => cleanupMessageWidgets());
   cleanups.push(() => cleanupDomInjections());
+  cleanups.push(() => closeDisplayPreview());
+  cleanups.push(() => closePopover());
+  cleanups.push(() => closeFullscreenReader());
   cleanups.push(() => inputAction.destroy());
   cleanups.push(() => tab.destroy());
 

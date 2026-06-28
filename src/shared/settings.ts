@@ -256,10 +256,7 @@ function migrateDisplaySurface(displayMode: unknown, widthMode: unknown): LTrack
   return DEFAULT_SETTINGS.messageDisplay.displaySurface;
 }
 
-function displayModeForSurface(surface: LTrackerDisplaySurface, fallback: unknown): LTrackerMessageDisplayDisplayMode {
-  if (fallback === "inline_button_popover" || fallback === "drawer_history_only" || fallback === "inline_full") {
-    return fallback;
-  }
+function displayModeForSurface(surface: LTrackerDisplaySurface): LTrackerMessageDisplayDisplayMode {
   if (surface === "drawer_only") return "drawer_history_only";
   if (surface === "anchored_popover") return "inline_button_popover";
   return "inline_full";
@@ -387,14 +384,9 @@ export function repairSettings(value: unknown): LTrackerSettings {
     || messageDisplaySource.attachmentMode === "sidecar_snapshot"
     ? messageDisplaySource.attachmentMode
     : DEFAULT_SETTINGS.messageDisplay.attachmentMode;
-  const messageDisplayDisplayMode = messageDisplaySource.displayMode === "inline_button_popover"
-    || messageDisplaySource.displayMode === "drawer_history_only"
-    || messageDisplaySource.displayMode === "inline_full"
-    ? messageDisplaySource.displayMode
-    : DEFAULT_SETTINGS.messageDisplay.displayMode;
   const messageDisplaySurface = displaySurface(messageDisplaySource.displaySurface)
     ?? migrateDisplaySurface(messageDisplaySource.displayMode, expandedWidthSource.expandedWidthMode);
-  const repairedMessageDisplayDisplayMode = displayModeForSurface(messageDisplaySurface, messageDisplaySource.displayMode ?? messageDisplayDisplayMode);
+  const repairedMessageDisplayDisplayMode = displayModeForSurface(messageDisplaySurface);
   const messageDisplayControlDensity = messageDisplaySource.controlDensity === "comfortable"
     || messageDisplaySource.controlDensity === "compact"
     ? messageDisplaySource.controlDensity

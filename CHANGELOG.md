@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.19.1 - Display Surface Repair / Chat-Width Inline Fix
+- Made `messageDisplay.displaySurface` authoritative over legacy display mode during settings repair.
+- Added distinct DOM signatures and classes for inline contained, inline wide, popover shell, fullscreen shell, and drawer-only surfaces.
+- Reworked inline wide to prefer a wide message-row mount before falling back to the normal message bubble.
+- Added display surface diagnostics for selected/resolved surface, mount strategy, width constraints, fallback reason, and preview results.
+- Added a fixed safe-area fullscreen reader close button so mobile users always have an exit.
+- Improved fullscreen reader and popover mobile layout so headers wrap and close controls remain visible.
+- Made Display Surface Preview buttons open real preview/popover/reader paths or show a clear generate-first reason.
+- Rehydrated injected trackers immediately when display surface or width settings change.
+- Preserved 0.19 Trusted renderer behavior and `.ltracker.json` import/export compatibility.
+
 ## 0.19 - Trusted Renderer Freedom / Power Template Compatibility
 - Added Trusted Mode support for scoped style blocks.
 - Added Safe Mode behavior that removes full style blocks without leaking raw CSS text.
