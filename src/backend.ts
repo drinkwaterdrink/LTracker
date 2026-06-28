@@ -2,6 +2,7 @@ import type {
   ChatMessageDTO,
   ConnectionProfileDTO,
   GenerationEndedPayloadDTO,
+  GenerationStartedPayloadDTO,
   GenerationRequestDTO,
   InterceptorResultDTO,
   LlmMessageDTO,
@@ -32,6 +33,7 @@ import {
 } from "./shared/htmlTemplateRenderer";
 import {
   buildMessageTrackerHistory,
+  groupMessageTrackerHistory,
   MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
   MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
   MESSAGE_LOCAL_UI_FALLBACK_REASON,
@@ -39,6 +41,20 @@ import {
   MESSAGE_WIDGET_PLACEMENT_REASON,
   renderMessageTracker,
 } from "./shared/messageDisplay";
+import {
+  effectivePerMessageChars,
+  effectivePromptInjectionChars,
+  effectivePromptPreviewChars,
+  effectiveRecentTranscriptChars,
+  effectiveTrackerMemoryChars,
+  estimateTokensFromChars,
+} from "./shared/budget";
+import {
+  evaluateStableSwipeContent,
+  shouldCancelPendingSwipe,
+  stableContentHash,
+  type AutoFinalizationSnapshot,
+} from "./shared/autoTiming";
 import {
   normalizeMessageAttachedSnapshotPresetMetadata,
   normalizeTrackerSnapshotPresetMetadata,
@@ -172,6 +188,20 @@ interface PendingAutoJob {
   scheduledAt: string;
 }
 
+interface PendingAutoFinalizationJob {
+  timer: ReturnType<typeof setTimeout>;
+  chatId: string;
+  userId: string;
+  requestId: string;
+  trigger: AutoTrackerTriggerSource;
+  scheduledAt: string;
+  eventAt: string;
+  state: "waiting_for_message_finalization" | "settling_after_finalization" | "stable_check";
+  messageId: string;
+  swipeKey: string;
+  initialContentHash: string | null;
+}
+
 interface ConnectionProfileCache {
   profiles: LTrackerConnectionProfileSummary[];
   refreshedAt: string | null;
@@ -212,6 +242,7 @@ const BUILD_INFO: LTrackerBuildInfo = {
 
 const activeJobs = new Map<string, ActiveJob>();
 const pendingAutoJobs = new Map<string, PendingAutoJob>();
+const pendingAutoFinalizations = new Map<string, PendingAutoFinalizationJob>();
 const connectionProfilesByUser = new Map<string, ConnectionProfileCache>();
 const connectionTestJobs = new Map<string, ConnectionTestJob>();
 const activeChatByUser = new Map<string, string | null>();
@@ -283,6 +314,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "cancel_tracker_generation",
     "delete_message_tracker",
     "save_edited_message_tracker",
+    "cleanup_duplicate_history",
     "embedded_tracker_tag_intercepted",
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
@@ -309,6 +341,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "cancel_tracker_generation",
       "delete_message_tracker",
       "save_edited_message_tracker",
+      "cleanup_duplicate_history",
       "embedded_tracker_tag_intercepted",
     ].includes(payload.type)
     && typeof payload.requestId !== "string"
@@ -406,6 +439,16 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastAutoSourceMessageId: null,
     lastAutoSourceMessageIndex: null,
     lastAutoGenerationId: null,
+    lastAutoFinalizationState: null,
+    lastAutoWaitingMessageId: null,
+    lastAutoWaitingSwipeKey: null,
+    lastAutoFinalizedAt: null,
+    lastAutoStableCheckAt: null,
+    lastAutoStableCheckPassed: null,
+    lastAutoContentStableHash: null,
+    lastAutoFinalizationSkippedReason: null,
+    pendingAutoFinalizationCount: 0,
+    lastSwipeChangeCancelledPendingJob: false,
     latestAttachedMessageId: null,
     latestAttachedMessageIndex: null,
     latestAttachedSnapshotAt: null,
@@ -528,6 +571,18 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastConnectionTestOutputPreview: null,
     lastConnectionTestFinishReason: null,
     lastConnectionTestUsage: null,
+    drawerActiveSection: null,
+    lastDrawerRefreshAt: null,
+    lastHistoryGroupedCount: 0,
+    lastHistoryDuplicateCount: 0,
+    lastHistoryCleanupAt: null,
+    expandedWidthModeResolved: null,
+    lastExpandedTrackerWidthPx: null,
+    templateTrustMode: DEFAULT_SETTINGS.renderer.templateTrustMode,
+    ultraModeEnabled: DEFAULT_SETTINGS.budget.ultraModeEnabled,
+    estimatedPromptTokensLastRun: null,
+    estimatedMemoryTokensLastRun: null,
+    iframeFallbackVisibleInMainUi: false,
   };
 }
 
@@ -700,6 +755,18 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastAutoSourceMessageId: stringOrNull(value.lastAutoSourceMessageId),
     lastAutoSourceMessageIndex: nonNegativeInteger(value.lastAutoSourceMessageIndex),
     lastAutoGenerationId: stringOrNull(value.lastAutoGenerationId),
+    lastAutoFinalizationState: stringOrNull(value.lastAutoFinalizationState),
+    lastAutoWaitingMessageId: stringOrNull(value.lastAutoWaitingMessageId),
+    lastAutoWaitingSwipeKey: stringOrNull(value.lastAutoWaitingSwipeKey),
+    lastAutoFinalizedAt: stringOrNull(value.lastAutoFinalizedAt),
+    lastAutoStableCheckAt: stringOrNull(value.lastAutoStableCheckAt),
+    lastAutoStableCheckPassed: typeof value.lastAutoStableCheckPassed === "boolean" ? value.lastAutoStableCheckPassed : null,
+    lastAutoContentStableHash: stringOrNull(value.lastAutoContentStableHash),
+    lastAutoFinalizationSkippedReason: stringOrNull(value.lastAutoFinalizationSkippedReason),
+    pendingAutoFinalizationCount: typeof value.pendingAutoFinalizationCount === "number" && Number.isFinite(value.pendingAutoFinalizationCount)
+      ? Math.max(0, Math.round(value.pendingAutoFinalizationCount))
+      : 0,
+    lastSwipeChangeCancelledPendingJob: typeof value.lastSwipeChangeCancelledPendingJob === "boolean" ? value.lastSwipeChangeCancelledPendingJob : false,
     latestAttachedMessageId: stringOrNull(value.latestAttachedMessageId),
     latestAttachedMessageIndex: nonNegativeInteger(value.latestAttachedMessageIndex),
     latestAttachedSnapshotAt: stringOrNull(value.latestAttachedSnapshotAt),
@@ -858,6 +925,24 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastConnectionTestOutputPreview: stringOrNull(value.lastConnectionTestOutputPreview),
     lastConnectionTestFinishReason: stringOrNull(value.lastConnectionTestFinishReason),
     lastConnectionTestUsage: recordOrNull(value.lastConnectionTestUsage),
+    drawerActiveSection: stringOrNull(value.drawerActiveSection),
+    lastDrawerRefreshAt: stringOrNull(value.lastDrawerRefreshAt),
+    lastHistoryGroupedCount: typeof value.lastHistoryGroupedCount === "number" && Number.isFinite(value.lastHistoryGroupedCount)
+      ? Math.max(0, Math.round(value.lastHistoryGroupedCount))
+      : 0,
+    lastHistoryDuplicateCount: typeof value.lastHistoryDuplicateCount === "number" && Number.isFinite(value.lastHistoryDuplicateCount)
+      ? Math.max(0, Math.round(value.lastHistoryDuplicateCount))
+      : 0,
+    lastHistoryCleanupAt: stringOrNull(value.lastHistoryCleanupAt),
+    expandedWidthModeResolved: stringOrNull(value.expandedWidthModeResolved),
+    lastExpandedTrackerWidthPx: numberOrNull(value.lastExpandedTrackerWidthPx),
+    templateTrustMode: value.templateTrustMode === "safe" || value.templateTrustMode === "trusted" || value.templateTrustMode === "dev"
+      ? value.templateTrustMode
+      : base.templateTrustMode,
+    ultraModeEnabled: typeof value.ultraModeEnabled === "boolean" ? value.ultraModeEnabled : base.ultraModeEnabled,
+    estimatedPromptTokensLastRun: numberOrNull(value.estimatedPromptTokensLastRun),
+    estimatedMemoryTokensLastRun: numberOrNull(value.estimatedMemoryTokensLastRun),
+    iframeFallbackVisibleInMainUi: typeof value.iframeFallbackVisibleInMainUi === "boolean" ? value.iframeFallbackVisibleInMainUi : false,
   };
 }
 
@@ -1175,8 +1260,12 @@ async function collectTrackerMemory(
   activePreset: TrackerSchemaPreset,
   trigger?: TrackerTriggerSource,
 ): Promise<TrackerMemoryResult> {
+  const memorySettings = {
+    ...settings.memory,
+    maxMemoryChars: effectiveTrackerMemoryChars(settings),
+  };
   if (!settings.memory.enabled || settings.memory.retainCount <= 0) {
-    return buildTrackerMemoryResult([], settings.memory, trigger
+    return buildTrackerMemoryResult([], memorySettings, trigger
       ? memoryOptionsFromTrigger(trigger, activePreset)
       : { activePreset });
   }
@@ -1194,7 +1283,7 @@ async function collectTrackerMemory(
     if (latestSnapshot) entries.push(memoryEntryFromChatSnapshot(latestSnapshot));
   }
 
-  return buildTrackerMemoryResult(entries, settings.memory, trigger
+  return buildTrackerMemoryResult(entries, memorySettings, trigger
     ? memoryOptionsFromTrigger(trigger, activePreset)
     : { activePreset });
 }
@@ -1461,7 +1550,7 @@ async function buildState(
   const historySnapshots = await Promise.all(
     messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId, entry.swipeKey)),
   );
-  const messageSnapshotHistory = buildMessageTrackerHistory({
+  const rawMessageSnapshotHistory = buildMessageTrackerHistory({
     index: messageSnapshotIndex,
     snapshots: historySnapshots,
     latestChatSnapshot: snapshot,
@@ -1470,6 +1559,9 @@ async function buildState(
     activeWidgetJobs,
     selectedSwipeIdentities,
   });
+  const historyGrouping = groupMessageTrackerHistory(rawMessageSnapshotHistory, false);
+  const messageSnapshotHistory = rawMessageSnapshotHistory;
+  const latestMessageSnapshotHistory = historyGrouping.entries;
   const messageControlCandidates = await buildMessageControlCandidates(
     chatId,
     settings,
@@ -1497,7 +1589,7 @@ async function buildState(
     : settings.messageDisplay.useDomInjection ? "dom_injection"
       : settings.messageDisplay.fallbackToIframeWidget && MESSAGE_LOCAL_UI_SUPPORTED ? "iframe_widget" : "drawer_history";
   const messageDisplayHydratedCount = settings.messageDisplay.enabled
-    ? messageSnapshotHistory.filter((entry) => entry.snapshot !== null).length
+    ? latestMessageSnapshotHistory.filter((entry) => entry.snapshot !== null).length
     : 0;
   const placement = resolveMessageWidgetPlacement(settings.messageDisplay.placement, settings);
   const activeWidgetRegenerationCount = Object.keys(activeWidgetJobs).length;
@@ -1508,8 +1600,12 @@ async function buildState(
       })
     : null;
   const memoryPreview = memoryPreviewResult?.renderedText.trim() ? memoryPreviewResult.renderedText : null;
+  const injectionSettings = {
+    ...settings.injection,
+    maxInjectedChars: effectivePromptInjectionChars(settings),
+  };
   const injectionPreview = memoryPreviewResult?.entries.length
-    ? formatTrackerInjectionBlock(memoryPreviewResult.entries, settings.injection)
+    ? formatTrackerInjectionBlock(memoryPreviewResult.entries, injectionSettings)
     : null;
   const stateError = error ?? diagnostics.lastError;
   return {
@@ -1540,6 +1636,9 @@ async function buildState(
       connectionListCount: connectionCache.profiles.length,
       lastConnectionRefreshAt: connectionCache.refreshedAt ?? diagnostics.lastConnectionRefreshAt,
       lastConnectionRefreshError: connectionCache.error ?? diagnostics.lastConnectionRefreshError,
+      drawerActiveSection: diagnostics.drawerActiveSection ?? "dashboard",
+      lastDrawerRefreshAt: nowIso(),
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size,
       autoSubscriptionActive: autoSubscriptionsActive,
       injectionEnabled: settings.injection.enabled && interceptorRegistered,
       lastMemoryEntryCount: memoryPreviewResult?.entries.length ?? diagnostics.lastMemoryEntryCount,
@@ -1565,6 +1664,8 @@ async function buildState(
       messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
       messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
       messageSnapshotIndexCount: messageSnapshotIndex.length,
+      lastHistoryGroupedCount: historyGrouping.groupedCount,
+      lastHistoryDuplicateCount: historyGrouping.duplicateCount,
       swipeTrackerIndexCount: messageSnapshotIndex.length,
       activeWidgetRegenerationCount,
       activeTrackerJobs: activeTrackerJobDiagnostics(chatId),
@@ -1573,6 +1674,10 @@ async function buildState(
       messageDisplayRenderer,
       nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
       nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+      templateTrustMode: settings.renderer.templateTrustMode,
+      ultraModeEnabled: settings.budget.ultraModeEnabled,
+      iframeFallbackVisibleInMainUi: false,
+      expandedWidthModeResolved: settings.expandedWidth.expandedWidthMode,
     },
     connectionProfiles: connectionCache.profiles,
   };
@@ -1912,13 +2017,14 @@ async function removeEmbeddedTrackerTag(
   await tryPersistDiagnostics(diagnostics, userId);
 }
 
-function promptPreview(messages: LlmMessageDTO[]): string {
-  return messages.map((message) => {
+function promptPreview(messages: LlmMessageDTO[], maxChars = 64_000): string {
+  const rendered = messages.map((message) => {
     const content = typeof message.content === "string"
       ? message.content
       : JSON.stringify(message.content, null, 2);
     return `## ${message.role}\n${content}`;
   }).join("\n\n");
+  return rendered.length > maxChars ? `${rendered.slice(0, Math.max(0, maxChars - 12))}\n[truncated]` : rendered;
 }
 
 function sourceRange(ids: string[]): string | null {
@@ -1937,6 +2043,14 @@ function isCurrentJob(jobKey: string, jobId: string): boolean {
 
 function userChatKey(userId: string, chatId: string): string {
   return `${userId}:${chatId}`;
+}
+
+function autoFinalizationKey(userId: string, chatId: string, messageId: string, swipeKey: string): string {
+  return `${userId}:${chatId}:${messageId}:${swipeKey}`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
 function messageRole(message: ChatMessageDTO): TranscriptRole {
@@ -2011,6 +2125,8 @@ async function markAutoSkipped(
     lastAutoSourceMessageId: trigger.sourceMessageId,
     lastAutoSourceMessageIndex: trigger.sourceMessageIndex,
     lastAutoGenerationId: trigger.generationId,
+    lastAutoFinalizationSkippedReason: reason,
+    pendingAutoFinalizationCount: pendingAutoFinalizations.size,
   };
   await tryPersistDiagnostics(diagnostics, userId);
   await sendState(chatId, userId, diagnostics.status, null, trigger.requestId);
@@ -2025,6 +2141,49 @@ function cancelPendingAutoForChat(chatId: string, userId: string | null, reason:
     void markAutoSkipped(pending.chatId, pending.userId, pending.trigger, reason, pending.scheduledAt)
       .catch((error: unknown) => spindle.log.warn(`LTracker could not record auto cancellation: ${errorMessage(error)}`));
   }
+}
+
+function cancelPendingAutoFinalizationForChat(chatId: string, userId: string | null, reason: string): void {
+  for (const [key, pending] of pendingAutoFinalizations) {
+    if (pending.chatId !== chatId) continue;
+    if (userId && pending.userId !== userId) continue;
+    clearTimeout(pending.timer);
+    pendingAutoFinalizations.delete(key);
+    void markAutoSkipped(pending.chatId, pending.userId, pending.trigger, reason, pending.scheduledAt)
+      .catch((error: unknown) => spindle.log.warn(`LTracker could not record auto finalization cancellation: ${errorMessage(error)}`));
+  }
+}
+
+async function cancelPendingAutoFinalizationForSwipeChange(input: {
+  chatId: string;
+  userId: string;
+  messageId: string;
+  nextSwipeKey: string;
+  settings: LTrackerSettings;
+}): Promise<boolean> {
+  let cancelled = false;
+  for (const [key, pending] of pendingAutoFinalizations) {
+    if (pending.chatId !== input.chatId || pending.userId !== input.userId) continue;
+    if (!shouldCancelPendingSwipe(
+      { messageId: pending.messageId, swipeKey: pending.swipeKey },
+      { messageId: input.messageId, swipeKey: input.nextSwipeKey },
+      input.settings.autoTiming,
+    )) continue;
+    clearTimeout(pending.timer);
+    pendingAutoFinalizations.delete(key);
+    cancelled = true;
+  }
+  if (cancelled) {
+    const diagnostics = {
+      ...await loadDiagnostics(input.chatId, input.userId),
+      lastAutoFinalizationState: "cancelled_on_swipe_change",
+      lastAutoFinalizationSkippedReason: "Selected swipe changed before tracker generation.",
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size,
+      lastSwipeChangeCancelledPendingJob: true,
+    };
+    await tryPersistDiagnostics(diagnostics, input.userId);
+  }
+  return cancelled;
 }
 
 function abortAutoJobForChat(chatId: string, reason: string): void {
@@ -2043,6 +2202,7 @@ function rememberActiveChat(userId: string, chatId: string | null): void {
     users?.delete(userId);
     if (users?.size === 0) usersByChat.delete(previous);
     cancelPendingAutoForChat(previous, userId, "Chat changed before the auto timer fired.");
+    cancelPendingAutoFinalizationForChat(previous, userId, "Chat changed before the auto tracker finalized.");
     abortAutoJobForChat(previous, "Chat changed before the auto tracker result was saved.");
   }
   if (chatId) {
@@ -2073,6 +2233,203 @@ function messageFromEventPayload(payload: unknown): ChatMessageDTO | null {
   if (isChatMessage(payload)) return payload;
   if (isRecord(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
+}
+
+async function queueAutoDebounce(input: {
+  chatId: string;
+  userId: string;
+  eventAt: string;
+  settings: LTrackerSettings;
+  trigger: AutoTrackerTriggerSource;
+  finalizationState?: string | null;
+  stableHash?: string | null;
+  stablePassed?: boolean | null;
+}): Promise<void> {
+  const key = userChatKey(input.userId, input.chatId);
+  const existing = pendingAutoJobs.get(key);
+  if (existing) clearTimeout(existing.timer);
+
+  const scheduledAt = nowIso();
+  const timer = setTimeout(() => {
+    void runPendingAuto(key).catch((error: unknown) => {
+      spindle.log.warn(`LTracker auto job failed: ${errorMessage(error)}`);
+    });
+  }, input.settings.auto.autoDebounceMs);
+
+  pendingAutoJobs.set(key, {
+    timer,
+    chatId: input.chatId,
+    userId: input.userId,
+    requestId: input.trigger.requestId,
+    trigger: input.trigger,
+    scheduledAt,
+  });
+
+  const diagnostics = {
+    ...await loadDiagnostics(input.chatId, input.userId),
+    lastAutoEventAt: input.eventAt,
+    lastAutoEventType: input.trigger.eventType,
+    lastAutoSkippedReason: null,
+    lastAutoScheduledAt: scheduledAt,
+    lastAutoTriggeredAt: null,
+    lastAutoSourceMessageId: input.trigger.sourceMessageId,
+    lastAutoSourceMessageIndex: input.trigger.sourceMessageIndex,
+    lastAutoGenerationId: input.trigger.generationId,
+    lastAutoFinalizationState: input.finalizationState ?? "scheduled_after_finalization",
+    lastAutoFinalizedAt: input.finalizationState ? nowIso() : null,
+    lastAutoStableCheckAt: input.stablePassed === null || input.stablePassed === undefined ? null : nowIso(),
+    lastAutoStableCheckPassed: input.stablePassed ?? null,
+    lastAutoContentStableHash: input.stableHash ?? null,
+    lastAutoFinalizationSkippedReason: null,
+    pendingAutoFinalizationCount: pendingAutoFinalizations.size,
+  };
+  await tryPersistDiagnostics(diagnostics, input.userId);
+  await sendState(input.chatId, input.userId, diagnostics.status, null, input.trigger.requestId);
+}
+
+async function readFinalizationTarget(
+  chatId: string,
+  messageId: string,
+): Promise<{ message: ChatMessageDTO; snapshot: AutoFinalizationSnapshot } | null> {
+  const messages = await readChatMessages(chatId);
+  const message = messages.find((item) => item.id === messageId);
+  if (!message) return null;
+  const identity = deriveSwipeTrackerIdentity(chatId, message);
+  const swipes = Array.isArray(message.swipes) ? message.swipes : [];
+  const activeIndex = typeof message.swipe_id === "number" && Number.isFinite(message.swipe_id)
+    ? Math.max(0, Math.round(message.swipe_id))
+    : 0;
+  const content = swipes[activeIndex] ?? message.content ?? "";
+  return {
+    message,
+    snapshot: {
+      messageId: message.id,
+      swipeKey: identity.swipeKey,
+      content,
+    },
+  };
+}
+
+async function runAutoFinalization(key: string): Promise<void> {
+  const pending = pendingAutoFinalizations.get(key);
+  if (!pending) return;
+  const settings = await getSettings(pending.userId);
+  const markState = async (state: PendingAutoFinalizationJob["state"], extra: Partial<LTrackerDiagnostics> = {}) => {
+    const diagnostics = {
+      ...await loadDiagnostics(pending.chatId, pending.userId),
+      lastAutoFinalizationState: state,
+      lastAutoWaitingMessageId: pending.messageId,
+      lastAutoWaitingSwipeKey: pending.swipeKey,
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size,
+      ...extra,
+    };
+    await tryPersistDiagnostics(diagnostics, pending.userId);
+    await sendState(pending.chatId, pending.userId, diagnostics.status, null, pending.requestId);
+  };
+
+  await markState("settling_after_finalization");
+  await delay(settings.autoTiming.postCompletionSettleMs);
+  if (pendingAutoFinalizations.get(key) !== pending) return;
+
+  const first = await readFinalizationTarget(pending.chatId, pending.messageId);
+  await markState("stable_check");
+  await delay(settings.autoTiming.stableContentCheckMs);
+  if (pendingAutoFinalizations.get(key) !== pending) return;
+
+  const second = await readFinalizationTarget(pending.chatId, pending.messageId);
+  const decision = evaluateStableSwipeContent(first?.snapshot ?? null, second?.snapshot ?? null, settings.autoTiming);
+  pendingAutoFinalizations.delete(key);
+
+  if (!decision.passed || !second) {
+    const diagnostics = {
+      ...await loadDiagnostics(pending.chatId, pending.userId),
+      lastAutoFinalizationState: "skipped",
+      lastAutoStableCheckAt: nowIso(),
+      lastAutoStableCheckPassed: false,
+      lastAutoContentStableHash: decision.contentHash,
+      lastAutoFinalizationSkippedReason: decision.skippedReason,
+      lastAutoSkippedReason: decision.skippedReason,
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size,
+    };
+    await tryPersistDiagnostics(diagnostics, pending.userId);
+    await sendState(pending.chatId, pending.userId, diagnostics.status, null, pending.requestId);
+    return;
+  }
+
+  const finalizedTrigger = createAutoTrigger({
+    eventType: pending.trigger.eventType,
+    requestId: pending.trigger.requestId,
+    message: second.message,
+    generationId: pending.trigger.generationId,
+    generationType: pending.trigger.generationType,
+  });
+  await queueAutoDebounce({
+    chatId: pending.chatId,
+    userId: pending.userId,
+    eventAt: pending.eventAt,
+    settings,
+    trigger: finalizedTrigger,
+    finalizationState: "finalized",
+    stableHash: decision.contentHash,
+    stablePassed: true,
+  });
+}
+
+async function queueAutoFinalization(input: {
+  chatId: string;
+  userId: string;
+  eventAt: string;
+  settings: LTrackerSettings;
+  trigger: AutoTrackerTriggerSource;
+  message: ChatMessageDTO;
+}): Promise<void> {
+  const key = autoFinalizationKey(input.userId, input.chatId, input.trigger.sourceMessageId, input.trigger.swipeKey);
+  const existing = pendingAutoFinalizations.get(key);
+  if (existing) clearTimeout(existing.timer);
+  const scheduledAt = nowIso();
+  const initialContent = input.message.content ?? "";
+  const timer = setTimeout(() => {
+    void runAutoFinalization(key).catch((error: unknown) => {
+      spindle.log.warn(`LTracker auto finalization failed: ${errorMessage(error)}`);
+    });
+  }, 0);
+  pendingAutoFinalizations.set(key, {
+    timer,
+    chatId: input.chatId,
+    userId: input.userId,
+    requestId: input.trigger.requestId,
+    trigger: input.trigger,
+    scheduledAt,
+    eventAt: input.eventAt,
+    state: "waiting_for_message_finalization",
+    messageId: input.trigger.sourceMessageId,
+    swipeKey: input.trigger.swipeKey,
+    initialContentHash: initialContent.trim() ? stableContentHash(initialContent) : null,
+  });
+
+  const diagnostics = {
+    ...await loadDiagnostics(input.chatId, input.userId),
+    lastAutoEventAt: input.eventAt,
+    lastAutoEventType: input.trigger.eventType,
+    lastAutoSkippedReason: null,
+    lastAutoScheduledAt: null,
+    lastAutoTriggeredAt: null,
+    lastAutoSourceMessageId: input.trigger.sourceMessageId,
+    lastAutoSourceMessageIndex: input.trigger.sourceMessageIndex,
+    lastAutoGenerationId: input.trigger.generationId,
+    lastAutoFinalizationState: "waiting_for_message_finalization",
+    lastAutoWaitingMessageId: input.trigger.sourceMessageId,
+    lastAutoWaitingSwipeKey: input.trigger.swipeKey,
+    lastAutoFinalizedAt: null,
+    lastAutoStableCheckAt: null,
+    lastAutoStableCheckPassed: null,
+    lastAutoContentStableHash: stableContentHash(initialContent),
+    lastAutoFinalizationSkippedReason: null,
+    pendingAutoFinalizationCount: pendingAutoFinalizations.size,
+    lastSwipeChangeCancelledPendingJob: false,
+  };
+  await tryPersistDiagnostics(diagnostics, input.userId);
+  await sendState(input.chatId, input.userId, diagnostics.status, null, input.trigger.requestId);
 }
 
 async function scheduleAutoForMessage(input: {
@@ -2114,41 +2471,28 @@ async function scheduleAutoForMessage(input: {
     return;
   }
 
-  const key = userChatKey(input.userId, input.chatId);
-  const existing = pendingAutoJobs.get(key);
-  if (existing) {
-    clearTimeout(existing.timer);
+  if (settings.autoTiming.waitForAssistantFinalization && !sourceMessage.is_user) {
+    await queueAutoFinalization({
+      chatId: input.chatId,
+      userId: input.userId,
+      eventAt: input.eventAt,
+      settings,
+      trigger,
+      message: sourceMessage,
+    });
+    return;
   }
 
-  const scheduledAt = nowIso();
-  const timer = setTimeout(() => {
-    void runPendingAuto(key).catch((error: unknown) => {
-      spindle.log.warn(`LTracker auto job failed: ${errorMessage(error)}`);
-    });
-  }, settings.auto.autoDebounceMs);
-
-  pendingAutoJobs.set(key, {
-    timer,
+  await queueAutoDebounce({
     chatId: input.chatId,
     userId: input.userId,
-    requestId,
+    eventAt: input.eventAt,
+    settings,
     trigger,
-    scheduledAt,
+    finalizationState: null,
+    stableHash: null,
+    stablePassed: null,
   });
-
-  const diagnostics = {
-    ...await loadDiagnostics(input.chatId, input.userId),
-    lastAutoEventAt: input.eventAt,
-    lastAutoEventType: input.eventType,
-    lastAutoSkippedReason: null,
-    lastAutoScheduledAt: scheduledAt,
-    lastAutoTriggeredAt: null,
-    lastAutoSourceMessageId: sourceMessage.id,
-    lastAutoSourceMessageIndex: sourceMessage.index_in_chat,
-    lastAutoGenerationId: input.generationId,
-  };
-  await tryPersistDiagnostics(diagnostics, input.userId);
-  await sendState(input.chatId, input.userId, diagnostics.status, null, requestId);
 }
 
 async function runPendingAuto(key: string): Promise<void> {
@@ -2178,6 +2522,29 @@ async function runPendingAuto(key: string): Promise<void> {
     return;
   }
   await generateTracker(pending.chatId, pending.userId, pending.trigger);
+}
+
+async function handleGenerationStarted(payload: GenerationStartedPayloadDTO, userId?: string): Promise<void> {
+  if (isQuietGenerationType(payload.generationType)) return;
+  const users = targetUsersForChat(payload.chatId, userId);
+  const eventAt = nowIso();
+  for (const targetUserId of users) {
+    const settings = await getSettings(targetUserId);
+    if (!settings.auto.autoModeEnabled || !settings.autoTiming.waitForAssistantFinalization) continue;
+    const targetMessageId = typeof payload.targetMessageId === "string" ? payload.targetMessageId : null;
+    const diagnostics = {
+      ...await loadDiagnostics(payload.chatId, targetUserId),
+      lastAutoEventAt: eventAt,
+      lastAutoGenerationId: payload.generationId,
+      lastAutoFinalizationState: "waiting_for_message_finalization",
+      lastAutoWaitingMessageId: targetMessageId,
+      lastAutoWaitingSwipeKey: null,
+      lastAutoFinalizationSkippedReason: null,
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size,
+    };
+    await tryPersistDiagnostics(diagnostics, targetUserId);
+    await sendState(payload.chatId, targetUserId, diagnostics.status, null);
+  }
 }
 
 async function handleGenerationEnded(payload: GenerationEndedPayloadDTO, userId?: string): Promise<void> {
@@ -2263,11 +2630,20 @@ async function handleMessageSwiped(payload: unknown, userId?: string): Promise<v
   const users = targetUsersForChat(payload.chatId, userId);
   const eventAt = nowIso();
   for (const targetUserId of users) {
+    const settings = await getSettings(targetUserId);
+    const cancelledPending = await cancelPendingAutoFinalizationForSwipeChange({
+      chatId: payload.chatId,
+      userId: targetUserId,
+      messageId: message.id,
+      nextSwipeKey: identity.swipeKey,
+      settings,
+    });
     const diagnostics = {
       ...await loadDiagnostics(payload.chatId, targetUserId),
       lastSwipeDetectedMessageId: message.id,
       lastSwipeKey: identity.swipeKey,
       lastSwipeKeySource: identity.swipeKeySource,
+      lastSwipeChangeCancelledPendingJob: cancelledPending,
     };
     await tryPersistDiagnostics(diagnostics, targetUserId);
     const action = typeof payload.action === "string" ? payload.action : null;
@@ -2470,9 +2846,12 @@ function injectionMemorySettings(settings: LTrackerSettings): LTrackerSettings {
       retainCount: settings.injection.retainCount,
       fullSnapshotCount: settings.injection.retainCount,
       compactOlderSnapshots: false,
-      maxMemoryChars: settings.injection.maxInjectedChars,
+      maxMemoryChars: effectivePromptInjectionChars(settings),
       source: settings.memory.source,
+      excludeTargetMessage: settings.memory.excludeTargetMessage,
       order: "oldest_to_newest",
+      requireSamePreset: settings.memory.requireSamePreset,
+      requireSameSwipeWhenAvailable: settings.memory.requireSameSwipeWhenAvailable,
     },
   };
 }
@@ -2500,11 +2879,15 @@ async function handlePromptInterceptor(
   try {
     const settings = await getSettings(userId);
     const presetState = await resolveActivePreset(chatId, userId);
+    const injectionSettings = {
+      ...settings.injection,
+      maxInjectedChars: effectivePromptInjectionChars(settings),
+    };
     if (!settings.injection.enabled) {
       const result = applyPromptInjection({
         messages: promptMessagesForInjection(messages),
         entries: [],
-        settings: settings.injection,
+        settings: injectionSettings,
       });
       await recordInterceptorDiagnostics(chatId, userId, settings, result);
       return messages;
@@ -2515,7 +2898,7 @@ async function handlePromptInterceptor(
     const result = applyPromptInjection({
       messages: promptMessagesForInjection(messages),
       entries: memory.entries,
-      settings: settings.injection,
+      settings: injectionSettings,
     });
     await recordInterceptorDiagnostics(chatId, userId, settings, result);
     if (result.error) return messages;
@@ -2760,7 +3143,11 @@ async function generateTracker(
     };
 
     stage = "prompt";
-    const transcript = buildCompactTranscript(transcriptMessages, settings.maxMessageChars);
+    const transcript = buildCompactTranscript(
+      transcriptMessages,
+      effectivePerMessageChars(settings),
+      effectiveRecentTranscriptChars(settings),
+    );
     const memory = settings.memory.enabled && settings.memory.includeInTrackerGeneration
       ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger)
       : {
@@ -2787,9 +3174,16 @@ async function generateTracker(
       lastMemorySourceSummary: trackerMemorySourceSummary(memory.entries),
       lastMemorySkippedReason: memory.skippedReason,
       lastPromptIncludedMemory: Boolean(memory.renderedText),
+      estimatedMemoryTokensLastRun: estimateTokensFromChars(memory.totalChars),
       lastPromptPreview: settings.savePromptPreview
-        ? promptPreview(promptMessages)
+        ? promptPreview(promptMessages, effectivePromptPreviewChars(settings))
         : "[Prompt preview saving disabled]",
+    };
+    diagnostics = {
+      ...diagnostics,
+      estimatedPromptTokensLastRun: settings.savePromptPreview
+        ? estimateTokensFromChars((diagnostics.lastPromptPreview ?? "").length)
+        : null,
     };
     await tryPersistDiagnostics(diagnostics, userId);
 
@@ -2800,7 +3194,9 @@ async function generateTracker(
 
     diagnostics = {
       ...diagnostics,
-      lastRawOutput: settings.saveRawOutput ? rawOutput : "[Raw output saving disabled]",
+      lastRawOutput: settings.saveRawOutput
+        ? rawOutput.slice(0, settings.budget.rawOutputMaxChars)
+        : "[Raw output saving disabled]",
       lastGenerationConnectionModeUsed: generation.requestDiagnostics.modeUsed,
       lastGenerationConnectionIdUsed: generation.requestDiagnostics.connectionIdUsed,
       lastGenerationConnectionNameUsed: generation.requestDiagnostics.connectionNameUsed,
@@ -3576,6 +3972,30 @@ async function deleteMessageTracker(
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
 
+async function cleanupDuplicateHistory(
+  payload: Extract<FrontendMessage, { type: "cleanup_duplicate_history" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  const repaired = repairMessageSnapshotIndex(index);
+  await saveMessageSnapshotIndex(resolvedChatId, repaired, userId);
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastHistoryCleanupAt: nowIso(),
+    lastHistoryGroupedCount: repaired.length,
+    lastHistoryDuplicateCount: Math.max(0, index.length - repaired.length),
+    messageSnapshotIndexCount: repaired.length,
+    swipeTrackerIndexCount: repaired.length,
+    lastError: null,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
 async function saveEditedMessageTracker(
   payload: Extract<FrontendMessage, { type: "save_edited_message_tracker" }>,
   userId: string,
@@ -3743,6 +4163,8 @@ function disposeBackend(): void {
   disposed = true;
   for (const pending of pendingAutoJobs.values()) clearTimeout(pending.timer);
   pendingAutoJobs.clear();
+  for (const pending of pendingAutoFinalizations.values()) clearTimeout(pending.timer);
+  pendingAutoFinalizations.clear();
   for (const job of activeJobs.values()) job.controller.abort();
   activeJobs.clear();
   for (const job of connectionTestJobs.values()) job.controller.abort();
@@ -3754,6 +4176,11 @@ function disposeBackend(): void {
 }
 
 function registerEventListeners(): void {
+  eventCleanups.push(spindle.on("GENERATION_STARTED", (payload, userId) => {
+    void handleGenerationStarted(payload, userId).catch((error: unknown) => {
+      spindle.log.warn(`LTracker generation-started handler failed: ${errorMessage(error)}`);
+    });
+  }));
   eventCleanups.push(spindle.on("GENERATION_ENDED", (payload, userId) => {
     void handleGenerationEnded(payload, userId).catch((error: unknown) => {
       spindle.log.warn(`LTracker generation-ended handler failed: ${errorMessage(error)}`);
@@ -3912,6 +4339,10 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "delete_message_tracker") {
         await deleteMessageTracker(payload, userId);
+        return;
+      }
+      if (payload.type === "cleanup_duplicate_history") {
+        await cleanupDuplicateHistory(payload, userId);
         return;
       }
       if (payload.type === "save_edited_message_tracker") {

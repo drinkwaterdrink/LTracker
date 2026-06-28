@@ -40,7 +40,7 @@ export const DEFAULT_TRACKER_PRESET: TrackerSchemaPreset = {
   recommendedConnection: {
     mode: "active_quiet",
     temperature: 0.2,
-    max_tokens: 2000,
+    max_tokens: 8000,
     reasoning: {
       source: "inherit",
       effort: "auto",
@@ -107,7 +107,7 @@ function repairRecommendedConnection(value: unknown): TrackerPresetRecommendedCo
   if (mode) result.mode = mode;
   const temperature = boundedNumber(value.temperature, 0, 2);
   if (temperature !== undefined) result.temperature = temperature;
-  const maxTokens = boundedNumber(value.max_tokens, 256, 32_000);
+  const maxTokens = boundedNumber(value.max_tokens, 256, 64_000);
   if (maxTokens !== undefined) result.max_tokens = Math.round(maxTokens);
   const reasoning = isRecord(value.reasoning) ? value.reasoning : null;
   if (reasoning) {

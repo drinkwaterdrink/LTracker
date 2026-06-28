@@ -37,6 +37,7 @@ import {
   buildMessageTrackerHistory,
   claimMessageWidget,
   formatDurationMs,
+  groupMessageTrackerHistory,
   renderMessageTracker,
 } from "../src/shared/messageDisplay";
 import {
@@ -50,6 +51,17 @@ import {
   isQuietGenerationType,
   shouldScheduleAutoTracker,
 } from "../src/shared/auto";
+import {
+  evaluateStableSwipeContent,
+  shouldCancelPendingSwipe,
+  stableContentHash,
+} from "../src/shared/autoTiming";
+import {
+  NORMAL_BUDGET_DEFAULTS,
+  ULTRA_BUDGET_DEFAULTS,
+  estimateCharsFromTokens,
+  estimateTokensFromChars,
+} from "../src/shared/budget";
 import { parseTrackerJson } from "../src/shared/parser";
 import {
   canModifyPreset,
@@ -86,14 +98,15 @@ import {
   buildTrackerMemoryResult,
   type TrackerMemoryEntry,
 } from "../src/shared/trackerMemory";
-import type {
-  MessageAttachedSnapshot,
-  TrackerSnapshot,
+import {
+  EXTENSION_VERSION,
+  type MessageAttachedSnapshot,
+  type TrackerSnapshot,
 } from "../src/shared/types";
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.14",
+  extensionVersion: EXTENSION_VERSION,
   chatId: "chat-a",
   createdAt: "2003-09-22T16:18:00.000Z",
   messageCount: 8,
@@ -130,7 +143,7 @@ const sampleSnapshot: TrackerSnapshot = {
 
 const sampleMessageSnapshot: MessageAttachedSnapshot = {
   schemaVersion: 1,
-  extensionVersion: "0.14",
+  extensionVersion: EXTENSION_VERSION,
   chatId: "chat-a",
   messageId: "m2",
   messageIndex: 7,
@@ -213,6 +226,18 @@ test("buildCompactTranscript truncates long messages with the provided setting",
   assert.doesNotMatch(transcript, /ghijkl/);
 });
 
+test("buildCompactTranscript applies the total transcript budget", () => {
+  const transcript = buildCompactTranscript([
+    { index: 1, role: "user", name: "Trent", content: "a".repeat(80) },
+    { index: 2, role: "assistant", name: "Lumia", content: "b".repeat(80) },
+    { index: 3, role: "assistant", name: "Lumia", content: "c".repeat(80) },
+  ], 80, 120);
+
+  assert.match(transcript, /prompt budget was reached/);
+  assert.match(transcript, /\[1 USER Trent\]/);
+  assert.doesNotMatch(transcript, /\[3 ASSISTANT Lumia\]/);
+});
+
 test("repairSettings repairs auto mode settings with bounded values", () => {
   const settings = repairSettings({
     ...DEFAULT_SETTINGS,
@@ -236,13 +261,101 @@ test("repairSettings repairs auto mode settings with bounded values", () => {
   assert.equal(settings.auto.onlyWhenChatActive, false);
 });
 
+test("repairSettings adds v0.15 timing, trust, budget, and width defaults", () => {
+  const migrated = repairSettings({});
+  assert.equal(migrated.autoTiming.waitForAssistantFinalization, true);
+  assert.equal(migrated.autoTiming.postCompletionSettleMs, 750);
+  assert.equal(migrated.autoTiming.stableContentCheckMs, 400);
+  assert.equal(migrated.autoTiming.requireStableSwipeContent, true);
+  assert.equal(migrated.autoTiming.cancelPendingOnSwipeChange, true);
+  assert.equal(migrated.renderer.templateTrustMode, "trusted");
+  assert.equal(migrated.renderer.allowInlineStyles, true);
+  assert.equal(migrated.messageDisplay.allowInlineStyles, true);
+  assert.equal(migrated.messageDisplay.useDomInjection, true);
+  assert.equal(migrated.messageDisplay.fallbackToIframeWidget, false);
+  assert.deepEqual(migrated.budget, {
+    mode: "estimated_tokens",
+    ultraModeEnabled: false,
+    ...NORMAL_BUDGET_DEFAULTS,
+  });
+  assert.equal(migrated.expandedWidth.expandedWidthMode, "wide");
+  assert.equal(migrated.expandedWidth.maxExpandedWidthPx, 900);
+
+  const repaired = repairSettings({
+    renderer: { allowInlineStyles: false },
+    messageDisplay: { allowInlineStyles: false },
+    autoTiming: {
+      postCompletionSettleMs: -1,
+      stableContentCheckMs: 99_999,
+      requireStableSwipeContent: false,
+      cancelPendingOnSwipeChange: false,
+    },
+    budget: {
+      ultraModeEnabled: true,
+      recentMessageBudgetTokens: NORMAL_BUDGET_DEFAULTS.recentMessageBudgetTokens,
+      maxTrackerOutputTokens: 999_999,
+      renderedHtmlMaxChars: 9_999_999,
+    },
+    expandedWidth: {
+      expandedWidthMode: "full_mobile",
+      maxExpandedWidthPx: 99_999,
+      mobileHorizontalMarginPx: -20,
+      expandedContentMaxHeightVh: 999,
+    },
+  });
+
+  assert.equal(repaired.renderer.templateTrustMode, "safe");
+  assert.equal(repaired.renderer.allowInlineStyles, false);
+  assert.equal(repaired.messageDisplay.allowInlineStyles, false);
+  assert.equal(repaired.autoTiming.postCompletionSettleMs, 0);
+  assert.equal(repaired.autoTiming.stableContentCheckMs, 5_000);
+  assert.equal(repaired.autoTiming.requireStableSwipeContent, false);
+  assert.equal(repaired.autoTiming.cancelPendingOnSwipeChange, false);
+  assert.equal(repaired.budget.ultraModeEnabled, true);
+  assert.equal(repaired.budget.recentMessageBudgetTokens, ULTRA_BUDGET_DEFAULTS.recentMessageBudgetTokens);
+  assert.equal(repaired.budget.maxTrackerOutputTokens, ULTRA_BUDGET_DEFAULTS.maxTrackerOutputTokens);
+  assert.equal(repaired.budget.renderedHtmlMaxChars, ULTRA_BUDGET_DEFAULTS.renderedHtmlMaxChars);
+  assert.equal(repaired.expandedWidth.expandedWidthMode, "full_mobile");
+  assert.equal(repaired.expandedWidth.maxExpandedWidthPx, 1_800);
+  assert.equal(repaired.expandedWidth.mobileHorizontalMarginPx, 0);
+  assert.equal(repaired.expandedWidth.expandedContentMaxHeightVh, 95);
+});
+
+test("token estimate helpers use the shared four-character approximation", () => {
+  assert.equal(estimateTokensFromChars(0), 0);
+  assert.equal(estimateTokensFromChars(9), 3);
+  assert.equal(estimateCharsFromTokens(12_000), 48_000);
+});
+
+test("auto timing stable-content helpers gate partial swipe output", () => {
+  const settings = DEFAULT_SETTINGS.autoTiming;
+  const first = { messageId: "m2", swipeKey: "index-0", content: "complete reply" };
+  const second = { messageId: "m2", swipeKey: "index-0", content: "complete reply" };
+  const stable = evaluateStableSwipeContent(first, second, settings);
+  assert.equal(stable.passed, true);
+  assert.equal(stable.contentHash, stableContentHash("complete reply"));
+
+  const changed = evaluateStableSwipeContent(first, {
+    ...second,
+    content: "complete reply plus late token",
+  }, settings);
+  assert.equal(changed.passed, false);
+  assert.match(changed.skippedReason ?? "", /changed during stable-content check/);
+
+  assert.equal(shouldCancelPendingSwipe(first, {
+    messageId: "m2",
+    swipeKey: "index-1",
+    content: "new swipe",
+  }, settings), true);
+});
+
 test("repairSettings adds and repairs connection settings", () => {
   const migrated = repairSettings({
     recentMessageLimit: 12,
   });
   assert.equal(migrated.connection.mode, "active_quiet");
   assert.equal(migrated.connection.parameters.temperature, 0.2);
-  assert.equal(migrated.connection.parameters.max_tokens, 2000);
+  assert.equal(migrated.connection.parameters.max_tokens, 8000);
   assert.equal(migrated.connection.reasoning.source, "inherit");
 
   const settings = repairSettings({
@@ -274,7 +387,7 @@ test("repairSettings adds and repairs connection settings", () => {
   assert.equal(settings.connection.selectedConnectionName, "Tracker Cheap");
   assert.equal(settings.connection.refreshConnectionsOnDrawerOpen, false);
   assert.equal(settings.connection.parameters.temperature, 2);
-  assert.equal(settings.connection.parameters.max_tokens, 32_000);
+  assert.equal(settings.connection.parameters.max_tokens, 64_000);
   assert.equal(settings.connection.parameters.top_p, null);
   assert.equal(settings.connection.parameters.frequency_penalty, null);
   assert.equal(settings.connection.parameters.presence_penalty, -2);
@@ -306,6 +419,15 @@ test("tracker generation parameters clamp and omit nulls", () => {
     top_p: 1,
     frequency_penalty: -2,
     presence_penalty: 2,
+  });
+  assert.deepEqual(cleanTrackerGenerationParameters({
+    temperature: null,
+    max_tokens: 999_999,
+    top_p: null,
+    frequency_penalty: null,
+    presence_penalty: null,
+  }), {
+    max_tokens: 64_000,
   });
 });
 
@@ -359,8 +481,22 @@ test("tracker generation request builder handles connection modes and fallbacks"
   });
   assert.equal(raw.request.type, "raw");
   assert.equal(raw.request.connection_id, "conn-tracker");
+  assert.equal(raw.request.parameters?.max_tokens, NORMAL_BUDGET_DEFAULTS.maxTrackerOutputTokens);
   assert.equal(raw.modeUsed, "selected_connection_raw");
   assert.equal(raw.fallbackReason, null);
+
+  const ultraRaw = buildTrackerGenerationRequest({
+    messages,
+    settings: repairSettings({
+      ...selectedRawSettings,
+      budget: {
+        ...selectedRawSettings.budget,
+        ultraModeEnabled: true,
+      },
+    }),
+    selectedConnection,
+  });
+  assert.equal(ultraRaw.request.parameters?.max_tokens, ULTRA_BUDGET_DEFAULTS.maxTrackerOutputTokens);
 
   const quietSettings = repairSettings({
     ...DEFAULT_SETTINGS,
@@ -494,7 +630,7 @@ test("messageSnapshotIndexPath stores the per-chat index under message-snapshots
 
 test("embedded tracker tags build, replace, and remove by exact swipe", () => {
   const first = buildLTrackerTag("{\"scene\":{\"time\":\"one\"}}", "index-0");
-  assert.match(first, /<ltracker type="state" version="0.14" swipe="index-0">/);
+  assert.match(first, /<ltracker type="state" version="0.15" swipe="index-0">/);
   const content = upsertLTrackerTag("Assistant reply.", "{\"a\":1}", "index-0");
   const withSecond = upsertLTrackerTag(content.content, "{\"b\":2}", "index-1");
   const replaced = upsertLTrackerTag(withSecond.content, "{\"a\":3}", "index-0");
@@ -706,7 +842,7 @@ test("repairSettings repairs memory and prompt injection settings with defaults 
   assert.equal(migrated.memory.includeInTrackerGeneration, true);
   assert.equal(migrated.memory.retainCount, 3);
   assert.equal(migrated.memory.fullSnapshotCount, 3);
-  assert.equal(migrated.memory.maxMemoryChars, 12_000);
+  assert.equal(migrated.memory.maxMemoryChars, estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.trackerMemoryBudgetTokens));
   assert.equal(migrated.memory.source, "hybrid");
   assert.equal(migrated.injection.enabled, false);
   assert.equal(migrated.injection.retainCount, 3);
@@ -747,7 +883,7 @@ test("repairSettings repairs memory and prompt injection settings with defaults 
   assert.equal(settings.memory.retainCount, 10);
   assert.equal(settings.memory.fullSnapshotCount, 0);
   assert.equal(settings.memory.compactOlderSnapshots, true);
-  assert.equal(settings.memory.maxMemoryChars, 50_000);
+  assert.equal(settings.memory.maxMemoryChars, 512_000);
   assert.equal(settings.memory.source, "embedded_tags");
   assert.equal(settings.memory.excludeTargetMessage, false);
   assert.equal(settings.memory.order, "newest_to_oldest");
@@ -759,7 +895,7 @@ test("repairSettings repairs memory and prompt injection settings with defaults 
   assert.equal(settings.injection.injectionPlacement, "system_before_last");
   assert.equal(settings.injection.includeOnlyIfMissingFromPrompt, false);
   assert.equal(settings.injection.stripOlderTrackerBlocks, false);
-  assert.equal(settings.injection.maxInjectedChars, 50_000);
+  assert.equal(settings.injection.maxInjectedChars, 512_000);
   assert.equal(settings.injection.roleFallback, "assistant");
   assert.equal(settings.injection.includeHeader, false);
   assert.equal(settings.injection.header, "Custom Tracker Header");
@@ -1579,6 +1715,58 @@ test("buildMessageTrackerHistory creates a persistent drawer history model", () 
   assert.match(history[0]?.rendered.widgetHtml ?? "", /LTracker/);
 });
 
+test("groupMessageTrackerHistory shows latest per message swipe by default", () => {
+  const latest = buildMessageTrackerHistory({
+    index: [
+      {
+        messageId: "m2",
+        messageIndex: 7,
+        swipeKey: sampleMessageSnapshot.swipeKey,
+        swipeIndex: sampleMessageSnapshot.swipeIndex,
+        swipeId: sampleMessageSnapshot.swipeId,
+        swipeContentHash: sampleMessageSnapshot.swipeContentHash,
+        swipeKeySource: sampleMessageSnapshot.swipeKeySource,
+        createdAt: sampleMessageSnapshot.attachedAt,
+        presetId: sampleMessageSnapshot.presetId,
+        presetName: sampleMessageSnapshot.presetName,
+        storageKey: messageSnapshotPath(sampleMessageSnapshot.chatId, sampleMessageSnapshot.messageId, sampleMessageSnapshot.swipeKey),
+      },
+    ],
+    snapshots: [sampleMessageSnapshot],
+    latestChatSnapshot: sampleSnapshot,
+    preset: DEFAULT_TRACKER_PRESET,
+    settings: DEFAULT_SETTINGS.messageDisplay,
+  })[0];
+  assert.ok(latest);
+  const older: typeof latest = {
+    ...latest,
+    indexEntry: {
+      ...latest.indexEntry,
+      createdAt: "2003-09-22T16:00:00.000Z",
+      storageKey: `${latest.indexEntry.storageKey}.old`,
+    },
+    snapshot: latest.snapshot
+      ? {
+          ...latest.snapshot,
+          attachedAt: "2003-09-22T16:00:00.000Z",
+          snapshot: {
+            ...latest.snapshot.snapshot,
+            createdAt: "2003-09-22T16:00:00.000Z",
+          },
+        }
+      : null,
+  };
+
+  const grouped = groupMessageTrackerHistory([older, latest], false);
+  assert.equal(grouped.groupedCount, 1);
+  assert.equal(grouped.duplicateCount, 1);
+  assert.equal(grouped.entries.length, 1);
+  assert.equal(grouped.entries[0]?.indexEntry.storageKey, latest.indexEntry.storageKey);
+
+  const withDuplicates = groupMessageTrackerHistory([older, latest], true);
+  assert.equal(withDuplicates.entries.length, 2);
+});
+
 test("buildMessageTrackerHistory displays only the selected swipe tracker when provided", () => {
   const secondSnapshot: MessageAttachedSnapshot = {
     ...sampleMessageSnapshot,
@@ -1695,7 +1883,7 @@ test("repairSettings repairs renderer settings with defaults and clamping", () =
   assert.equal(settings.renderer.enabled, false);
   assert.equal(settings.renderer.previewSource, "latest_message_snapshot");
   assert.equal(settings.renderer.missingValuePlaceholder, "unknown");
-  assert.equal(settings.renderer.maxRenderedChars, 200_000);
+  assert.equal(settings.renderer.maxRenderedChars, 999_999);
   assert.equal(settings.renderer.allowInlineStyles, true);
 
   const repaired = repairSettings({ renderer: { previewSource: "bad", maxRenderedChars: 5 } });
@@ -1745,7 +1933,7 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(settings.messageDisplay.placement, "bottom");
   assert.equal(settings.messageDisplay.source, "latest_chat_snapshot");
   assert.equal(settings.messageDisplay.renderMode, "pretty_json");
-  assert.equal(settings.messageDisplay.allowInlineStyles, false);
+  assert.equal(settings.messageDisplay.allowInlineStyles, true);
   assert.equal(settings.messageDisplay.deduplicateRenderWarnings, false);
   assert.equal(settings.messageDisplay.showRenderWarningsInDiagnosticsOnly, false);
   assert.equal(settings.messageDisplay.showDebugSwipeKey, true);
@@ -1765,7 +1953,7 @@ test("repairSettings repairs message display settings with defaults and clamping
   assert.equal(settings.messageDisplay.showNoTrackerForSwipe, true);
   assert.equal(settings.messageDisplay.showGenerationDuration, false);
   assert.equal(settings.messageDisplay.minimizedMaxHeightPx, 400);
-  assert.equal(settings.messageDisplay.maxRenderedChars, 200_000);
+  assert.equal(settings.messageDisplay.maxRenderedChars, 999_999);
 
   const repaired = repairSettings({
     messageDisplay: {
@@ -1839,7 +2027,7 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
 
 test("context handler hotfix is disabled by default", () => {
   assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
-  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.14|remains disabled in 0\.14/);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.15|remains disabled in 0\.15/);
 });
 
 test("context handler guard never mutates a frozen context object when disabled", async () => {
@@ -1994,6 +2182,26 @@ test("README settings reference covers the major setting groups", () => {
     "auto.triggerAfterUserMessages",
     "auto.attachSnapshotToMessage",
     "auto.onlyWhenChatActive",
+    "Auto Timing and Finalization",
+    "autoTiming.waitForAssistantFinalization",
+    "autoTiming.postCompletionSettleMs",
+    "autoTiming.stableContentCheckMs",
+    "autoTiming.requireStableSwipeContent",
+    "autoTiming.cancelPendingOnSwipeChange",
+    "Power Defaults",
+    "Budgets and Ultra Tracker Mode",
+    "budget.mode",
+    "budget.ultraModeEnabled",
+    "budget.recentMessageBudgetTokens",
+    "budget.perMessageBudgetTokens",
+    "budget.trackerMemoryBudgetTokens",
+    "budget.promptInjectionBudgetTokens",
+    "budget.maxTrackerOutputTokens",
+    "budget.promptPreviewBudgetTokens",
+    "budget.renderedHtmlMaxChars",
+    "budget.rawOutputMaxChars",
+    "budget.presetImportMaxChars",
+    "Drawer Layout",
     "Tracker Connection Settings",
     "active_quiet",
     "selected_connection_quiet",
@@ -2043,6 +2251,7 @@ test("README settings reference covers the major setting groups", () => {
     "renderer.missingValuePlaceholder",
     "renderer.maxRenderedChars",
     "renderer.allowInlineStyles",
+    "renderer.templateTrustMode",
     "messageDisplay.enabled",
     "messageDisplay.useDomInjection",
     "messageDisplay.fallbackToIframeWidget",
@@ -2072,6 +2281,7 @@ test("README settings reference covers the major setting groups", () => {
     "messageDisplay.showGenerationDuration",
     "messageDisplay.minimizedMaxHeightPx",
     "messageDisplay.maxRenderedChars",
+    "expandedWidth.expandedWidthMode",
     "debounce",
     "missing value placeholder",
     "includeHeader",
@@ -2096,11 +2306,13 @@ test("README settings reference covers the major setting groups", () => {
     "Safe Mode",
     "Dev Mode",
     "0.15 Auto Timing + Drawer UX Overhaul",
-    "0.16 Power Template Engine",
-    "0.17 Dev Mode Templates",
-    "0.18 Sequential + Partial Regeneration",
-    "0.19 Cleanup / Repair / Pending Fields",
-    "0.20 World Books, Character Exclusions, Import/Export Polish",
+    "0.16 Preset Pack Import/Export + Better Validation",
+    "0.17 Power Template Engine",
+    "0.18 Dev Mode Templates",
+    "0.19 Sequential + Partial Regeneration",
+    "0.20 Cleanup / Repair / Pending Fields",
+    "0.21 World Books, Character Exclusions, Import/Export Polish",
+    "0.22 YAML / Macro Support / Advanced Compatibility",
   ]) {
     assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
@@ -2120,10 +2332,40 @@ test("drawer UI keeps detailed setting explanations out of the app surface", () 
   assert.doesNotMatch(frontend, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(frontend, /MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON/);
-  assert.match(frontend, /Context handler injection remains disabled in 0\.14/);
+  assert.match(frontend, /Context handler injection remains disabled in 0\.15/);
+  assert.doesNotMatch(frontend, />\s*Allow sanitized inline styles\s*</);
   assert.match(frontend, /registerTagInterceptor/);
   assert.match(frontend, /data-settings-save-status/);
   assert.match(frontend, /saveSettings\("settings-auto"\)/);
+  for (const id of [
+    "dashboard",
+    "generation",
+    "auto",
+    "connection",
+    "display",
+    "renderer",
+    "memory-injection",
+    "presets",
+    "history",
+    "diagnostics",
+    "advanced",
+  ]) {
+    assert.match(frontend, new RegExp(`id="ltracker-section-${id}"`));
+  }
+  for (const filter of [
+    "text",
+    "showDuplicates",
+    "currentMessageOnly",
+    "selectedSwipeOnly",
+    "currentPresetOnly",
+    "errorsOnly",
+  ]) {
+    assert.match(frontend, new RegExp(`data-history-filter="${filter}"`));
+  }
+  const displaySection = /id="ltracker-section-display"[\s\S]*?id="ltracker-section-history"/.exec(frontend)?.[0] ?? "";
+  assert.doesNotMatch(displaySection, /fallbackToIframeWidget/);
+  const advancedSection = /id="ltracker-section-advanced"[\s\S]*?<\/section>/.exec(frontend)?.[0] ?? "";
+  assert.match(advancedSection, /fallbackToIframeWidget/);
   assert.doesNotMatch(frontend, />Save Settings</);
 });
 

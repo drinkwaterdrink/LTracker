@@ -1,6 +1,8 @@
 # LTracker
 
-Version: `0.14`
+Version: `0.15`
+
+Current release: `0.15 Auto Timing + Drawer UX Overhaul`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -15,6 +17,7 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Saves the latest per-chat tracker snapshot in user extension storage.
 - Supports manual tracker generation from the drawer or input-bar action.
 - Supports Auto Mode after assistant completions, including swipe/regenerate events when Lumiverse reports them.
+- Waits for assistant/swipe finalization, settle delay, and stable-content checks before auto tracker extraction.
 - Includes recent prior tracker snapshots as tracker-generation memory, using the most recent prior state as the baseline.
 - Stores message-attached tracker snapshots keyed by exact message id and selected swipe key.
 - Maintains a message snapshot index at `chats/{chatId}/message-snapshots/index.json`.
@@ -23,7 +26,9 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Shows a tiny generate tracker icon for visible assistant messages without a selected-swipe tracker when enabled.
 - Moves regenerate/stop, edit/view, and delete controls into the expanded tracker header as icon-only actions.
 - Removes large bottom action buttons from inline message trackers by default.
-- Preserves sandboxed iframe message widgets as a fallback.
+- Uses DOM injection as the primary/default message display engine, with iframe widgets as an advanced legacy fallback.
+- Defaults to Trusted Preset Mode so user-authored sanitized HTML/CSS templates render richly without a main inline-style checkbox.
+- Adds token-aware budgets and Ultra Tracker Mode for large zTracker-style schemas, prompts, tracker memory, and outputs.
 - Supports optional embedded `<ltracker type="state">` tags in assistant message swipes, hidden by a Lumiverse tag interceptor and rendered from the intercepted exact payload.
 - Autosaves settings changes from the drawer; Reset Settings remains explicit.
 - Supports optional safe normal prompt injection through `spindle.registerInterceptor()`, disabled by default.
@@ -53,9 +58,35 @@ LTracker prefers official Lumiverse message-targeted DOM APIs:
 
 The inspected Lumiverse docs/types expose message DOM helpers, message widgets, message tags, `message_footer`, and context menus, but no official per-message toolbar action slot. Because of that, LTracker uses a safe in-message control pill fallback instead of private host selectors. Iframe message widget fallback uses `ctx.messages.renderWidget()` and may render below messages.
 
-Drawer history is the durable debug/audit surface. It can keep larger regenerate/edit/delete/copy actions because it is not the compact chat surface. Inline trackers keep the compact control pill and expanded header actions.
+Drawer history is the durable debug/audit surface. It groups by message id plus swipe key and shows the latest snapshot by default, with duplicate index cleanup that does not delete stored snapshots. Inline trackers keep the compact control pill and expanded header actions.
 
 Saved message text mutation is used only when `messageDisplay.attachmentMode` is `embedded_tracker_tag` or `both`, where LTracker calls `spindle.chat.updateMessage()` to upsert or remove its own exact-swipe `<ltracker>` block. Sidecar mode remains storage-only.
+
+Expanded tracker width modes let collapsed controls stay tiny while opened trackers can use contained, wide, full-mobile, or future popover-style sizing. Full-mobile uses near-viewport width with a small configurable horizontal margin.
+
+## Auto Timing and Finalization
+
+Auto mode now treats assistant generation and swipe/regenerate updates as a two-step process. LTracker first marks the target as `waiting_for_message_finalization`, waits for the strongest available Lumiverse final event, rereads the selected assistant swipe, waits the configured settle delay, rereads it again, and compares content hashes when stable checks are enabled. If the selected swipe changes before finalization, the old pending job is cancelled and cannot overwrite the new swipe's tracker.
+
+`Wait after message finishes` is the user-facing debounce. It happens after finalization and stable-content checks so rapid save/swipe/generation events collapse into one tracker job without summarizing partial assistant output.
+
+## Power Defaults
+
+LTracker defaults to Trusted Preset Mode because it is designed for user-authored tracker presets. Sanitization still runs as a guardrail, but sanitized inline styles are enabled by default for richer zTracker-like layouts. Safe Mode is available for imported/shared presets. Dev Mode is a future placeholder and does not enable template JavaScript in `0.15`.
+
+Older `renderer.allowInlineStyles` and `messageDisplay.allowInlineStyles` settings migrate into `renderer.templateTrustMode`. Trusted mode enables both internal inline-style flags; Safe mode disables them.
+
+DOM injection is the default display engine. Iframe fallback is off by default and lives in Advanced as `Iframe fallback / legacy backup` for troubleshooting runtimes where DOM injection cannot attach.
+
+## Budgets and Ultra Tracker Mode
+
+Budget mode defaults to estimated tokens using the rough estimate `1 token ~= 4 characters`. Token budgets drive recent transcript size, per-message context, tracker memory, prompt injection, tracker output tokens, and prompt preview size. Character limits remain for rendered HTML, raw output previews, diagnostics previews, import textareas, and storage safety caps.
+
+Normal defaults target large but practical tracker use: 16k recent tokens, 12k per-message tokens, 12k tracker memory tokens, 12k injection tokens, 8k tracker output tokens, and 250k rendered/raw character caps. Ultra Tracker Mode raises those soft budgets for very large 30k-40k token zTracker-style presets and uses warnings instead of tiny hard blocks.
+
+## Drawer Layout
+
+The drawer is organized as Dashboard, Generation, Auto, Connection, Display, Renderer, Memory / Injection, Presets, History, Diagnostics, and Advanced. The header has one central autosave status. The Dashboard shows current status, preset, connection, latest snapshot/memory, and quick actions.
 
 ## Swipe-Aware Trackers
 
@@ -115,7 +146,7 @@ Tracker generation now uses prior tracker snapshots as baseline memory. By defau
 
 The tracker prompt tells the model to mutate from the most recent prior tracker state while preserving stable unchanged fields. The current transcript still wins over prior memory when they conflict.
 
-The sunset policy is simple in `0.14`: `retainCount` controls how many prior snapshots are considered, `fullSnapshotCount` controls how many most-recent snapshots are included in full, and older snapshots are omitted unless compact older snapshots is enabled.
+The sunset policy is simple in `0.15`: `retainCount` controls how many prior snapshots are considered, `fullSnapshotCount` controls how many most-recent snapshots are included in full, and older snapshots are omitted unless compact older snapshots is enabled.
 
 Recommended start: Tracker Memory on, include last 3, full snapshot count 3, normal Prompt Injection off until tested.
 
@@ -157,7 +188,7 @@ Settings are stored in per-user extension storage at `settings.json` and repaire
 | Setting | Default | What it does | When to increase or enable | When to decrease or disable | Tradeoff |
 | --- | --- | --- | --- | --- | --- |
 | `recentMessageLimit` | `24` | Number of recent chat messages read for tracker generation. | Increase when tracker output misses older context. | Decrease to reduce prompt size and generation cost. | More context can improve continuity but costs more tokens and time. |
-| `maxMessageChars` | `8000` | Maximum characters kept from each message before prompting the tracker model. | Increase for long-form messages where late details matter. | Decrease if prompts are too large or slow. | Higher caps preserve detail but can crowd the tracker prompt. |
+| `maxMessageChars` | `48000` | Maximum characters kept from each message before prompting the tracker model. | Increase for long-form messages where late details matter. | Decrease if prompts are too large or slow. | Higher caps preserve detail but can crowd the tracker prompt. |
 | `generationTimeoutMs` | `45000` | How long LTracker waits for quiet tracker generation. | Increase for slow providers or large schemas. | Decrease if failed tracker jobs should return faster. | Longer timeouts reduce false failures but make stuck jobs linger. |
 | `saveRawOutput` | `true` | Saves the model's raw tracker response for diagnostics. | Enable while debugging parse failures. | Disable to store less model output. | Helpful debugging data may include sensitive chat-derived text. |
 | `savePromptPreview` | `true` | Saves the tracker prompt preview for diagnostics. | Enable when tuning schema/prompt behavior. | Disable to store less chat-derived prompt text. | Easier prompt debugging costs more stored diagnostic data. |
@@ -167,7 +198,23 @@ Settings are stored in per-user extension storage at `settings.json` and repaire
 | Setting | Default | What it does | When to increase or enable | When to decrease or disable | Tradeoff |
 | --- | --- | --- | --- | --- | --- |
 | `auto.autoModeEnabled` | `false` | Turns automatic tracker generation on or off. | Enable after the manual button works for the chat. | Disable when testing or avoiding extra generations. | Convenience costs extra model calls. |
-| `auto.autoDebounceMs` | `1500` | Wait time after a qualifying message before generating. Debounce means rapid events collapse into one job. | Increase if events arrive in bursts or messages save slowly. | Decrease if tracker updates feel late. | More delay avoids duplicate work but feels less immediate. |
+| `auto.autoDebounceMs` | `1500` | Wait after message finishes before generating. Debounce means rapid events collapse into one job after finalization. | Increase if events arrive in bursts or messages save slowly. | Decrease if tracker updates feel late. | More delay avoids duplicate work but feels less immediate. |
+| `autoTiming.waitForAssistantFinalization` | `true` | Waits for assistant/swipe finalization before auto tracker extraction. | Keep enabled for swipe/regenerate accuracy. | Disable only for debugging event timing. | Prevents partial trackers but can add a short delay. |
+| `autoTiming.postCompletionSettleMs` | `750` | Short settle delay after finalization before the stable-content reread. | Increase for slow providers or sync-heavy chats. | Decrease if final message writes are instant. | More delay improves safety but slows auto updates. |
+| `autoTiming.stableContentCheckMs` | `400` | Delay between final swipe content reads before comparing hashes. | Increase if provider writes continue after final events. | Decrease only when writes are known synchronous. | More stability checking slows auto updates slightly. |
+| `autoTiming.requireStableSwipeContent` | `true` | Requires two reads of the selected swipe to match before auto generation. | Keep enabled for regenerate/swipe safety. | Disable only when host events are already known stable. | Avoids partial content but can skip unstable messages. |
+| `autoTiming.cancelPendingOnSwipeChange` | `true` | Cancels a pending finalized tracker job when the selected swipe changes. | Keep enabled for swipe/regenerate accuracy. | Disable only for diagnostics. | Prevents swipe A from receiving swipe B's tracker. |
+| `budget.mode` | `estimated_tokens` | Shows prompt/model budgets as approximate token counts. | Use for model-context planning. | Use `characters` only when tuning storage/display caps. | Estimates use `1 token ~= 4 characters`. |
+| `budget.ultraModeEnabled` | `false` | Lifts normal defaults for very large tracker presets. | Enable for 30k-40k token zTracker-style schemas. | Keep off for mobile/light providers. | Huge budgets can be slow or exceed model context. |
+| `budget.recentMessageBudgetTokens` | `16000` | Total approximate recent transcript budget. | Raise for long scenes. | Lower for smaller contexts. | More transcript can improve state but costs context. |
+| `budget.perMessageBudgetTokens` | `12000` | Approximate per-message slice before tracker prompting. | Raise for very long single turns. | Lower to prevent one message dominating context. | Higher values preserve late details but can crowd the prompt. |
+| `budget.trackerMemoryBudgetTokens` | `12000` | Approximate tracker memory block budget. | Raise for large schemas and continuity. | Lower for smaller tracker calls. | More memory preserves state but competes with current transcript. |
+| `budget.promptInjectionBudgetTokens` | `12000` | Approximate prompt-injection tracker block budget. | Raise for rich injected state. | Lower for normal RP context. | More injected state can improve continuity but changes RP prompts. |
+| `budget.maxTrackerOutputTokens` | `8000` | Tracker model output budget passed as `max_tokens`. | Raise for large schemas. | Lower for cheaper/faster tracker extraction. | Higher output caps cost more and may fail on smaller models. |
+| `budget.promptPreviewBudgetTokens` | `16000` | Approximate stored prompt-preview cap. | Raise when debugging huge prompts. | Lower to store less prompt text. | Larger previews can include sensitive chat text. |
+| `budget.renderedHtmlMaxChars` | `250000` | Character cap for rendered HTML and fallback output. | Raise for large templates. | Lower for mobile performance. | Huge DOM output can lag older devices. |
+| `budget.rawOutputMaxChars` | `250000` | Character cap for saved raw model output. | Raise during parse debugging. | Lower to reduce stored model text. | Larger raw outputs help debugging but may include sensitive text. |
+| `budget.presetImportMaxChars` | `1000000` | Character cap for pasted preset imports. | Raise for very large local presets. | Lower for safer import testing. | Larger imports are slower to validate. |
 | `auto.skipFirstMessages` | `2` | Avoids auto generation until the chat has enough messages. | Increase for setup-heavy chats. | Decrease if early tracker state is useful. | Waiting gives the model more context but delays first state. |
 | `auto.triggerAfterAssistantMessages` | `true` | Generates after assistant completions. | Keep enabled for zTracker-like per-response snapshots. | Disable if only manual tracking is desired. | Accurate scrollback costs one tracker job after assistant turns. |
 | `auto.triggerAfterUserMessages` | `false` | Generates after user messages through the message-sent event path. | Enable for user-turn state tracking experiments. | Keep disabled to reduce extra jobs. | More reactive state can double tracker traffic. |
@@ -176,7 +223,7 @@ Settings are stored in per-user extension storage at `settings.json` and repaire
 
 ### Tracker Connection Settings
 
-LTracker 0.14 can use a dedicated tracker connection/profile instead of always using the active roleplay connection. API keys are never exposed to the extension, never displayed, and never stored; LTracker stores only the selected connection id and display name.
+LTracker can use a dedicated tracker connection/profile instead of always using the active roleplay connection. API keys are never exposed to the extension, never displayed, and never stored; LTracker stores only the selected connection id and display name.
 
 Connection modes:
 
@@ -217,7 +264,7 @@ Tracker Memory feeds prior tracker snapshots into the tracker-generation prompt.
 | `memory.retainCount` | `3` | Total prior tracker snapshots considered. | Increase for slow-moving scenes. | Set to `0` to include no memory. | More retained state can help continuity but costs context. |
 | `memory.fullSnapshotCount` | `3` | Number of most recent retained snapshots included in full. | Increase for complex schemas. | Decrease to sunset older snapshots faster. | Full snapshots are precise but larger. |
 | `memory.compactOlderSnapshots` | `false` | Includes compact one-line older entries beyond the full snapshot count. | Enable after testing if longer memory helps. | Keep disabled for clean last-3 behavior. | Compact older memory is smaller but less complete. |
-| `memory.maxMemoryChars` | `12000` | Character cap for the rendered memory block. | Increase for large schemas. | Decrease if tracker prompts get too large. | Higher caps preserve detail but compete with transcript context. |
+| `memory.maxMemoryChars` | `48000` | Character cap for the rendered memory block. | Increase for large schemas. | Decrease if tracker prompts get too large. | Higher caps preserve detail but compete with transcript context. |
 | `memory.source` | `hybrid` | Chooses sidecar index, embedded tags, message-history scan, or hybrid. | Use hybrid for best recovery. | Use sidecar only for storage-first behavior. | Hybrid is resilient but does more lookup work. |
 | `memory.excludeTargetMessage` | `true` | Prevents the tracker currently being generated from becoming its own prior memory. | Keep enabled for per-message regeneration. | Disable only for debugging collection behavior. | Safer lineage may omit same-message alternate data. |
 | `memory.order` | `oldest_to_newest` | Orders retained memory. | Keep oldest-to-newest for progression. | Use newest-to-oldest only for experiments. | Oldest-to-newest mirrors the prompt baseline flow. |
@@ -236,7 +283,7 @@ Prompt Injection is optional and disabled by default. It uses `spindle.registerI
 | `injection.injectionPlacement` | `append_to_last_assistant` | Chooses append-to-assistant or system-message fallback placement. | Keep append-to-assistant for SimTracker-like behavior. | Use system placement if assistant appends confuse a provider. | Placement can affect prompt interpretation. |
 | `injection.includeOnlyIfMissingFromPrompt` | `true` | Skips backfill when enough tracker blocks are already present. | Keep enabled to avoid duplicates. | Disable only for testing forced injection. | Duplicate avoidance makes prompts cleaner. |
 | `injection.stripOlderTrackerBlocks` | `true` | Removes older `<ltracker>` blocks beyond retain count. | Keep enabled for context control. | Disable if you need to inspect all existing blocks. | Stripping prevents old state from crowding prompts. |
-| `injection.maxInjectedChars` | `12000` | Character cap for injected tracker text. | Increase for large schemas. | Decrease for smaller prompts. | Higher caps preserve detail but compete with chat context. |
+| `injection.maxInjectedChars` | `48000` | Character cap for injected tracker text. | Increase for large schemas. | Decrease for smaller prompts. | Higher caps preserve detail but compete with chat context. |
 | `injection.roleFallback` | `system` | Role used when LTracker cannot append to an assistant message. | Keep system for explicit state blocks. | Use assistant only for provider experiments. | Role fallback changes prompt semantics. |
 | `injection.includeHeader` | `true` | Adds a header before injected tracker blocks. | Keep enabled for Prompt Breakdown clarity. | Disable to save a few tokens. | Headers are readable but slightly larger. |
 | `injection.header` | `LTracker Recent State` | Header label for injected blocks and preview. | Customize for debugging. | Keep default for consistent diagnostics. | Custom labels are cosmetic. |
@@ -250,8 +297,8 @@ The drawer renderer is separate from message display.
 | `renderer.enabled` | `true` | Enables sanitized drawer preview rendering. | Keep enabled when using HTML templates. | Disable to inspect plain text fallback. | Rich preview is easier to read but adds rendering work. |
 | `renderer.previewSource` | `latest_chat_snapshot` | Chooses drawer preview source. | Use latest message snapshot to preview the latest attached response. | Use latest chat snapshot for the current chat-wide tracker. | Message source checks attachment behavior; chat source checks current state. |
 | `renderer.missingValuePlaceholder` | empty string | Missing value placeholder shown when a template references a missing field. | Set to `unknown` while debugging schemas. | Leave blank for cleaner display. | Placeholders reveal schema gaps but can make previews noisy. |
-| `renderer.maxRenderedChars` | `50000` | Character cap for drawer-rendered HTML and fallback text. | Increase for large tracker templates. | Decrease to keep the drawer lighter. | Higher caps show more output but can make the drawer heavier. |
-| `renderer.allowInlineStyles` | `false` | Allows a small set of sanitized inline styles in drawer previews. | Enable for trusted templates needing simple formatting. | Keep disabled for stricter rendering. | Sanitized inline styles improve presentation but widen the allowed HTML surface. |
+| `renderer.maxRenderedChars` | `250000` | Character cap for drawer-rendered HTML and fallback text. | Increase for large tracker templates. | Decrease to keep the drawer lighter. | Higher caps show more output but can make the drawer heavier. |
+| `renderer.templateTrustMode` | `trusted` | Controls Safe, Trusted, or future Dev template behavior for drawer previews. | Keep Trusted for user-authored presets. | Use Safe for imported/shared presets. | Trusted enables sanitized inline styles while keeping sanitizer guardrails. |
 
 ### Message Display
 
@@ -259,13 +306,13 @@ The drawer renderer is separate from message display.
 | --- | --- | --- | --- | --- | --- |
 | `messageDisplay.enabled` | `true` | Enables message trackers and drawer history rendering. | Keep enabled for visible per-message trackers. | Disable to remove inline trackers and rely on raw snapshots. | Visible state is useful but adds UI surface. |
 | `messageDisplay.useDomInjection` | `true` | Uses official message-targeted DOM injection as the primary renderer. | Keep enabled for top placement and compact collapse. | Disable to force iframe widget fallback/history. | DOM injection is tighter, but only mounted message bubbles can be injected immediately. |
-| `messageDisplay.fallbackToIframeWidget` | `true` | Uses iframe message widgets when DOM injection cannot render. | Enable for broader runtime fallback. | Disable if below-message fallback is undesirable. | Fallback improves availability but may render below messages. |
+| `messageDisplay.fallbackToIframeWidget` | `false` | Advanced legacy backup using iframe message widgets when DOM injection cannot render. | Enable only for troubleshooting. | Keep disabled for the default compact DOM layout. | Fallback improves availability but may render below messages. |
 | `messageDisplay.attachmentMode` | `sidecar_snapshot` | Chooses storage-only sidecar snapshots, embedded tracker tag snapshots, or both. | Use `embedded_tracker_tag` or `both` when the tracker should travel inside the assistant swipe content. | Use `sidecar_snapshot` for no chat-message mutation. | Embedded tracker tag mode is portable but requires `chat_mutation`; sidecar is quieter and safer. |
 | `messageDisplay.displayMode` | `inline_full` | Chooses full inline trackers, compact button popover trackers, or drawer history only. | Use `inline_button_popover` for less chat clutter. | Use `drawer_history_only` when inline UI is distracting. | Inline full is richest; button popover is denser; drawer-only is least intrusive. |
 | `messageDisplay.placement` | `top` | Desired top vs bottom placement. DOM injection uses `afterbegin` for top. | Use `top` for zTracker-like placement. | Use `bottom` if top feels visually noisy. | Top vs bottom changes where the compact control pill attaches in the message. |
 | `messageDisplay.source` | `message_attached_snapshot` | Chooses exact message/swipe snapshot or latest chat snapshot for display. | Use message-attached snapshot for scrollback accuracy. | Use latest chat snapshot only when all displays should mirror current state. | Exact history is more faithful; latest state is easier to compare. |
 | `messageDisplay.renderMode` | `html_template` | Chooses template HTML, compact text, or pretty JSON. | Use template HTML for rich zTracker-like display. | Use compact text or `pretty_json` for debugging. | Rich HTML is readable but template-dependent. |
-| `messageDisplay.allowInlineStyles` | `true` | Allows a sanitized inline style allowlist in message tracker HTML. | Keep enabled for zTracker-like HTML template fidelity. | Disable for stricter rendering. | Fidelity improves, but the sanitizer has a wider allowed HTML surface. |
+| `renderer.templateTrustMode` | `trusted` | Selects Safe, Trusted, or future Dev template behavior. | Keep Trusted for user-authored presets. | Use Safe for imported/shared presets. | Trusted enables sanitized inline styles; Dev is a placeholder in `0.15`. |
 | `messageDisplay.deduplicateRenderWarnings` | `true` | Collapses repeated sanitizer/render warnings. | Keep enabled for noisy templates. | Disable only when every repeated warning matters during debugging. | Diagnostics stay readable but repeated details are summarized. |
 | `messageDisplay.showRenderWarningsInDiagnosticsOnly` | `true` | Keeps capped render warning detail in diagnostics instead of making message UI noisy. | Keep enabled for normal chat use. | Disable when actively debugging a template from the message display. | Cleaner chat UI means warnings are easier to miss unless diagnostics are open. |
 | `messageDisplay.showDebugSwipeKey` | `false` | Shows swipe key/index text in message controls. | Enable when testing selected-swipe storage and render routing. | Keep disabled for normal chat use. | Debug clarity adds technical text to message bubbles. |
@@ -285,11 +332,12 @@ The drawer renderer is separate from message display.
 | `messageDisplay.showNoTrackerForSwipe` | `false` | Reserved setting for showing an empty-state marker when selected swipe has no tracker. | Enable later if missing-swipe state should be explicit. | Keep disabled for quiet chat display. | Empty states aid discovery but add visual noise. |
 | `messageDisplay.showGenerationDuration` | `true` | Shows completed generation duration and live elapsed time when feasible. | Keep enabled while tuning providers or schemas. | Disable for the quietest header. | Timing helps diagnose slow trackers but adds metadata. |
 | `messageDisplay.minimizedMaxHeightPx` | `0` | Fallback iframe minimized height when collapsed. DOM injection does not need it. | Increase only if an iframe runtime clips the collapsed header. | Keep at `0` to avoid blank collapsed space. | Higher values can reintroduce empty iframe space. |
-| `messageDisplay.maxRenderedChars` | `50000` | Character cap for message display HTML/text/JSON. | Increase for large templates. | Decrease to keep trackers lighter. | Higher caps preserve detail but can make widgets heavy. |
+| `messageDisplay.maxRenderedChars` | `250000` | Character cap for message display HTML/text/JSON. | Increase for large templates. | Decrease to keep trackers lighter. | Higher caps preserve detail but can make widgets heavy. |
+| `expandedWidth.expandedWidthMode` | `wide` | Controls expanded tracker width. | Use `full_mobile` for phone-first inspection. | Use `contained` when trackers should stay inside message width. | Wider trackers are easier to read but take more horizontal space. |
 
 ## Diagnostics
 
-v0.14 keeps connection diagnostics for profile refresh, selected connection availability, generation mode used, fallback reason, tracker parameters, reasoning override, and connection test status. It also adds tracker memory diagnostics for memory count, character count, truncation, source summary, skipped reason, and whether the last tracker prompt included memory.
+v0.15 keeps connection diagnostics for profile refresh, selected connection availability, generation mode used, fallback reason, tracker parameters, reasoning override, and connection test status. It also adds tracker memory, auto finalization, history grouping, budget, trust-mode, and expanded-width diagnostics.
 
 Interceptor diagnostics track registration state, last interceptor time, injected count/chars, stripped count, skipped reason, error, and tracker block counts before/after prompt injection. Message-control diagnostics still track the last compact-control render, exact message/swipe key, control state, generate-button click, inline action, native toolbar support, and native toolbar fallback reason.
 
@@ -315,7 +363,7 @@ Drawer tabs, input-bar actions, message-targeted DOM injection, message widgets,
 
 ## Known Limitations
 
-- Context-handler prompt injection remains disabled in `0.14`; safe prompt injection uses the interceptor path instead.
+- Context-handler prompt injection remains disabled in `0.15`; safe prompt injection uses the interceptor path instead.
 - Sequential generation, partial regeneration, cleanup/repair mode, World Books, Memory Cortex, character-card context, and TOON/XML/native transform modes are future phases.
 - DOM injection only attaches immediately to mounted message bubbles; iframe fallback and drawer history cover unavailable bubbles.
 - There is no official per-message toolbar slot in the inspected docs/types, so LTracker uses the safe in-message control pill fallback.
@@ -324,13 +372,14 @@ Drawer tabs, input-bar actions, message-targeted DOM injection, message widgets,
 
 ## Roadmap
 
-1. `0.15 Auto Timing + Drawer UX Overhaul`
-2. `0.16 Power Template Engine`
-3. `0.17 Dev Mode Templates`
-4. `0.18 Sequential + Partial Regeneration`
-5. `0.19 Cleanup / Repair / Pending Fields`
-6. `0.20 World Books, Character Exclusions, Import/Export Polish`
+1. `0.16 Preset Pack Import/Export + Better Validation`
+2. `0.17 Power Template Engine`
+3. `0.18 Dev Mode Templates`
+4. `0.19 Sequential + Partial Regeneration`
+5. `0.20 Cleanup / Repair / Pending Fields`
+6. `0.21 World Books, Character Exclusions, Import/Export Polish`
+7. `0.22 YAML / Macro Support / Advanced Compatibility`
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.14`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.15`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

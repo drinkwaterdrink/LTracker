@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.15 - Auto timing, drawer UX, and power defaults
+- Added assistant finalization gating so auto tracker generation waits until swipe/regenerate output is complete.
+- Added stable-content checks and settle delay before tracker extraction.
+- Added cancellation of pending tracker jobs when selected swipe changes before finalization.
+- Renamed user-facing debounce wording to "Wait after message finishes."
+- Made Trusted Preset Mode the default template behavior.
+- Enabled sanitized inline styles by default for trusted user-authored presets.
+- Hid the sanitized inline style checkbox from the main UI.
+- Made DOM injection the primary/default message display engine.
+- Hid iframe fallback in Advanced/Legacy and made it off by default.
+- Added token-aware budget UI and Ultra Tracker Mode for very large tracker presets.
+- Raised soft limits for large zTracker-style schemas and outputs.
+- Added expanded tracker width modes.
+- Redesigned the drawer into Dashboard, Generation, Auto, Connection, Display, Renderer, Memory/Injection, Presets, History, Diagnostics, and Advanced sections.
+- Improved Message Tracker History grouping, filtering, duplicate handling, and compact preview.
+- Centralized autosave status in the drawer header.
+
 ## 0.14 - Tracker memory and safe prompt injection
 - Added tracker memory settings for retaining recent prior tracker snapshots.
 - Added default last-3 tracker memory for tracker generation.

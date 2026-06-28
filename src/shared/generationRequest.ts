@@ -6,13 +6,14 @@ import type {
   LTrackerReasoningSettings,
   LTrackerSettings,
 } from "./types";
+import { effectiveTrackerOutputTokens } from "./budget";
 
 export const TRACKER_CONNECTION_DEFAULT_TEST_PROMPT =
   "Return a compact JSON object with ok true and a short status.";
 
 export const TRACKER_CONNECTION_PARAMETER_LIMITS = {
   temperature: { min: 0, max: 2, default: 0.2 },
-  max_tokens: { min: 256, max: 32_000, default: 2_000 },
+  max_tokens: { min: 256, max: 64_000, default: 8_000 },
   top_p: { min: 0, max: 1, default: null },
   frequency_penalty: { min: -2, max: 2, default: null },
   presence_penalty: { min: -2, max: 2, default: null },
@@ -150,7 +151,10 @@ export function buildTrackerGenerationRequest(
 ): TrackerGenerationRequestBuildResult {
   const connectionSettings: LTrackerConnectionSettings = input.settings.connection;
   const quietSupportsConnectionId = input.quietSupportsConnectionId !== false;
-  const parametersUsed = cleanTrackerGenerationParameters(connectionSettings.parameters);
+  const parametersUsed = cleanTrackerGenerationParameters({
+    ...connectionSettings.parameters,
+    max_tokens: effectiveTrackerOutputTokens(input.settings),
+  });
   const reasoningOverrideUsed = buildTrackerReasoningOverride(connectionSettings.reasoning);
 
   if (connectionSettings.mode === "active_quiet") {

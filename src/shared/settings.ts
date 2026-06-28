@@ -1,5 +1,7 @@
 import {
   SETTINGS_SCHEMA_VERSION,
+  type LTrackerBudgetMode,
+  type LTrackerExpandedWidthMode,
   type LTrackerInjectionFormat,
   type LTrackerInjectionPlacement,
   type LTrackerInjectionRoleFallback,
@@ -10,7 +12,14 @@ import {
   type LTrackerReasoningSource,
   type LTrackerSettings,
   type LTrackerThinkingDisplay,
+  type TemplateTrustMode,
 } from "./types";
+import {
+  NORMAL_BUDGET_DEFAULTS,
+  ULTRA_BUDGET_DEFAULTS,
+  budgetDefaults,
+  estimateCharsFromTokens,
+} from "./budget";
 import {
   DEFAULT_TRACKER_CONNECTION_PARAMETERS,
   TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
@@ -19,18 +28,28 @@ import {
 
 export const SETTINGS_LIMITS = {
   recentMessageLimit: { min: 1, max: 200, default: 24 },
-  maxMessageChars: { min: 500, max: 50_000, default: 8_000 },
+  maxMessageChars: { min: 500, max: 512_000, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.perMessageBudgetTokens) },
   generationTimeoutMs: { min: 10_000, max: 180_000, default: 45_000 },
   autoDebounceMs: { min: 250, max: 30_000, default: 1_500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
+  postCompletionSettleMs: { min: 0, max: 10_000, default: 750 },
+  stableContentCheckMs: { min: 0, max: 5_000, default: 400 },
   memoryRetainCount: { min: 0, max: 10, default: 3 },
   memoryFullSnapshotCount: { min: 0, max: 10, default: 3 },
-  maxMemoryChars: { min: 1_000, max: 50_000, default: 12_000 },
+  maxMemoryChars: { min: 1_000, max: 512_000, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.trackerMemoryBudgetTokens) },
   injectionRetainCount: { min: 0, max: 10, default: 3 },
-  maxInjectedChars: { min: 1_000, max: 50_000, default: 12_000 },
-  maxRenderedChars: { min: 1_000, max: 200_000, default: 50_000 },
-  maxMessageDisplayRenderedChars: { min: 1_000, max: 200_000, default: 50_000 },
+  maxInjectedChars: { min: 1_000, max: 512_000, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.promptInjectionBudgetTokens) },
+  maxRenderedChars: { min: 1_000, max: 2_000_000, default: NORMAL_BUDGET_DEFAULTS.renderedHtmlMaxChars },
+  maxMessageDisplayRenderedChars: { min: 1_000, max: 2_000_000, default: NORMAL_BUDGET_DEFAULTS.renderedHtmlMaxChars },
   minimizedMaxHeightPx: { min: 0, max: 400, default: 0 },
+  budgetTokens: { min: 256, max: 128_000 },
+  trackerOutputTokens: { min: 256, max: 64_000 },
+  renderedHtmlMaxChars: { min: 1_000, max: 2_000_000 },
+  rawOutputMaxChars: { min: 1_000, max: 2_000_000 },
+  presetImportMaxChars: { min: 10_000, max: 10_000_000 },
+  maxExpandedWidthPx: { min: 320, max: 1_800, default: 900 },
+  mobileHorizontalMarginPx: { min: 0, max: 32, default: 6 },
+  expandedContentMaxHeightVh: { min: 30, max: 95, default: 75 },
 } as const;
 
 export const DEFAULT_SETTINGS: LTrackerSettings = {
@@ -48,6 +67,18 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     triggerAfterUserMessages: false,
     attachSnapshotToMessage: true,
     onlyWhenChatActive: true,
+  },
+  autoTiming: {
+    waitForAssistantFinalization: true,
+    postCompletionSettleMs: SETTINGS_LIMITS.postCompletionSettleMs.default,
+    stableContentCheckMs: SETTINGS_LIMITS.stableContentCheckMs.default,
+    requireStableSwipeContent: true,
+    cancelPendingOnSwipeChange: true,
+  },
+  budget: {
+    mode: "estimated_tokens",
+    ultraModeEnabled: false,
+    ...NORMAL_BUDGET_DEFAULTS,
   },
   memory: {
     enabled: true,
@@ -79,12 +110,13 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     previewSource: "latest_chat_snapshot",
     missingValuePlaceholder: "",
     maxRenderedChars: SETTINGS_LIMITS.maxRenderedChars.default,
-    allowInlineStyles: false,
+    allowInlineStyles: true,
+    templateTrustMode: "trusted",
   },
   messageDisplay: {
     enabled: true,
     useDomInjection: true,
-    fallbackToIframeWidget: true,
+    fallbackToIframeWidget: false,
     attachmentMode: "sidecar_snapshot",
     displayMode: "inline_full",
     placement: "top",
@@ -111,6 +143,12 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     showGenerationDuration: true,
     minimizedMaxHeightPx: SETTINGS_LIMITS.minimizedMaxHeightPx.default,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
+  },
+  expandedWidth: {
+    expandedWidthMode: "wide",
+    maxExpandedWidthPx: SETTINGS_LIMITS.maxExpandedWidthPx.default,
+    mobileHorizontalMarginPx: SETTINGS_LIMITS.mobileHorizontalMarginPx.default,
+    expandedContentMaxHeightVh: SETTINGS_LIMITS.expandedContentMaxHeightVh.default,
   },
   connection: {
     mode: "active_quiet",
@@ -164,6 +202,22 @@ function memoryOrder(value: unknown): LTrackerMemoryOrder {
     : DEFAULT_SETTINGS.memory.order;
 }
 
+function budgetMode(value: unknown): LTrackerBudgetMode {
+  return value === "characters" || value === "estimated_tokens"
+    ? value
+    : DEFAULT_SETTINGS.budget.mode;
+}
+
+function templateTrustMode(value: unknown): TemplateTrustMode | null {
+  return value === "safe" || value === "trusted" || value === "dev" ? value : null;
+}
+
+function expandedWidthMode(value: unknown): LTrackerExpandedWidthMode {
+  return value === "contained" || value === "wide" || value === "full_mobile" || value === "popover"
+    ? value
+    : DEFAULT_SETTINGS.expandedWidth.expandedWidthMode;
+}
+
 function injectionFormat(value: unknown): LTrackerInjectionFormat {
   if (value === "compact") return "compact_text";
   return value === "embedded_tag"
@@ -211,6 +265,14 @@ function clampNullableNumber(
   return integer ? Math.round(clamped) : clamped;
 }
 
+function clampTokenBudget(value: unknown, fallback: number, max: number = SETTINGS_LIMITS.budgetTokens.max): number {
+  return clampNumber(value, fallback, SETTINGS_LIMITS.budgetTokens.min, max);
+}
+
+function clampCharBudget(value: unknown, fallback: number, limit: { min: number; max: number }): number {
+  return clampNumber(value, fallback, limit.min, limit.max);
+}
+
 function connectionMode(value: unknown): LTrackerConnectionMode {
   return value === "active_quiet"
     || value === "selected_connection_quiet"
@@ -247,10 +309,13 @@ function thinkingDisplay(value: unknown): LTrackerThinkingDisplay {
 export function repairSettings(value: unknown): LTrackerSettings {
   const source = isRecord(value) ? value : {};
   const autoSource = isRecord(source.auto) ? source.auto : {};
+  const autoTimingSource = isRecord(source.autoTiming) ? source.autoTiming : {};
+  const budgetSource = isRecord(source.budget) ? source.budget : {};
   const memorySourceObject = isRecord(source.memory) ? source.memory : {};
   const injectionSource = isRecord(source.injection) ? source.injection : {};
   const rendererSource = isRecord(source.renderer) ? source.renderer : {};
   const messageDisplaySource = isRecord(source.messageDisplay) ? source.messageDisplay : {};
+  const expandedWidthSource = isRecord(source.expandedWidth) ? source.expandedWidth : {};
   const connectionSource = isRecord(source.connection) ? source.connection : {};
   const connectionParameterSource = isRecord(connectionSource.parameters) ? connectionSource.parameters : {};
   const connectionReasoningSource = isRecord(connectionSource.reasoning) ? connectionSource.reasoning : {};
@@ -286,6 +351,20 @@ export function repairSettings(value: unknown): LTrackerSettings {
     || messageDisplaySource.controlPlacement === "message_header"
     ? messageDisplaySource.controlPlacement
     : DEFAULT_SETTINGS.messageDisplay.controlPlacement;
+  const repairedBudgetUltra = typeof budgetSource.ultraModeEnabled === "boolean"
+    ? budgetSource.ultraModeEnabled
+    : DEFAULT_SETTINGS.budget.ultraModeEnabled;
+  const budgetDefaultSet = budgetDefaults(repairedBudgetUltra);
+  const ultraDefaultValue = (key: keyof typeof NORMAL_BUDGET_DEFAULTS): unknown => {
+    const value = budgetSource[key];
+    return repairedBudgetUltra && (value === undefined || value === NORMAL_BUDGET_DEFAULTS[key])
+      ? budgetDefaultSet[key]
+      : value;
+  };
+  const explicitTrustMode = templateTrustMode(rendererSource.templateTrustMode);
+  const migratedTrustMode: TemplateTrustMode = explicitTrustMode
+    ?? (rendererSource.allowInlineStyles === false && messageDisplaySource.allowInlineStyles === false ? "safe" : "trusted");
+  const trustAllowsInlineStyles = migratedTrustMode !== "safe";
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -340,6 +419,73 @@ export function repairSettings(value: unknown): LTrackerSettings {
       onlyWhenChatActive: typeof autoSource.onlyWhenChatActive === "boolean"
         ? autoSource.onlyWhenChatActive
         : DEFAULT_SETTINGS.auto.onlyWhenChatActive,
+    },
+    autoTiming: {
+      waitForAssistantFinalization: typeof autoTimingSource.waitForAssistantFinalization === "boolean"
+        ? autoTimingSource.waitForAssistantFinalization
+        : DEFAULT_SETTINGS.autoTiming.waitForAssistantFinalization,
+      postCompletionSettleMs: clampNumber(
+        autoTimingSource.postCompletionSettleMs,
+        SETTINGS_LIMITS.postCompletionSettleMs.default,
+        SETTINGS_LIMITS.postCompletionSettleMs.min,
+        SETTINGS_LIMITS.postCompletionSettleMs.max,
+      ),
+      stableContentCheckMs: clampNumber(
+        autoTimingSource.stableContentCheckMs,
+        SETTINGS_LIMITS.stableContentCheckMs.default,
+        SETTINGS_LIMITS.stableContentCheckMs.min,
+        SETTINGS_LIMITS.stableContentCheckMs.max,
+      ),
+      requireStableSwipeContent: typeof autoTimingSource.requireStableSwipeContent === "boolean"
+        ? autoTimingSource.requireStableSwipeContent
+        : DEFAULT_SETTINGS.autoTiming.requireStableSwipeContent,
+      cancelPendingOnSwipeChange: typeof autoTimingSource.cancelPendingOnSwipeChange === "boolean"
+        ? autoTimingSource.cancelPendingOnSwipeChange
+        : DEFAULT_SETTINGS.autoTiming.cancelPendingOnSwipeChange,
+    },
+    budget: {
+      mode: budgetMode(budgetSource.mode),
+      ultraModeEnabled: repairedBudgetUltra,
+      recentMessageBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("recentMessageBudgetTokens"),
+        budgetDefaultSet.recentMessageBudgetTokens,
+      ),
+      perMessageBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("perMessageBudgetTokens"),
+        budgetDefaultSet.perMessageBudgetTokens,
+      ),
+      trackerMemoryBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("trackerMemoryBudgetTokens"),
+        budgetDefaultSet.trackerMemoryBudgetTokens,
+      ),
+      promptInjectionBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("promptInjectionBudgetTokens"),
+        budgetDefaultSet.promptInjectionBudgetTokens,
+      ),
+      maxTrackerOutputTokens: clampTokenBudget(
+        ultraDefaultValue("maxTrackerOutputTokens") ?? connectionParameterSource.max_tokens,
+        budgetDefaultSet.maxTrackerOutputTokens,
+        SETTINGS_LIMITS.trackerOutputTokens.max,
+      ),
+      promptPreviewBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("promptPreviewBudgetTokens"),
+        budgetDefaultSet.promptPreviewBudgetTokens,
+      ),
+      renderedHtmlMaxChars: clampCharBudget(
+        ultraDefaultValue("renderedHtmlMaxChars") ?? rendererSource.maxRenderedChars ?? messageDisplaySource.maxRenderedChars,
+        budgetDefaultSet.renderedHtmlMaxChars,
+        SETTINGS_LIMITS.renderedHtmlMaxChars,
+      ),
+      rawOutputMaxChars: clampCharBudget(
+        ultraDefaultValue("rawOutputMaxChars"),
+        budgetDefaultSet.rawOutputMaxChars,
+        SETTINGS_LIMITS.rawOutputMaxChars,
+      ),
+      presetImportMaxChars: clampCharBudget(
+        ultraDefaultValue("presetImportMaxChars"),
+        budgetDefaultSet.presetImportMaxChars,
+        SETTINGS_LIMITS.presetImportMaxChars,
+      ),
     },
     memory: {
       enabled: typeof memorySourceObject.enabled === "boolean"
@@ -422,14 +568,13 @@ export function repairSettings(value: unknown): LTrackerSettings {
         ? rendererSource.missingValuePlaceholder
         : DEFAULT_SETTINGS.renderer.missingValuePlaceholder,
       maxRenderedChars: clampNumber(
-        rendererSource.maxRenderedChars,
-        SETTINGS_LIMITS.maxRenderedChars.default,
+        rendererSource.maxRenderedChars ?? budgetSource.renderedHtmlMaxChars,
+        repairedBudgetUltra ? ULTRA_BUDGET_DEFAULTS.renderedHtmlMaxChars : SETTINGS_LIMITS.maxRenderedChars.default,
         SETTINGS_LIMITS.maxRenderedChars.min,
         SETTINGS_LIMITS.maxRenderedChars.max,
       ),
-      allowInlineStyles: typeof rendererSource.allowInlineStyles === "boolean"
-        ? rendererSource.allowInlineStyles
-        : DEFAULT_SETTINGS.renderer.allowInlineStyles,
+      allowInlineStyles: trustAllowsInlineStyles,
+      templateTrustMode: migratedTrustMode,
     },
     messageDisplay: {
       enabled: typeof messageDisplaySource.enabled === "boolean"
@@ -446,9 +591,7 @@ export function repairSettings(value: unknown): LTrackerSettings {
       placement: messageDisplayPlacement,
       source: messageDisplaySourceSetting,
       renderMode: messageDisplayRenderMode,
-      allowInlineStyles: typeof messageDisplaySource.allowInlineStyles === "boolean"
-        ? messageDisplaySource.allowInlineStyles
-        : DEFAULT_SETTINGS.messageDisplay.allowInlineStyles,
+      allowInlineStyles: trustAllowsInlineStyles,
       deduplicateRenderWarnings: typeof messageDisplaySource.deduplicateRenderWarnings === "boolean"
         ? messageDisplaySource.deduplicateRenderWarnings
         : DEFAULT_SETTINGS.messageDisplay.deduplicateRenderWarnings,
@@ -508,10 +651,31 @@ export function repairSettings(value: unknown): LTrackerSettings {
         SETTINGS_LIMITS.minimizedMaxHeightPx.max,
       ),
       maxRenderedChars: clampNumber(
-        messageDisplaySource.maxRenderedChars,
-        SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
+        messageDisplaySource.maxRenderedChars ?? budgetSource.renderedHtmlMaxChars,
+        repairedBudgetUltra ? ULTRA_BUDGET_DEFAULTS.renderedHtmlMaxChars : SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.min,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.max,
+      ),
+    },
+    expandedWidth: {
+      expandedWidthMode: expandedWidthMode(expandedWidthSource.expandedWidthMode),
+      maxExpandedWidthPx: clampNumber(
+        expandedWidthSource.maxExpandedWidthPx,
+        SETTINGS_LIMITS.maxExpandedWidthPx.default,
+        SETTINGS_LIMITS.maxExpandedWidthPx.min,
+        SETTINGS_LIMITS.maxExpandedWidthPx.max,
+      ),
+      mobileHorizontalMarginPx: clampNumber(
+        expandedWidthSource.mobileHorizontalMarginPx,
+        SETTINGS_LIMITS.mobileHorizontalMarginPx.default,
+        SETTINGS_LIMITS.mobileHorizontalMarginPx.min,
+        SETTINGS_LIMITS.mobileHorizontalMarginPx.max,
+      ),
+      expandedContentMaxHeightVh: clampNumber(
+        expandedWidthSource.expandedContentMaxHeightVh,
+        SETTINGS_LIMITS.expandedContentMaxHeightVh.default,
+        SETTINGS_LIMITS.expandedContentMaxHeightVh.min,
+        SETTINGS_LIMITS.expandedContentMaxHeightVh.max,
       ),
     },
     connection: {

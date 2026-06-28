@@ -56,6 +56,12 @@ interface BuildMessageTrackerHistoryInput {
   selectedSwipeIdentities?: Record<string, SwipeTrackerIdentity>;
 }
 
+export interface MessageTrackerHistoryGroupingResult {
+  entries: MessageTrackerHistoryEntry[];
+  groupedCount: number;
+  duplicateCount: number;
+}
+
 function snapshotForDisplay(input: RenderMessageTrackerInput): TrackerSnapshot | null {
   if (input.settings.source === "latest_chat_snapshot" && input.latestChatSnapshot) return input.latestChatSnapshot;
   return input.attachedSnapshot?.snapshot ?? null;
@@ -455,7 +461,7 @@ function buildDomHtml(
     .ltd-icon-button svg { width: 14px; height: 14px; }
     .ltd-icon-button:hover, .ltd-icon-button:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); outline: 2px solid color-mix(in srgb, currentColor 30%, transparent); }
     .ltd-spinning svg { animation: ltd-spin .9s linear infinite; }
-    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; max-height: min(56vh, 540px); overflow: auto; }
+    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; max-height: min(var(--ltracker-expanded-max-height, 56vh), 900px); overflow: auto; }
     .ltd-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .ltracker-dom-tracker details:not([open]) { min-height: 0; }
     .ltracker-dom-tracker details:not([open]) .ltd-body { display: none; }
@@ -618,6 +624,49 @@ export function buildMessageTrackerHistory(input: BuildMessageTrackerHistoryInpu
       }),
     };
   });
+}
+
+function historyEntryTime(entry: MessageTrackerHistoryEntry): number {
+  const value = entry.snapshot?.attachedAt
+    ?? entry.snapshot?.snapshot.createdAt
+    ?? entry.indexEntry.createdAt;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function groupMessageTrackerHistory(
+  entries: MessageTrackerHistoryEntry[],
+  showDuplicates = false,
+): MessageTrackerHistoryGroupingResult {
+  const groups = new Map<string, MessageTrackerHistoryEntry[]>();
+  for (const entry of entries) {
+    const key = swipeIdentityKey(entry.indexEntry);
+    const group = groups.get(key) ?? [];
+    group.push(entry);
+    groups.set(key, group);
+  }
+  let duplicateCount = 0;
+  const grouped: MessageTrackerHistoryEntry[] = [];
+  for (const group of groups.values()) {
+    const sorted = group.sort((left, right) => historyEntryTime(right) - historyEntryTime(left));
+    duplicateCount += Math.max(0, sorted.length - 1);
+    if (showDuplicates) {
+      grouped.push(...sorted);
+    } else if (sorted[0]) {
+      grouped.push(sorted[0]);
+    }
+  }
+  grouped.sort((left, right) => {
+    if (left.indexEntry.messageIndex !== null && right.indexEntry.messageIndex !== null && left.indexEntry.messageIndex !== right.indexEntry.messageIndex) {
+      return left.indexEntry.messageIndex - right.indexEntry.messageIndex;
+    }
+    return historyEntryTime(right) - historyEntryTime(left);
+  });
+  return {
+    entries: grouped,
+    groupedCount: groups.size,
+    duplicateCount,
+  };
 }
 
 export function claimMessageWidget(registry: Set<string>, messageId: string): boolean {

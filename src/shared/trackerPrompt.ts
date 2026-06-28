@@ -11,13 +11,24 @@ const DEFAULT_MAX_MESSAGE_CHARS = 8_000;
 export function buildCompactTranscript(
   messages: TranscriptMessage[],
   maxMessageChars = DEFAULT_MAX_MESSAGE_CHARS,
+  maxTranscriptChars = Number.POSITIVE_INFINITY,
 ): string {
-  return messages.map((message) => {
+  const blocks: string[] = [];
+  let remaining = Number.isFinite(maxTranscriptChars) ? Math.max(0, maxTranscriptChars) : Number.POSITIVE_INFINITY;
+  for (const message of messages) {
+    if (remaining <= 0) break;
     const role = message.role === "user" ? "USER" : "ASSISTANT";
     const name = message.name ? ` ${message.name}` : "";
-    const content = message.content.trim().slice(0, maxMessageChars);
-    return `[${message.index} ${role}${name}]\n${content}`;
-  }).join("\n\n");
+    const limit = Math.min(maxMessageChars, remaining);
+    const content = message.content.trim().slice(0, limit);
+    const block = `[${message.index} ${role}${name}]\n${content}`;
+    blocks.push(block);
+    remaining -= block.length + 2;
+  }
+  if (blocks.length < messages.length) {
+    blocks.unshift(`[LTracker omitted ${messages.length - blocks.length} earlier message${messages.length - blocks.length === 1 ? "" : "s"} because the prompt budget was reached.]`);
+  }
+  return blocks.join("\n\n");
 }
 
 export function buildTrackerPrompt(

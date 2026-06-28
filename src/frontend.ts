@@ -7,6 +7,7 @@ import {
   exportTrackerPreset,
 } from "./shared/presets";
 import {
+  groupMessageTrackerHistory,
   MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
   MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
   MESSAGE_WIDGET_ID,
@@ -18,12 +19,18 @@ import {
   DEFAULT_TRACKER_CONNECTION_PARAMETERS,
   TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
 } from "./shared/generationRequest";
+import {
+  estimateCharsFromTokens,
+  estimateTokensFromChars,
+} from "./shared/budget";
 import type {
   BackendMessage,
   FrontendMessage,
   FrontendState,
   LTrackerError,
   LTrackerConnectionMode,
+  LTrackerBudgetMode,
+  LTrackerExpandedWidthMode,
   LTrackerInjectionFormat,
   LTrackerInjectionPlacement,
   LTrackerInjectionRoleFallback,
@@ -37,6 +44,7 @@ import type {
   LTrackerRenderSource,
   LTrackerSettings,
   LTrackerThinkingDisplay,
+  TemplateTrustMode,
   MessageTrackerHistoryEntry,
   MessageAttachedSnapshot,
   TrackerPresetDraft,
@@ -83,6 +91,37 @@ const STYLES = `
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+.ltracker-section-nav,
+.ltracker-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ltracker-nav-chip,
+.ltracker-chip {
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 999px;
+  color: inherit;
+  display: inline-flex;
+  font-size: 0.78rem;
+  line-height: 1.2;
+  min-height: 28px;
+  padding: 5px 8px;
+  text-decoration: none;
+}
+.ltracker-nav-chip {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+.ltracker-section {
+  scroll-margin-top: 12px;
+}
+.ltracker-section-title {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .ltracker-button {
   border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
@@ -379,6 +418,16 @@ function emptyState(): FrontendState {
       lastAutoSourceMessageId: null,
       lastAutoSourceMessageIndex: null,
       lastAutoGenerationId: null,
+      lastAutoFinalizationState: null,
+      lastAutoWaitingMessageId: null,
+      lastAutoWaitingSwipeKey: null,
+      lastAutoFinalizedAt: null,
+      lastAutoStableCheckAt: null,
+      lastAutoStableCheckPassed: null,
+      lastAutoContentStableHash: null,
+      lastAutoFinalizationSkippedReason: null,
+      pendingAutoFinalizationCount: 0,
+      lastSwipeChangeCancelledPendingJob: false,
       latestAttachedMessageId: null,
       latestAttachedMessageIndex: null,
       latestAttachedSnapshotAt: null,
@@ -423,7 +472,7 @@ function emptyState(): FrontendState {
       lastSanitizedHtmlChars: 0,
       lastFallbackTextChars: 0,
       contextHandlerRegistered: false,
-      contextHandlerDisabledReason: "Context handler injection remains disabled in 0.14; safe normal prompt injection uses the Lumiverse interceptor path instead.",
+      contextHandlerDisabledReason: "Context handler injection remains disabled in 0.15; safe normal prompt injection uses the Lumiverse interceptor path instead.",
       lastContextHandlerError: null,
       messageDisplayEnabled: false,
       messageDisplayMode: null,
@@ -501,6 +550,18 @@ function emptyState(): FrontendState {
       lastConnectionTestOutputPreview: null,
       lastConnectionTestFinishReason: null,
       lastConnectionTestUsage: null,
+      drawerActiveSection: null,
+      lastDrawerRefreshAt: null,
+      lastHistoryGroupedCount: 0,
+      lastHistoryDuplicateCount: 0,
+      lastHistoryCleanupAt: null,
+      expandedWidthModeResolved: null,
+      lastExpandedTrackerWidthPx: null,
+      templateTrustMode: DEFAULT_SETTINGS.renderer.templateTrustMode,
+      ultraModeEnabled: DEFAULT_SETTINGS.budget.ultraModeEnabled,
+      estimatedPromptTokensLastRun: null,
+      estimatedMemoryTokensLastRun: null,
+      iframeFallbackVisibleInMainUi: false,
     },
     memoryPreview: null,
     injectionPreview: null,
@@ -590,6 +651,14 @@ function formatDurationMs(durationMs: number | null): string | null {
   return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
 }
 
+function budgetHint(tokens: number): string {
+  return `~${estimateCharsFromTokens(tokens).toLocaleString()} chars`;
+}
+
+function charLimitHint(chars: number): string {
+  return `~${estimateTokensFromChars(chars).toLocaleString()} tokens`;
+}
+
 function requestId(prefix: string): string {
   return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
@@ -606,6 +675,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const optimisticJobs = new Map<string, { startedAt: string; jobId: string | null }>();
   let settingsAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
   let settingsSaveStatus: "idle" | "saving" | "saved" | "failed" = "saved";
+  let historyFilterText = "";
+  let historyShowDuplicates = false;
+  let historyCurrentMessageOnly = false;
+  let historyErrorsOnly = false;
+  let historyCurrentPresetOnly = false;
+  let historySelectedSwipeOnly = false;
 
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
@@ -727,7 +802,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   function isSettingsControl(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
-    return Boolean(target.closest("[data-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning]"));
+    return Boolean(target.closest("[data-setting], [data-auto-timing-setting], [data-budget-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-expanded-width-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning]"));
   }
 
   function localDiagnostics(update: Partial<FrontendState["diagnostics"]>): void {
@@ -769,16 +844,24 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     };
   }
 
-  function allRenderableEntries(): MessageTrackerHistoryEntry[] {
+  function allIndexedHistoryEntries(): MessageTrackerHistoryEntry[] {
     const active = currentChatId();
-    const entries = new Map<string, MessageTrackerHistoryEntry>();
+    const entries: MessageTrackerHistoryEntry[] = [];
     for (const entry of state.messageSnapshotHistory) {
       if (active && entry.snapshot?.chatId && entry.snapshot.chatId !== active) continue;
-      entries.set(trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey), rerenderHistoryEntry(entry));
+      entries.push(rerenderHistoryEntry(entry));
     }
-    for (const [key, entry] of embeddedTagEntries) {
+    for (const entry of embeddedTagEntries.values()) {
       if (active && entry.snapshot?.chatId && entry.snapshot.chatId !== active) continue;
-      entries.set(key, rerenderHistoryEntry(entry));
+      entries.push(rerenderHistoryEntry(entry));
+    }
+    return entries;
+  }
+
+  function allRenderableEntries(): MessageTrackerHistoryEntry[] {
+    const entries = new Map<string, MessageTrackerHistoryEntry>();
+    for (const entry of groupMessageTrackerHistory(allIndexedHistoryEntries(), false).entries) {
+      entries.set(trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey), entry);
     }
     for (const entry of state.messageControlCandidates) {
       const key = trackerEntryKey(entry.indexEntry.messageId, entry.indexEntry.swipeKey);
@@ -969,6 +1052,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     return placement === "top" ? "afterbegin" : "beforeend";
   }
 
+  function applyExpandedWidthMode(element: Element): void {
+    if (!(element instanceof HTMLElement)) return;
+    const width = state.settings.expandedWidth;
+    const maxWidth = `${width.maxExpandedWidthPx}px`;
+    element.style.maxWidth = width.expandedWidthMode === "contained" ? "100%" : maxWidth;
+    element.style.width = width.expandedWidthMode === "full_mobile"
+      ? `calc(100vw - ${width.mobileHorizontalMarginPx * 2}px)`
+      : width.expandedWidthMode === "popover" ? "auto" : "100%";
+    element.style.marginLeft = width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
+    element.style.marginRight = width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
+    element.style.setProperty("--ltracker-expanded-max-height", `${width.expandedContentMaxHeightVh}vh`);
+    localDiagnostics({
+      expandedWidthModeResolved: width.expandedWidthMode,
+      lastExpandedTrackerWidthPx: width.expandedWidthMode === "contained" ? null : width.maxExpandedWidthPx,
+    });
+  }
+
   function hydrateDomInjections(): boolean {
     if (
       !state.settings.messageDisplay.enabled
@@ -1006,6 +1106,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         entry.rendered.activeJobId,
         entry.rendered.controlState.generationStatus,
         state.settings.messageDisplay.displayMode,
+        state.settings.expandedWidth.expandedWidthMode,
+        state.settings.expandedWidth.maxExpandedWidthPx,
+        state.settings.expandedWidth.mobileHorizontalMarginPx,
+        state.settings.expandedWidth.expandedContentMaxHeightVh,
         html,
       ].join("\n");
       if (domSignatures.get(key) === signature) {
@@ -1016,6 +1120,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       try {
         domInjections.get(key)?.cleanup();
         const element = ctx.dom.inject(target, html, position);
+        applyExpandedWidthMode(element);
         element.addEventListener("click", handleDomTrackerAction);
         domInjections.set(key, {
           element,
@@ -1371,6 +1476,30 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const input = tab.root.querySelector<HTMLInputElement>(`[data-setting="${name}"]`);
       return input ? input.checked : state.settings.auto[name];
     };
+    const autoTimingNumberValue = (name: keyof Pick<LTrackerSettings["autoTiming"], "postCompletionSettleMs" | "stableContentCheckMs">): number => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-auto-timing-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.autoTiming[name];
+    };
+    const autoTimingBooleanValue = (
+      name: keyof Pick<LTrackerSettings["autoTiming"], "waitForAssistantFinalization" | "requireStableSwipeContent" | "cancelPendingOnSwipeChange">,
+    ): boolean => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-auto-timing-setting="${name}"]`);
+      return input ? input.checked : state.settings.autoTiming[name];
+    };
+    const budgetNumberValue = (
+      name: keyof Omit<LTrackerSettings["budget"], "mode" | "ultraModeEnabled">,
+    ): number => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-budget-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.budget[name];
+    };
+    const budgetBooleanValue = (name: keyof Pick<LTrackerSettings["budget"], "ultraModeEnabled">): boolean => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-budget-setting="${name}"]`);
+      return input ? input.checked : state.settings.budget[name];
+    };
+    const budgetSelectValue = <T extends string>(name: keyof Pick<LTrackerSettings["budget"], "mode">, fallback: T): T => {
+      const input = tab.root.querySelector<HTMLSelectElement>(`[data-budget-setting="${name}"]`);
+      return input ? input.value as T : fallback;
+    };
     const memoryNumberValue = (name: keyof Pick<LTrackerSettings["memory"], "retainCount" | "fullSnapshotCount" | "maxMemoryChars">): number => {
       const input = tab.root.querySelector<HTMLInputElement>(`[data-memory-setting="${name}"]`);
       return input ? Number(input.value) : state.settings.memory[name];
@@ -1396,10 +1525,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const injectionTextValue = (name: keyof Pick<LTrackerSettings["injection"], "header">): string => {
       const input = tab.root.querySelector<HTMLInputElement>(`[data-injection-setting="${name}"]`);
       return input ? input.value : state.settings.injection[name];
-    };
-    const rendererNumberValue = (name: keyof Pick<LTrackerSettings["renderer"], "maxRenderedChars">): number => {
-      const input = tab.root.querySelector<HTMLInputElement>(`[data-renderer-setting="${name}"]`);
-      return input ? Number(input.value) : state.settings.renderer[name];
     };
     const rendererBooleanValue = (name: keyof Pick<LTrackerSettings["renderer"], "enabled" | "allowInlineStyles">): boolean => {
       const input = tab.root.querySelector<HTMLInputElement>(`[data-renderer-setting="${name}"]`);
@@ -1449,11 +1574,25 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const input = tab.root.querySelector<HTMLSelectElement>(`[data-renderer-setting="${name}"]`);
       return input ? input.value as T : fallback;
     };
+    const rendererTrustModeValue = (): TemplateTrustMode => {
+      const input = tab.root.querySelector<HTMLSelectElement>("[data-renderer-setting=\"templateTrustMode\"]");
+      return input ? input.value as TemplateTrustMode : state.settings.renderer.templateTrustMode;
+    };
     const messageDisplaySelectValue = <T extends string>(
       name: keyof Pick<LTrackerSettings["messageDisplay"], "attachmentMode" | "displayMode" | "placement" | "source" | "renderMode" | "controlDensity" | "controlPlacement">,
       fallback: T,
     ): T => {
       const input = tab.root.querySelector<HTMLSelectElement>(`[data-message-display-setting="${name}"]`);
+      return input ? input.value as T : fallback;
+    };
+    const expandedWidthNumberValue = (
+      name: keyof Pick<LTrackerSettings["expandedWidth"], "maxExpandedWidthPx" | "mobileHorizontalMarginPx" | "expandedContentMaxHeightVh">,
+    ): number => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-expanded-width-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.expandedWidth[name];
+    };
+    const expandedWidthSelectValue = <T extends string>(name: keyof Pick<LTrackerSettings["expandedWidth"], "expandedWidthMode">, fallback: T): T => {
+      const input = tab.root.querySelector<HTMLSelectElement>(`[data-expanded-width-setting="${name}"]`);
       return input ? input.value as T : fallback;
     };
     const connectionBooleanValue = (
@@ -1502,6 +1641,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         attachSnapshotToMessage: autoBooleanValue("attachSnapshotToMessage"),
         onlyWhenChatActive: autoBooleanValue("onlyWhenChatActive"),
       },
+      autoTiming: {
+        waitForAssistantFinalization: autoTimingBooleanValue("waitForAssistantFinalization"),
+        postCompletionSettleMs: autoTimingNumberValue("postCompletionSettleMs"),
+        stableContentCheckMs: autoTimingNumberValue("stableContentCheckMs"),
+        requireStableSwipeContent: autoTimingBooleanValue("requireStableSwipeContent"),
+        cancelPendingOnSwipeChange: autoTimingBooleanValue("cancelPendingOnSwipeChange"),
+      },
+      budget: {
+        mode: budgetSelectValue<LTrackerBudgetMode>("mode", state.settings.budget.mode),
+        ultraModeEnabled: budgetBooleanValue("ultraModeEnabled"),
+        recentMessageBudgetTokens: budgetNumberValue("recentMessageBudgetTokens"),
+        perMessageBudgetTokens: budgetNumberValue("perMessageBudgetTokens"),
+        trackerMemoryBudgetTokens: budgetNumberValue("trackerMemoryBudgetTokens"),
+        promptInjectionBudgetTokens: budgetNumberValue("promptInjectionBudgetTokens"),
+        maxTrackerOutputTokens: budgetNumberValue("maxTrackerOutputTokens"),
+        promptPreviewBudgetTokens: budgetNumberValue("promptPreviewBudgetTokens"),
+        renderedHtmlMaxChars: budgetNumberValue("renderedHtmlMaxChars"),
+        rawOutputMaxChars: budgetNumberValue("rawOutputMaxChars"),
+        presetImportMaxChars: budgetNumberValue("presetImportMaxChars"),
+      },
       memory: {
         enabled: memoryBooleanValue("enabled"),
         includeInTrackerGeneration: memoryBooleanValue("includeInTrackerGeneration"),
@@ -1531,8 +1690,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         enabled: rendererBooleanValue("enabled"),
         previewSource: rendererSelectValue("previewSource", state.settings.renderer.previewSource),
         missingValuePlaceholder: rendererTextValue("missingValuePlaceholder"),
-        maxRenderedChars: rendererNumberValue("maxRenderedChars"),
-        allowInlineStyles: rendererBooleanValue("allowInlineStyles"),
+        maxRenderedChars: budgetNumberValue("renderedHtmlMaxChars"),
+        allowInlineStyles: rendererTrustModeValue() !== "safe",
+        templateTrustMode: rendererTrustModeValue(),
       },
       messageDisplay: {
         enabled: messageDisplayBooleanValue("enabled"),
@@ -1543,7 +1703,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         placement: messageDisplaySelectValue("placement", state.settings.messageDisplay.placement),
         source: messageDisplaySelectValue("source", state.settings.messageDisplay.source),
         renderMode: messageDisplaySelectValue("renderMode", state.settings.messageDisplay.renderMode),
-        allowInlineStyles: messageDisplayBooleanValue("allowInlineStyles"),
+        allowInlineStyles: rendererTrustModeValue() !== "safe",
         deduplicateRenderWarnings: messageDisplayBooleanValue("deduplicateRenderWarnings"),
         showRenderWarningsInDiagnosticsOnly: messageDisplayBooleanValue("showRenderWarningsInDiagnosticsOnly"),
         showDebugSwipeKey: messageDisplayBooleanValue("showDebugSwipeKey"),
@@ -1564,6 +1724,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         showGenerationDuration: messageDisplayBooleanValue("showGenerationDuration"),
         minimizedMaxHeightPx: messageDisplayNumberValue("minimizedMaxHeightPx"),
         maxRenderedChars: messageDisplayNumberValue("maxRenderedChars"),
+      },
+      expandedWidth: {
+        expandedWidthMode: expandedWidthSelectValue<LTrackerExpandedWidthMode>("expandedWidthMode", state.settings.expandedWidth.expandedWidthMode),
+        maxExpandedWidthPx: expandedWidthNumberValue("maxExpandedWidthPx"),
+        mobileHorizontalMarginPx: expandedWidthNumberValue("mobileHorizontalMarginPx"),
+        expandedContentMaxHeightVh: expandedWidthNumberValue("expandedContentMaxHeightVh"),
       },
       connection: {
         mode: connectionSelectValue<LTrackerConnectionMode>("mode", state.settings.connection.mode),
@@ -1893,20 +2059,48 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   function renderMessageHistory(): string {
-    const entries = allRenderableEntries();
+    const filter = historyFilterText.trim().toLowerCase();
+    const currentMessageId = state.diagnostics.lastMessageControlMessageId
+      ?? state.diagnostics.latestAttachedMessageId
+      ?? state.diagnostics.lastSwipeDetectedMessageId;
+    const selectedSwipeKey = state.diagnostics.lastMessageControlSwipeKey
+      ?? state.diagnostics.lastSwipeKey;
+    const baseEntries = groupMessageTrackerHistory(allIndexedHistoryEntries(), historyShowDuplicates).entries;
+    const entries = baseEntries.filter((entry) => {
+      const rendered = entry.rendered;
+      if (historyErrorsOnly && rendered.errors.length === 0 && rendered.controlState.generationStatus !== "failed") return false;
+      if (historyCurrentMessageOnly && (!currentMessageId || entry.indexEntry.messageId !== currentMessageId)) return false;
+      if (historySelectedSwipeOnly && (!selectedSwipeKey || entry.indexEntry.swipeKey !== selectedSwipeKey)) return false;
+      if (historyCurrentPresetOnly && (rendered.presetId ?? entry.indexEntry.presetId) !== state.activePreset.id) return false;
+      if (!filter) return true;
+      const haystack = [
+        entry.indexEntry.messageId,
+        entry.indexEntry.swipeKey,
+        entry.indexEntry.presetName,
+        rendered.presetName,
+        rendered.snapshotCreatedAt,
+        rendered.textFallback,
+      ].filter((item): item is string => Boolean(item)).join(" ").toLowerCase();
+      return haystack.includes(filter);
+    });
     if (entries.length === 0) {
-      return `<div class="ltracker-render-placeholder">${escapeHtml("No message-attached tracker snapshots are indexed for this chat yet.")}</div>`;
+      const message = baseEntries.length > 0
+        ? "No message-attached tracker snapshots match the current filters."
+        : "No message-attached tracker snapshots are indexed for this chat yet.";
+      return `<div class="ltracker-render-placeholder">${escapeHtml(message)}</div>`;
     }
     return `
       <div class="ltracker-history-list">
         ${entries.map((entry) => {
           const rendered = entry.rendered;
           const open = state.settings.messageDisplay.collapsedByDefault ? "" : " open";
+          const duration = formatDurationMs(rendered.generationDurationMs);
           const title = [
             entry.indexEntry.messageIndex !== null ? `Message #${entry.indexEntry.messageIndex}` : "Message",
-            `Swipe ${entry.indexEntry.swipeKey}`,
-            rendered.presetName ? rendered.presetName : "No preset metadata",
-          ].join(" - ");
+            entry.indexEntry.swipeIndex !== null ? `Swipe ${entry.indexEntry.swipeIndex + 1}` : `Swipe ${entry.indexEntry.swipeKey}`,
+            rendered.presetName ? rendered.presetName : "Preset unknown",
+            duration,
+          ].filter((item): item is string => Boolean(item)).join(" - ");
           const meta = [
             `id ${entry.indexEntry.messageId}`,
             `swipe ${entry.indexEntry.swipeKey}`,
@@ -2099,8 +2293,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             <h2 class="ltracker-title">LTracker</h2>
             <div class="ltracker-version">Version ${escapeHtml(state.version)}</div>
           </div>
-          <span class="ltracker-status">${escapeHtml(labelForStatus(state.status))}</span>
+          <div class="ltracker-actions">
+            <span class="ltracker-status">${escapeHtml(labelForStatus(state.status))}</span>
+            <span class="ltracker-save-status" data-settings-save-status>${escapeHtml(settingsSaveStatusLabel())}</span>
+          </div>
         </header>
+
+        <nav class="ltracker-section-nav" aria-label="LTracker sections">
+          ${["Dashboard", "Generation", "Auto", "Connection", "Display", "Renderer", "Memory / Injection", "Presets", "History", "Diagnostics", "Advanced"].map((label) => {
+            const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+            return `<a class="ltracker-nav-chip" data-drawer-section="${escapeHtml(id)}" href="#ltracker-section-${id}">${escapeHtml(label)}</a>`;
+          }).join("")}
+        </nav>
 
         <div class="ltracker-actions">
           <button class="ltracker-button" type="button" data-action="generate" ${disabled(!canGenerate)}>
@@ -2114,16 +2318,43 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           </button>
         </div>
 
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Generator Settings</span>
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-dashboard">
+          <div class="ltracker-section-title">
+            <span class="ltracker-label">Dashboard</span>
+          </div>
+          <div class="ltracker-chip-row">
+            <span class="ltracker-chip">Auto ${escapeHtml(state.settings.auto.autoModeEnabled ? "on" : "off")}</span>
+            <span class="ltracker-chip">Memory ${escapeHtml(state.settings.memory.enabled ? "on" : "off")}</span>
+            <span class="ltracker-chip">Inject ${escapeHtml(state.settings.injection.enabled ? "on" : "off")}</span>
+            <span class="ltracker-chip">Display ${escapeHtml(diagnostics.messageDisplayMode ?? "drawer")}</span>
+            <span class="ltracker-chip">Attach ${escapeHtml(state.settings.messageDisplay.attachmentMode)}</span>
+          </div>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Active preset", activePreset.name)}
+            ${renderRow("Tracker connection", connectionSettings.selectedConnectionName ?? connectionSettings.mode)}
+            ${renderRow("Latest snapshot", state.snapshot?.createdAt ?? null)}
+            ${renderRow("Latest memory", diagnostics.lastMemorySourceSummary)}
+            ${renderRow("Auto finalization", diagnostics.lastAutoFinalizationState)}
+            ${renderRow("Waiting message", diagnostics.lastAutoWaitingMessageId)}
+          </div>
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="generate" ${disabled(!canGenerate)}>Generate Tracker</button>
+            <button class="ltracker-button" type="button" data-action="refresh">Refresh State</button>
+            <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>Render Latest Snapshot</button>
+            <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
+          </div>
+        </section>
+
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-generation">
+          <span class="ltracker-label">Generation</span>
           <div class="ltracker-settings">
             <label class="ltracker-field">
               Recent message limit
               <input type="number" min="1" max="200" step="1" data-setting="recentMessageLimit" value="${escapeHtml(String(state.settings.recentMessageLimit))}">
             </label>
             <label class="ltracker-field">
-              Max chars per message
-              <input type="number" min="500" max="50000" step="100" data-setting="maxMessageChars" value="${escapeHtml(String(state.settings.maxMessageChars))}">
+              Per-message chars
+              <input type="number" min="500" max="512000" step="100" data-setting="maxMessageChars" value="${escapeHtml(String(state.settings.maxMessageChars))}">
             </label>
             <label class="ltracker-field">
               Timeout ms
@@ -2137,12 +2368,55 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               <input type="checkbox" data-setting="savePromptPreview"${checked(state.settings.savePromptPreview)}>
               Save prompt preview
             </label>
+            <label class="ltracker-field">
+              Budget mode
+              <select data-budget-setting="mode">
+                <option value="estimated_tokens"${selected(state.settings.budget.mode === "estimated_tokens")}>Estimated tokens</option>
+                <option value="characters"${selected(state.settings.budget.mode === "characters")}>Characters</option>
+              </select>
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-budget-setting="ultraModeEnabled"${checked(state.settings.budget.ultraModeEnabled)}>
+              Ultra Tracker Mode
+            </label>
+            <label class="ltracker-field">
+              Recent budget tokens
+              <input type="number" min="256" max="128000" step="256" data-budget-setting="recentMessageBudgetTokens" value="${escapeHtml(String(state.settings.budget.recentMessageBudgetTokens))}">
+              <span class="ltracker-key">${escapeHtml(budgetHint(state.settings.budget.recentMessageBudgetTokens))}</span>
+            </label>
+            <label class="ltracker-field">
+              Per-message budget tokens
+              <input type="number" min="256" max="128000" step="256" data-budget-setting="perMessageBudgetTokens" value="${escapeHtml(String(state.settings.budget.perMessageBudgetTokens))}">
+              <span class="ltracker-key">${escapeHtml(budgetHint(state.settings.budget.perMessageBudgetTokens))}</span>
+            </label>
+            <label class="ltracker-field">
+              Max tracker output tokens
+              <input type="number" min="256" max="64000" step="256" data-budget-setting="maxTrackerOutputTokens" value="${escapeHtml(String(state.settings.budget.maxTrackerOutputTokens))}">
+            </label>
+            <label class="ltracker-field">
+              Prompt preview tokens
+              <input type="number" min="256" max="128000" step="256" data-budget-setting="promptPreviewBudgetTokens" value="${escapeHtml(String(state.settings.budget.promptPreviewBudgetTokens))}">
+            </label>
+            <label class="ltracker-field">
+              Raw output chars
+              <input type="number" min="1000" max="2000000" step="1000" data-budget-setting="rawOutputMaxChars" value="${escapeHtml(String(state.settings.budget.rawOutputMaxChars))}">
+              <span class="ltracker-key">${escapeHtml(charLimitHint(state.settings.budget.rawOutputMaxChars))}</span>
+            </label>
+          </div>
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
+          </div>
+        </section>
+
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-auto">
+          <span class="ltracker-label">Auto</span>
+          <div class="ltracker-settings">
             <label class="ltracker-check">
               <input type="checkbox" data-setting="autoModeEnabled"${checked(state.settings.auto.autoModeEnabled)}>
               Auto mode
             </label>
             <label class="ltracker-field">
-              Auto debounce ms
+              Wait after message finishes
               <input type="number" min="250" max="30000" step="250" data-setting="autoDebounceMs" value="${escapeHtml(String(state.settings.auto.autoDebounceMs))}">
             </label>
             <label class="ltracker-field">
@@ -2165,14 +2439,37 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               <input type="checkbox" data-setting="onlyWhenChatActive"${checked(state.settings.auto.onlyWhenChatActive)}>
               Active chat only
             </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-auto-timing-setting="waitForAssistantFinalization"${checked(state.settings.autoTiming.waitForAssistantFinalization)}>
+              Wait for assistant finalization
+            </label>
+            <label class="ltracker-field">
+              Settle ms
+              <input type="number" min="0" max="10000" step="50" data-auto-timing-setting="postCompletionSettleMs" value="${escapeHtml(String(state.settings.autoTiming.postCompletionSettleMs))}">
+            </label>
+            <label class="ltracker-field">
+              Stable check ms
+              <input type="number" min="0" max="5000" step="50" data-auto-timing-setting="stableContentCheckMs" value="${escapeHtml(String(state.settings.autoTiming.stableContentCheckMs))}">
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-auto-timing-setting="requireStableSwipeContent"${checked(state.settings.autoTiming.requireStableSwipeContent)}>
+              Require stable swipe content
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-auto-timing-setting="cancelPendingOnSwipeChange"${checked(state.settings.autoTiming.cancelPendingOnSwipeChange)}>
+              Cancel pending on swipe change
+            </label>
           </div>
-          <div class="ltracker-actions" style="margin-top: 10px;">
-            <span class="ltracker-save-status" data-settings-save-status>${escapeHtml(settingsSaveStatusLabel())}</span>
-            <button class="ltracker-button" type="button" data-action="reset-settings">Reset Settings</button>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Finalization state", diagnostics.lastAutoFinalizationState)}
+            ${renderRow("Waiting message", diagnostics.lastAutoWaitingMessageId)}
+            ${renderRow("Waiting swipe", diagnostics.lastAutoWaitingSwipeKey)}
+            ${renderRow("Stable passed", diagnostics.lastAutoStableCheckPassed === null ? null : diagnostics.lastAutoStableCheckPassed ? "yes" : "no")}
+            ${renderRow("Pending finalizations", diagnostics.pendingAutoFinalizationCount)}
           </div>
         </section>
 
-        <section class="ltracker-panel">
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-connection">
           <span class="ltracker-label">Tracker Connection</span>
           <div class="ltracker-settings">
             <label class="ltracker-field">
@@ -2235,7 +2532,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             </label>
             <label class="ltracker-field">
               Max tokens
-              <input type="number" min="256" max="32000" step="256" data-connection-parameter="max_tokens" value="${escapeHtml(numberInputValue(connectionSettings.parameters.max_tokens))}">
+              <input type="number" min="256" max="64000" step="256" data-connection-parameter="max_tokens" value="${escapeHtml(numberInputValue(connectionSettings.parameters.max_tokens))}">
             </label>
             <label class="ltracker-field">
               Top p
@@ -2270,7 +2567,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           </div>
         </section>
 
-        <section class="ltracker-panel">
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-memory-injection">
           <span class="ltracker-label">Tracker Memory</span>
           <div class="ltracker-settings">
             <label class="ltracker-check">
@@ -2290,8 +2587,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               <input type="number" min="0" max="10" step="1" data-memory-setting="fullSnapshotCount" value="${escapeHtml(String(state.settings.memory.fullSnapshotCount))}">
             </label>
             <label class="ltracker-field">
-              Max memory chars
-              <input type="number" min="1000" max="50000" step="500" data-memory-setting="maxMemoryChars" value="${escapeHtml(String(state.settings.memory.maxMemoryChars))}">
+              Memory budget tokens
+              <input type="number" min="256" max="128000" step="256" data-budget-setting="trackerMemoryBudgetTokens" value="${escapeHtml(String(state.settings.budget.trackerMemoryBudgetTokens))}">
+              <span class="ltracker-key">${escapeHtml(budgetHint(state.settings.budget.trackerMemoryBudgetTokens))}</span>
             </label>
             <label class="ltracker-field">
               Memory source
@@ -2367,8 +2665,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               </select>
             </label>
             <label class="ltracker-field">
-              Max injected chars
-              <input type="number" min="1000" max="50000" step="500" data-injection-setting="maxInjectedChars" value="${escapeHtml(String(state.settings.injection.maxInjectedChars))}">
+              Injection budget tokens
+              <input type="number" min="256" max="128000" step="256" data-budget-setting="promptInjectionBudgetTokens" value="${escapeHtml(String(state.settings.budget.promptInjectionBudgetTokens))}">
+              <span class="ltracker-key">${escapeHtml(budgetHint(state.settings.budget.promptInjectionBudgetTokens))}</span>
             </label>
             <label class="ltracker-field">
               Role fallback
@@ -2405,8 +2704,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           </details>
         </section>
 
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Rendered Tracker Preview</span>
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-renderer">
+          <span class="ltracker-label">Renderer</span>
           <div class="ltracker-settings">
             <label class="ltracker-check">
               <input type="checkbox" data-renderer-setting="enabled"${checked(state.settings.renderer.enabled)}>
@@ -2424,12 +2723,17 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               <input type="text" data-renderer-setting="missingValuePlaceholder" value="${escapeHtml(state.settings.renderer.missingValuePlaceholder)}">
             </label>
             <label class="ltracker-field">
-              Max rendered chars
-              <input type="number" min="1000" max="200000" step="1000" data-renderer-setting="maxRenderedChars" value="${escapeHtml(String(state.settings.renderer.maxRenderedChars))}">
+              Template mode
+              <select data-renderer-setting="templateTrustMode">
+                <option value="trusted"${selected(state.settings.renderer.templateTrustMode === "trusted")}>Trusted</option>
+                <option value="safe"${selected(state.settings.renderer.templateTrustMode === "safe")}>Safe</option>
+                <option value="dev"${selected(state.settings.renderer.templateTrustMode === "dev")}>Dev future</option>
+              </select>
             </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-renderer-setting="allowInlineStyles"${checked(state.settings.renderer.allowInlineStyles)}>
-              Allow sanitized inline styles
+            <label class="ltracker-field">
+              Rendered HTML chars
+              <input type="number" min="1000" max="2000000" step="1000" data-budget-setting="renderedHtmlMaxChars" value="${escapeHtml(String(state.settings.budget.renderedHtmlMaxChars))}">
+              <span class="ltracker-key">${escapeHtml(charLimitHint(state.settings.budget.renderedHtmlMaxChars))}</span>
             </label>
           </div>
           <div class="ltracker-grid ltracker-details">
@@ -2470,8 +2774,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           </details>
         </section>
 
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Message Display</span>
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-display">
+          <span class="ltracker-label">Display</span>
           <div class="ltracker-settings">
             <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="enabled"${checked(state.settings.messageDisplay.enabled)}>
@@ -2479,11 +2783,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="useDomInjection"${checked(state.settings.messageDisplay.useDomInjection)}>
-              DOM injection
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="fallbackToIframeWidget"${checked(state.settings.messageDisplay.fallbackToIframeWidget)}>
-              Iframe fallback
+              DOM injection primary
             </label>
             <label class="ltracker-field">
               Attachment mode
@@ -2524,20 +2824,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               </select>
             </label>
             <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="allowInlineStyles"${checked(state.settings.messageDisplay.allowInlineStyles)}>
-              Allow sanitized inline styles
-            </label>
-            <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="deduplicateRenderWarnings"${checked(state.settings.messageDisplay.deduplicateRenderWarnings)}>
               Deduplicate render warnings
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="showRenderWarningsInDiagnosticsOnly"${checked(state.settings.messageDisplay.showRenderWarningsInDiagnosticsOnly)}>
               Keep warning details in diagnostics
-            </label>
-            <label class="ltracker-check">
-              <input type="checkbox" data-message-display-setting="showDebugSwipeKey"${checked(state.settings.messageDisplay.showDebugSwipeKey)}>
-              Show debug swipe key
             </label>
             <label class="ltracker-check">
               <input type="checkbox" data-message-display-setting="showGenerateButtonForMissingTracker"${checked(state.settings.messageDisplay.showGenerateButtonForMissingTracker)}>
@@ -2606,24 +2898,79 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               Generation duration
             </label>
             <label class="ltracker-field">
-              Fallback minimized height
+              Expanded width mode
+              <select data-expanded-width-setting="expandedWidthMode">
+                <option value="contained"${selected(state.settings.expandedWidth.expandedWidthMode === "contained")}>Contained</option>
+                <option value="wide"${selected(state.settings.expandedWidth.expandedWidthMode === "wide")}>Wide</option>
+                <option value="full_mobile"${selected(state.settings.expandedWidth.expandedWidthMode === "full_mobile")}>Full mobile</option>
+                <option value="popover"${selected(state.settings.expandedWidth.expandedWidthMode === "popover")}>Popover</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Max expanded width
+              <input type="number" min="320" max="1800" step="20" data-expanded-width-setting="maxExpandedWidthPx" value="${escapeHtml(String(state.settings.expandedWidth.maxExpandedWidthPx))}">
+            </label>
+            <label class="ltracker-field">
+              Mobile margin
+              <input type="number" min="0" max="32" step="1" data-expanded-width-setting="mobileHorizontalMarginPx" value="${escapeHtml(String(state.settings.expandedWidth.mobileHorizontalMarginPx))}">
+            </label>
+            <label class="ltracker-field">
+              Expanded max height
+              <input type="number" min="30" max="95" step="1" data-expanded-width-setting="expandedContentMaxHeightVh" value="${escapeHtml(String(state.settings.expandedWidth.expandedContentMaxHeightVh))}">
+            </label>
+            <label class="ltracker-field">
+              Legacy minimized height
               <input type="number" min="0" max="400" step="10" data-message-display-setting="minimizedMaxHeightPx" value="${escapeHtml(String(state.settings.messageDisplay.minimizedMaxHeightPx))}">
             </label>
             <label class="ltracker-field">
-              Max rendered chars
-              <input type="number" min="1000" max="200000" step="1000" data-message-display-setting="maxRenderedChars" value="${escapeHtml(String(state.settings.messageDisplay.maxRenderedChars))}">
+              Message render chars
+              <input type="number" min="1000" max="2000000" step="1000" data-message-display-setting="maxRenderedChars" value="${escapeHtml(String(state.settings.messageDisplay.maxRenderedChars))}">
             </label>
           </div>
           ${placementWarning}
         </section>
 
-        <section class="ltracker-panel">
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-history">
           <span class="ltracker-label">Message Tracker History</span>
+          <div class="ltracker-settings" style="margin-bottom: 10px;">
+            <label class="ltracker-field ltracker-field-wide">
+              Search/filter
+              <input type="search" data-history-filter="text" value="${escapeHtml(historyFilterText)}">
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-history-filter="showDuplicates"${checked(historyShowDuplicates)}>
+              Show duplicates
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-history-filter="currentMessageOnly"${checked(historyCurrentMessageOnly)}>
+              Current message only
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-history-filter="selectedSwipeOnly"${checked(historySelectedSwipeOnly)}>
+              Selected swipe only
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-history-filter="currentPresetOnly"${checked(historyCurrentPresetOnly)}>
+              Current preset only
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-history-filter="errorsOnly"${checked(historyErrorsOnly)}>
+              Errors only
+            </label>
+          </div>
+          <div class="ltracker-actions" style="margin-bottom: 10px;">
+            <button class="ltracker-button" type="button" data-action="refresh">Refresh History</button>
+            <button class="ltracker-button" type="button" data-action="cleanup-duplicates" ${disabled(diagnostics.lastHistoryDuplicateCount <= 0)}>Clear Duplicate Index Entries</button>
+          </div>
+          <div class="ltracker-chip-row" style="margin-bottom: 10px;">
+            <span class="ltracker-chip">Groups ${escapeHtml(String(diagnostics.lastHistoryGroupedCount))}</span>
+            <span class="ltracker-chip">Duplicates ${escapeHtml(String(diagnostics.lastHistoryDuplicateCount))}</span>
+          </div>
           ${messageHistoryHtml}
         </section>
 
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Schema Presets</span>
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-presets">
+          <span class="ltracker-label">Presets</span>
           <div class="ltracker-settings">
             <label class="ltracker-field">
               Selected preset
@@ -2688,7 +3035,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           </div>
         </section>
 
-        <section class="ltracker-panel">
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-diagnostics">
           <span class="ltracker-label">Diagnostics</span>
           <div class="ltracker-grid">
             ${renderRow("Extension version", state.version)}
@@ -2825,6 +3172,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Last auto source message", diagnostics.lastAutoSourceMessageId)}
             ${renderRow("Last auto source index", diagnostics.lastAutoSourceMessageIndex)}
             ${renderRow("Last auto generation id", diagnostics.lastAutoGenerationId)}
+            ${renderRow("Auto finalization state", diagnostics.lastAutoFinalizationState)}
+            ${renderRow("Auto waiting message", diagnostics.lastAutoWaitingMessageId)}
+            ${renderRow("Auto waiting swipe", diagnostics.lastAutoWaitingSwipeKey)}
+            ${renderRow("Auto finalized at", diagnostics.lastAutoFinalizedAt)}
+            ${renderRow("Auto stable check at", diagnostics.lastAutoStableCheckAt)}
+            ${renderRow("Auto stable passed", diagnostics.lastAutoStableCheckPassed === null ? null : diagnostics.lastAutoStableCheckPassed ? "yes" : "no")}
+            ${renderRow("Auto stable hash", diagnostics.lastAutoContentStableHash)}
+            ${renderRow("Auto finalization skipped", diagnostics.lastAutoFinalizationSkippedReason)}
+            ${renderRow("Pending auto finalizations", diagnostics.pendingAutoFinalizationCount)}
+            ${renderRow("Swipe change cancelled pending", diagnostics.lastSwipeChangeCancelledPendingJob ? "yes" : "no")}
+            ${renderRow("History grouped count", diagnostics.lastHistoryGroupedCount)}
+            ${renderRow("History duplicate count", diagnostics.lastHistoryDuplicateCount)}
+            ${renderRow("History cleanup at", diagnostics.lastHistoryCleanupAt)}
+            ${renderRow("Template trust mode", diagnostics.templateTrustMode)}
+            ${renderRow("Ultra mode", diagnostics.ultraModeEnabled ? "yes" : "no")}
+            ${renderRow("Estimated prompt tokens", diagnostics.estimatedPromptTokensLastRun)}
+            ${renderRow("Estimated memory tokens", diagnostics.estimatedMemoryTokensLastRun)}
+            ${renderRow("Expanded width mode", diagnostics.expandedWidthModeResolved)}
+            ${renderRow("Expanded width px", diagnostics.lastExpandedTrackerWidthPx)}
+            ${renderRow("Iframe fallback visible in main UI", diagnostics.iframeFallbackVisibleInMainUi ? "yes" : "no")}
             ${renderRow("Latest attached message", diagnostics.latestAttachedMessageId)}
             ${renderRow("Latest attached index", diagnostics.latestAttachedMessageIndex)}
             ${renderRow("Latest attached at", diagnostics.latestAttachedSnapshotAt)}
@@ -2856,6 +3223,33 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           <div class="ltracker-details">
             <span class="ltracker-label">Last parse/generation/storage error</span>
             <pre class="ltracker-text ltracker-error">${escapeHtml(renderError(error))}</pre>
+          </div>
+        </section>
+
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-advanced">
+          <span class="ltracker-label">Advanced</span>
+          <div class="ltracker-settings">
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="fallbackToIframeWidget"${checked(state.settings.messageDisplay.fallbackToIframeWidget)}>
+              Iframe fallback / legacy backup
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-renderer-setting="allowInlineStyles"${checked(state.settings.renderer.allowInlineStyles)} disabled>
+              Trusted inline styles active
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-message-display-setting="showDebugSwipeKey"${checked(state.settings.messageDisplay.showDebugSwipeKey)}>
+              Debug swipe key
+            </label>
+            <label class="ltracker-field">
+              Dev Mode Templates
+              <input type="text" value="Future" disabled>
+            </label>
+          </div>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Context handler", diagnostics.contextHandlerDisabledReason)}
+            ${renderRow("Message widget fallback", diagnostics.messageWidgetPlacementReason)}
+            ${renderRow("DOM injection error", diagnostics.lastDomInjectionError)}
           </div>
         </section>
 
@@ -2892,6 +3286,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   const onClick = (event: Event): void => {
+    const sectionTarget = event.target instanceof HTMLElement
+      ? event.target.closest<HTMLAnchorElement>("[data-drawer-section]")
+      : null;
+    if (sectionTarget?.dataset.drawerSection) {
+      localDiagnostics({ drawerActiveSection: sectionTarget.dataset.drawerSection });
+    }
     const target = event.target instanceof HTMLElement
       ? event.target.closest<HTMLElement>("[data-action]")
       : null;
@@ -2899,6 +3299,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const historyEntry = findHistoryEntry(target?.dataset.messageId, target?.dataset.swipeKey ?? null);
     if (action === "generate") generateTracker();
     if (action === "refresh") requestState();
+    if (action === "cleanup-duplicates") {
+      send({
+        type: "cleanup_duplicate_history",
+        chatId: activeChatId(),
+        requestId: requestId("history-cleanup"),
+      });
+    }
     if (action === "refresh-connections") refreshConnections();
     if (action === "test-connection") testTrackerConnection();
     if (action === "cancel-connection-test") cancelConnectionTest();
@@ -2958,7 +3365,24 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   tab.root.addEventListener("click", onClick);
   cleanups.push(() => tab.root.removeEventListener("click", onClick));
 
+  const updateHistoryFilter = (input: HTMLInputElement): boolean => {
+    const filter = input.dataset.historyFilter;
+    if (!filter) return false;
+    if (filter === "text") historyFilterText = input.value;
+    if (filter === "showDuplicates") historyShowDuplicates = input.checked;
+    if (filter === "currentMessageOnly") historyCurrentMessageOnly = input.checked;
+    if (filter === "selectedSwipeOnly") historySelectedSwipeOnly = input.checked;
+    if (filter === "currentPresetOnly") historyCurrentPresetOnly = input.checked;
+    if (filter === "errorsOnly") historyErrorsOnly = input.checked;
+    render();
+    return true;
+  };
+
   const onInput = (event: Event): void => {
+    const historyInput = event.target instanceof HTMLElement
+      ? event.target.closest<HTMLInputElement>("[data-history-filter]")
+      : null;
+    if (historyInput && updateHistoryFilter(historyInput)) return;
     if (isSettingsControl(event.target)) scheduleSettingsAutosave();
   };
 
@@ -2966,6 +3390,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   cleanups.push(() => tab.root.removeEventListener("input", onInput));
 
   const onChange = (event: Event): void => {
+    const historyInput = event.target instanceof HTMLElement
+      ? event.target.closest<HTMLInputElement>("[data-history-filter]")
+      : null;
+    if (historyInput && updateHistoryFilter(historyInput)) return;
     if (isSettingsControl(event.target)) scheduleSettingsAutosave();
     const target = event.target instanceof HTMLSelectElement
       ? event.target.closest<HTMLSelectElement>("[data-preset-select]")

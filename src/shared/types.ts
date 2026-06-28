@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.14";
+export const EXTENSION_VERSION = "0.15";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -33,6 +33,9 @@ export type LTrackerMessageDisplayMode = "dom_injection" | "message_widget" | "d
 export type LTrackerMessageWidgetPlacementResolved = "top" | "bottom" | "host_default" | "unsupported";
 export type LTrackerMessageDisplayRenderer = "dom_injection" | "iframe_widget" | "drawer_history";
 export type LTrackerMountPointStrategy = "official_message_body" | "official_message_element" | "bubble_adapter" | "widget_fallback" | "drawer_only";
+export type TemplateTrustMode = "safe" | "trusted" | "dev";
+export type LTrackerBudgetMode = "characters" | "estimated_tokens";
+export type LTrackerExpandedWidthMode = "contained" | "wide" | "full_mobile" | "popover";
 export type SwipeKeySource = "swipe_id" | "swipe_index" | "content_hash" | "unknown";
 export type TrackerPresetOrigin = "built_in" | "user_imported" | "user_created";
 export type LTrackerErrorStage =
@@ -220,6 +223,28 @@ export interface LTrackerAutoSettings {
   onlyWhenChatActive: boolean;
 }
 
+export interface LTrackerAutoTimingSettings {
+  waitForAssistantFinalization: boolean;
+  postCompletionSettleMs: number;
+  stableContentCheckMs: number;
+  requireStableSwipeContent: boolean;
+  cancelPendingOnSwipeChange: boolean;
+}
+
+export interface LTrackerBudgetSettings {
+  mode: LTrackerBudgetMode;
+  ultraModeEnabled: boolean;
+  recentMessageBudgetTokens: number;
+  perMessageBudgetTokens: number;
+  trackerMemoryBudgetTokens: number;
+  promptInjectionBudgetTokens: number;
+  maxTrackerOutputTokens: number;
+  promptPreviewBudgetTokens: number;
+  renderedHtmlMaxChars: number;
+  rawOutputMaxChars: number;
+  presetImportMaxChars: number;
+}
+
 export interface LTrackerMemorySettings {
   enabled: boolean;
   includeInTrackerGeneration: boolean;
@@ -253,6 +278,7 @@ export interface LTrackerRendererSettings {
   missingValuePlaceholder: string;
   maxRenderedChars: number;
   allowInlineStyles: boolean;
+  templateTrustMode: TemplateTrustMode;
 }
 
 export interface LTrackerMessageDisplaySettings {
@@ -285,6 +311,13 @@ export interface LTrackerMessageDisplaySettings {
   showGenerationDuration: boolean;
   minimizedMaxHeightPx: number;
   maxRenderedChars: number;
+}
+
+export interface LTrackerExpandedWidthSettings {
+  expandedWidthMode: LTrackerExpandedWidthMode;
+  maxExpandedWidthPx: number;
+  mobileHorizontalMarginPx: number;
+  expandedContentMaxHeightVh: number;
 }
 
 export interface LTrackerConnectionParameters {
@@ -331,10 +364,13 @@ export interface LTrackerSettings {
   saveRawOutput: boolean;
   savePromptPreview: boolean;
   auto: LTrackerAutoSettings;
+  autoTiming: LTrackerAutoTimingSettings;
+  budget: LTrackerBudgetSettings;
   memory: LTrackerMemorySettings;
   injection: LTrackerInjectionSettings;
   renderer: LTrackerRendererSettings;
   messageDisplay: LTrackerMessageDisplaySettings;
+  expandedWidth: LTrackerExpandedWidthSettings;
   connection: LTrackerConnectionSettings;
 }
 
@@ -390,6 +426,16 @@ export interface LTrackerDiagnostics {
   lastAutoSourceMessageId: string | null;
   lastAutoSourceMessageIndex: number | null;
   lastAutoGenerationId: string | null;
+  lastAutoFinalizationState: string | null;
+  lastAutoWaitingMessageId: string | null;
+  lastAutoWaitingSwipeKey: string | null;
+  lastAutoFinalizedAt: string | null;
+  lastAutoStableCheckAt: string | null;
+  lastAutoStableCheckPassed: boolean | null;
+  lastAutoContentStableHash: string | null;
+  lastAutoFinalizationSkippedReason: string | null;
+  pendingAutoFinalizationCount: number;
+  lastSwipeChangeCancelledPendingJob: boolean;
   latestAttachedMessageId: string | null;
   latestAttachedMessageIndex: number | null;
   latestAttachedSnapshotAt: string | null;
@@ -512,6 +558,18 @@ export interface LTrackerDiagnostics {
   lastConnectionTestOutputPreview: string | null;
   lastConnectionTestFinishReason: string | null;
   lastConnectionTestUsage: Record<string, unknown> | null;
+  drawerActiveSection: string | null;
+  lastDrawerRefreshAt: string | null;
+  lastHistoryGroupedCount: number;
+  lastHistoryDuplicateCount: number;
+  lastHistoryCleanupAt: string | null;
+  expandedWidthModeResolved: string | null;
+  lastExpandedTrackerWidthPx: number | null;
+  templateTrustMode: TemplateTrustMode;
+  ultraModeEnabled: boolean;
+  estimatedPromptTokensLastRun: number | null;
+  estimatedMemoryTokensLastRun: number | null;
+  iframeFallbackVisibleInMainUi: boolean;
 }
 
 export interface PermissionState {
@@ -629,6 +687,7 @@ export type FrontendMessage =
   | { type: "cancel_tracker_generation"; chatId: string | null; jobId?: string | null; messageId?: string | null; swipeKey?: string | null; requestId: string }
   | { type: "delete_message_tracker"; chatId: string | null; messageId: string; swipeKey: string; requestId: string }
   | { type: "save_edited_message_tracker"; chatId: string | null; messageId: string; swipeKey: string; jsonText: string; requestId: string }
+  | { type: "cleanup_duplicate_history"; chatId: string | null; requestId: string }
   | { type: "embedded_tracker_tag_intercepted"; chatId: string | null; messageId: string | null; swipeKey: string | null; jsonText: string; isStreaming?: boolean; requestId: string };
 
 export type BackendMessage =
