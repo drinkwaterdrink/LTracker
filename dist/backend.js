@@ -228,7 +228,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.17";
+var EXTENSION_VERSION = "0.18";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1069,6 +1069,9 @@ function iconSvg(kind) {
   if (kind === "delete") {
     return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2 .2 7h1.6l-.2-7H10Zm3.4 0-.2 7h1.6l.2-7h-1.6Z"/></svg>`;
   }
+  if (kind === "reader") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2Zm0 16H5V5h14v14ZM17 7h-4v2h4V7Zm0 4h-8v2h8v-2Zm0 4H7v2h10v-2Z"/></svg>`;
+  }
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17.7 6.3A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.67 4.22 1.76L13 11h8V3l-3.3 3.3Z"/></svg>`;
 }
 function domButton(action, label, icon, enabled, extraClass = "") {
@@ -1096,7 +1099,7 @@ function buildDomHtml(rendered, settings) {
   const placementClass = settings.controlPlacement === "inside_tracker_header" ? " ltd-inside-header" : " ltd-message-header";
   const hasTrackerClass = rendered.controlState.hasTracker ? " ltd-has-tracker" : " ltd-missing-tracker";
   const expandedActions = settings.showExpandedHeaderActions || !rendered.controlState.hasTracker;
-  const bodyMarkup = rendered.controlState.hasTracker ? `<div class="ltd-body">${body}</div>` : "";
+  const bodyMarkup = rendered.controlState.hasTracker ? `<div class="ltd-body" style="overflow-x: auto; max-width: 100%;">${body}</div>` : "";
   const footerActions = settings.showBottomActionsInInlineTracker && rendered.controlState.hasTracker ? `<div class="ltd-footer-actions" style="display: flex; gap: 4px; justify-content: flex-end; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 5px 7px;">
         ${domButton("toggle_regenerate", actionLabel, actionKind, settings.showWidgetRegenerateButton, rendered.isRegenerating ? " ltd-spinning" : "")}
         ${domButton("edit", "View or edit tracker", "edit", settings.showEditButton)}
@@ -1104,6 +1107,7 @@ function buildDomHtml(rendered, settings) {
       </div>` : "";
   const titleIcon = rendered.isRegenerating ? `<span class="ltd-control-icon ltd-spinning">${iconSvg("refresh")}</span>` : rendered.controlState.error ? `<span class="ltd-control-icon ltd-warning">${iconSvg("warning")}</span>` : `<span class="ltd-control-icon">${rendered.controlState.hasTracker ? iconSvg("chevron") : iconSvg("generate")}</span>`;
   const title = rendered.controlState.hasTracker ? "L" : "";
+  const readerButton = rendered.controlState.hasTracker ? domButton("reader", "Open fullscreen reader", "reader", true) : "";
   return `
 <section class="ltracker-dom-tracker${compactClass}${densityClass}${placementClass}${hasTrackerClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}" data-ltracker-control-state="${escapeHtml(rendered.controlState.generationStatus)}">
   <details${open}>
@@ -1118,6 +1122,7 @@ function buildDomHtml(rendered, settings) {
           ${editedMarkup}
         </span>
         <span class="ltd-actions">
+          ${readerButton}
           ${domButton(primaryAction, actionLabel, actionKind, settings.showWidgetRegenerateButton || !rendered.controlState.hasTracker, rendered.isRegenerating ? " ltd-spinning" : "")}
           ${rendered.controlState.hasTracker && expandedActions ? domButton("edit", "View or edit tracker", "edit", settings.showEditButton) : ""}
           ${rendered.controlState.hasTracker && expandedActions ? domButton("delete", "Delete tracker", "delete", settings.showDeleteButton) : ""}
@@ -2530,7 +2535,7 @@ function buildTrackerGenerationRequest(input) {
       input.signal,
       parametersUsed,
       reasoningOverrideUsed,
-      "Selected connection mode requires a selected connection."
+      "No tracker profile selected. LTracker will use the active roleplay connection until one is selected."
     );
   }
   if (!input.selectedConnection) {
@@ -2539,7 +2544,7 @@ function buildTrackerGenerationRequest(input) {
       input.signal,
       parametersUsed,
       reasoningOverrideUsed,
-      "Selected tracker connection is missing or unavailable."
+      "Selected tracker connection profile is missing or unavailable."
     );
   }
   const request = {
@@ -2583,9 +2588,9 @@ var SETTINGS_LIMITS = {
   renderedHtmlMaxChars: { min: 1e3, max: 2e6 },
   rawOutputMaxChars: { min: 1e3, max: 2e6 },
   presetImportMaxChars: { min: 1e4, max: 1e8 },
-  maxExpandedWidthPx: { min: 320, max: 1800, default: 900 },
+  maxExpandedWidthPx: { min: 320, max: 1800, default: 1100 },
   mobileHorizontalMarginPx: { min: 0, max: 32, default: 6 },
-  expandedContentMaxHeightVh: { min: 30, max: 95, default: 75 }
+  expandedContentMaxHeightVh: { min: 30, max: 95, default: 80 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -2683,10 +2688,15 @@ var DEFAULT_SETTINGS = {
     expandedWidthMode: "wide",
     maxExpandedWidthPx: SETTINGS_LIMITS.maxExpandedWidthPx.default,
     mobileHorizontalMarginPx: SETTINGS_LIMITS.mobileHorizontalMarginPx.default,
-    expandedContentMaxHeightVh: SETTINGS_LIMITS.expandedContentMaxHeightVh.default
+    expandedContentMaxHeightVh: SETTINGS_LIMITS.expandedContentMaxHeightVh.default,
+    preferFullscreenOnMobile: true,
+    fullscreenBreakpointPx: 640,
+    popoverBackdrop: true,
+    closeOnBackdropClick: true,
+    closeOnEscape: true
   },
   connection: {
-    mode: "active_quiet",
+    mode: "selected_connection_raw",
     selectedConnectionId: null,
     selectedConnectionName: null,
     refreshConnectionsOnDrawerOpen: true,
@@ -3032,7 +3042,17 @@ function repairSettings(value) {
         SETTINGS_LIMITS.expandedContentMaxHeightVh.default,
         SETTINGS_LIMITS.expandedContentMaxHeightVh.min,
         SETTINGS_LIMITS.expandedContentMaxHeightVh.max
-      )
+      ),
+      preferFullscreenOnMobile: typeof expandedWidthSource.preferFullscreenOnMobile === "boolean" ? expandedWidthSource.preferFullscreenOnMobile : DEFAULT_SETTINGS.expandedWidth.preferFullscreenOnMobile,
+      fullscreenBreakpointPx: clampNumber(
+        expandedWidthSource.fullscreenBreakpointPx,
+        DEFAULT_SETTINGS.expandedWidth.fullscreenBreakpointPx,
+        320,
+        1800
+      ),
+      popoverBackdrop: typeof expandedWidthSource.popoverBackdrop === "boolean" ? expandedWidthSource.popoverBackdrop : DEFAULT_SETTINGS.expandedWidth.popoverBackdrop,
+      closeOnBackdropClick: typeof expandedWidthSource.closeOnBackdropClick === "boolean" ? expandedWidthSource.closeOnBackdropClick : DEFAULT_SETTINGS.expandedWidth.closeOnBackdropClick,
+      closeOnEscape: typeof expandedWidthSource.closeOnEscape === "boolean" ? expandedWidthSource.closeOnEscape : DEFAULT_SETTINGS.expandedWidth.closeOnEscape
     },
     connection: {
       mode: connectionMode(connectionSource.mode),
@@ -4018,6 +4038,11 @@ function defaultDiagnostics(chatId) {
     selectedConnectionName: DEFAULT_SETTINGS.connection.selectedConnectionName,
     selectedConnectionAvailable: false,
     connectionListCount: 0,
+    connectionProfileSelected: false,
+    effectiveTrackerConnectionMode: null,
+    effectiveTrackerConnectionReason: null,
+    lastSelectedConnectionFallbackReason: null,
+    lastTrackerProfileMissingAt: null,
     lastConnectionRefreshAt: null,
     lastConnectionRefreshError: null,
     lastGenerationConnectionModeUsed: null,
@@ -4040,6 +4065,20 @@ function defaultDiagnostics(chatId) {
     lastHistoryCleanupAt: null,
     expandedWidthModeResolved: null,
     lastExpandedTrackerWidthPx: null,
+    lastDisplaySurface: null,
+    lastPopoverOpenedAt: null,
+    lastPopoverMessageId: null,
+    lastPopoverSwipeKey: null,
+    lastPopoverWidthPx: null,
+    lastPopoverHeightPx: null,
+    lastReaderOpenedAt: null,
+    lastReaderMessageId: null,
+    lastReaderSwipeKey: null,
+    lastResolvedViewportWidth: null,
+    lastResolvedViewportHeight: null,
+    lastWidthModeResolved: null,
+    lastWidthConstraintReason: null,
+    lastWidthOverflowDetected: null,
     templateTrustMode: DEFAULT_SETTINGS.renderer.templateTrustMode,
     ultraModeEnabled: DEFAULT_SETTINGS.budget.ultraModeEnabled,
     estimatedPromptTokensLastRun: null,
@@ -4298,6 +4337,11 @@ function repairDiagnostics(value, chatId) {
     selectedConnectionName: stringOrNull3(value.selectedConnectionName),
     selectedConnectionAvailable: typeof value.selectedConnectionAvailable === "boolean" ? value.selectedConnectionAvailable : base.selectedConnectionAvailable,
     connectionListCount: typeof value.connectionListCount === "number" && Number.isFinite(value.connectionListCount) ? Math.max(0, Math.round(value.connectionListCount)) : 0,
+    connectionProfileSelected: typeof value.connectionProfileSelected === "boolean" ? value.connectionProfileSelected : base.connectionProfileSelected,
+    effectiveTrackerConnectionMode: stringOrNull3(value.effectiveTrackerConnectionMode),
+    effectiveTrackerConnectionReason: stringOrNull3(value.effectiveTrackerConnectionReason),
+    lastSelectedConnectionFallbackReason: stringOrNull3(value.lastSelectedConnectionFallbackReason),
+    lastTrackerProfileMissingAt: stringOrNull3(value.lastTrackerProfileMissingAt),
     lastConnectionRefreshAt: stringOrNull3(value.lastConnectionRefreshAt),
     lastConnectionRefreshError: stringOrNull3(value.lastConnectionRefreshError),
     lastGenerationConnectionModeUsed: stringOrNull3(value.lastGenerationConnectionModeUsed),
@@ -4320,6 +4364,20 @@ function repairDiagnostics(value, chatId) {
     lastHistoryCleanupAt: stringOrNull3(value.lastHistoryCleanupAt),
     expandedWidthModeResolved: stringOrNull3(value.expandedWidthModeResolved),
     lastExpandedTrackerWidthPx: numberOrNull2(value.lastExpandedTrackerWidthPx),
+    lastDisplaySurface: value.lastDisplaySurface === "inline_contained" || value.lastDisplaySurface === "inline_wide" || value.lastDisplaySurface === "anchored_popover" || value.lastDisplaySurface === "fullscreen_reader" || value.lastDisplaySurface === "drawer_only" ? value.lastDisplaySurface : null,
+    lastPopoverOpenedAt: stringOrNull3(value.lastPopoverOpenedAt),
+    lastPopoverMessageId: stringOrNull3(value.lastPopoverMessageId),
+    lastPopoverSwipeKey: stringOrNull3(value.lastPopoverSwipeKey),
+    lastPopoverWidthPx: numberOrNull2(value.lastPopoverWidthPx),
+    lastPopoverHeightPx: numberOrNull2(value.lastPopoverHeightPx),
+    lastReaderOpenedAt: stringOrNull3(value.lastReaderOpenedAt),
+    lastReaderMessageId: stringOrNull3(value.lastReaderMessageId),
+    lastReaderSwipeKey: stringOrNull3(value.lastReaderSwipeKey),
+    lastResolvedViewportWidth: numberOrNull2(value.lastResolvedViewportWidth),
+    lastResolvedViewportHeight: numberOrNull2(value.lastResolvedViewportHeight),
+    lastWidthModeResolved: stringOrNull3(value.lastWidthModeResolved),
+    lastWidthConstraintReason: stringOrNull3(value.lastWidthConstraintReason),
+    lastWidthOverflowDetected: typeof value.lastWidthOverflowDetected === "boolean" ? value.lastWidthOverflowDetected : null,
     templateTrustMode: value.templateTrustMode === "safe" || value.templateTrustMode === "trusted" || value.templateTrustMode === "dev" ? value.templateTrustMode : base.templateTrustMode,
     ultraModeEnabled: typeof value.ultraModeEnabled === "boolean" ? value.ultraModeEnabled : base.ultraModeEnabled,
     estimatedPromptTokensLastRun: numberOrNull2(value.estimatedPromptTokensLastRun),
@@ -6220,6 +6278,20 @@ async function generateTracker(chatId, userId, trigger) {
     const generation = await runTrackerGeneration(promptMessages, userId, settings, job.controller.signal);
     const rawOutput = generation.text;
     if (!isCurrentJob(jobKey, job.jobId)) return;
+    const profileSelected = Boolean(settings.connection.selectedConnectionId);
+    const modeUsed = generation.requestDiagnostics.modeUsed;
+    const fallbackReason = generation.requestDiagnostics.fallbackReason;
+    const cache = connectionProfilesByUser.get(userId) ?? { profiles: [] };
+    const selectedAvailable = profileSelected && cache.profiles.some((p) => p.id === settings.connection.selectedConnectionId);
+    let reason = "selected_profile_raw";
+    if (!profileSelected) {
+      reason = "fallback_active_no_selected_profile";
+    } else if (!selectedAvailable) {
+      reason = "fallback_active_selected_profile_missing";
+    } else if (fallbackReason) {
+      reason = "fallback_quiet_raw_unavailable";
+    }
+    const trackerProfileMissingAt = !selectedAvailable && profileSelected ? (/* @__PURE__ */ new Date()).toISOString() : diagnostics.lastTrackerProfileMissingAt ?? null;
     diagnostics = {
       ...diagnostics,
       lastRawOutput: settings.saveRawOutput ? rawOutput.slice(0, settings.budget.rawOutputMaxChars) : "[Raw output saving disabled]",
@@ -6228,7 +6300,12 @@ async function generateTracker(chatId, userId, trigger) {
       lastGenerationConnectionNameUsed: generation.requestDiagnostics.connectionNameUsed,
       lastGenerationConnectionFallbackReason: generation.requestDiagnostics.fallbackReason,
       lastGenerationParametersUsed: generation.requestDiagnostics.parametersUsed,
-      lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed
+      lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed,
+      connectionProfileSelected: profileSelected,
+      effectiveTrackerConnectionMode: modeUsed,
+      effectiveTrackerConnectionReason: reason,
+      lastSelectedConnectionFallbackReason: fallbackReason,
+      lastTrackerProfileMissingAt: trackerProfileMissingAt
     };
     stage = "parse";
     const data = parseTrackerJson(rawOutput);
@@ -7048,6 +7125,20 @@ async function testTrackerConnection(payload, userId) {
     ], userId, settings, job.controller.signal);
     if (connectionTestJobs.get(userId) !== job) return;
     const completedAtMs = Date.now();
+    const profileSelected = Boolean(settings.connection.selectedConnectionId);
+    const modeUsed = generation.requestDiagnostics.modeUsed;
+    const fallbackReason = generation.requestDiagnostics.fallbackReason;
+    const cache = connectionProfilesByUser.get(userId) ?? { profiles: [] };
+    const selectedAvailable = profileSelected && cache.profiles.some((p) => p.id === settings.connection.selectedConnectionId);
+    let reason = "selected_profile_raw";
+    if (!profileSelected) {
+      reason = "fallback_active_no_selected_profile";
+    } else if (!selectedAvailable) {
+      reason = "fallback_active_selected_profile_missing";
+    } else if (fallbackReason) {
+      reason = "fallback_quiet_raw_unavailable";
+    }
+    const trackerProfileMissingAt = !selectedAvailable && profileSelected ? (/* @__PURE__ */ new Date()).toISOString() : diagnostics.lastTrackerProfileMissingAt ?? null;
     diagnostics = {
       ...diagnostics,
       lastConnectionTestAt: new Date(completedAtMs).toISOString(),
@@ -7062,7 +7153,12 @@ async function testTrackerConnection(payload, userId) {
       lastGenerationConnectionNameUsed: generation.requestDiagnostics.connectionNameUsed,
       lastGenerationConnectionFallbackReason: generation.requestDiagnostics.fallbackReason,
       lastGenerationParametersUsed: generation.requestDiagnostics.parametersUsed,
-      lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed
+      lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed,
+      connectionProfileSelected: profileSelected,
+      effectiveTrackerConnectionMode: modeUsed,
+      effectiveTrackerConnectionReason: reason,
+      lastSelectedConnectionFallbackReason: fallbackReason,
+      lastTrackerProfileMissingAt: trackerProfileMissingAt
     };
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, void 0, null, payload.requestId);

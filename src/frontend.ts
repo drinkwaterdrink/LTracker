@@ -23,6 +23,8 @@ import {
   MESSAGE_WIDGET_ID,
   renderMessageTracker,
   LTRACKER_DOM_TRACKER_CSS,
+  currentRunningDuration,
+  iconSvg,
 } from "./shared/messageDisplay";
 import { LTRACKER_TAG_NAME, LTRACKER_TAG_TYPE } from "./shared/embeddedTrackerTag";
 import { DEFAULT_SETTINGS } from "./shared/settings";
@@ -41,6 +43,7 @@ import type {
   LTrackerError,
   LTrackerConnectionMode,
   LTrackerBudgetMode,
+  LTrackerDisplaySurface,
   LTrackerExpandedWidthMode,
   LTrackerInjectionFormat,
   LTrackerInjectionPlacement,
@@ -669,6 +672,25 @@ function emptyState(): FrontendState {
       lastPresetValidationWarningCount: 0,
       lastPresetValidationEstimatedTokens: null,
       lastPresetValidationEstimatedRenderedChars: null,
+      connectionProfileSelected: false,
+      effectiveTrackerConnectionMode: "active_quiet",
+      effectiveTrackerConnectionReason: "default",
+      lastSelectedConnectionFallbackReason: null,
+      lastTrackerProfileMissingAt: null,
+      lastDisplaySurface: "inline_contained",
+      lastPopoverOpenedAt: null,
+      lastPopoverMessageId: null,
+      lastPopoverSwipeKey: null,
+      lastPopoverWidthPx: null,
+      lastPopoverHeightPx: null,
+      lastReaderOpenedAt: null,
+      lastReaderMessageId: null,
+      lastReaderSwipeKey: null,
+      lastResolvedViewportWidth: null,
+      lastResolvedViewportHeight: null,
+      lastWidthModeResolved: null,
+      lastWidthConstraintReason: null,
+      lastWidthOverflowDetected: null,
     },
     memoryPreview: null,
     injectionPreview: null,
@@ -797,6 +819,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let stagedSampleSnapshot: Record<string, unknown> | null = null;
   let stagedSampleRenderResult: import("./shared/htmlTemplateRenderer").HtmlTemplateRenderResult | null = null;
 
+  let activePopoverElement: HTMLElement | null = null;
+  let activePopoverEntry: MessageTrackerHistoryEntry | null = null;
+  let activeReaderElement: HTMLElement | null = null;
+
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
 
@@ -806,6 +832,21 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     styleTag.textContent = LTRACKER_DOM_TRACKER_CSS;
     document.head.appendChild(styleTag);
   }
+
+  const handleGlobalKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      if (state.settings.expandedWidth.closeOnEscape) {
+        if (activePopoverElement) {
+          closePopover();
+        }
+        if (activeReaderElement) {
+          closeFullscreenReader();
+        }
+      }
+    }
+  };
+  document.addEventListener("keydown", handleGlobalKeyDown);
+  cleanups.push(() => document.removeEventListener("keydown", handleGlobalKeyDown));
 
   const tab = ctx.ui.registerDrawerTab({
     id: "ltracker",
@@ -1130,6 +1171,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       markInjectedTrackerGenerating(tracker);
       toggleMessageRegeneration(messageId, swipeKey, entry?.rendered.activeJobId ?? null);
     }
+    if (action === "reader" && entry) {
+      event.preventDefault();
+      openFullscreenReader(entry);
+    }
     if (action === "edit" && entry) {
       noteInlineAction("edit", messageId, swipeKey);
       openTrackerEditor(entry);
@@ -1178,6 +1223,324 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     return placement === "top" ? "afterbegin" : "beforeend";
   }
 
+  function resolveDisplaySurface(settings: LTrackerSettings): LTrackerDisplaySurface {
+    const displayMode = settings.messageDisplay.displayMode;
+    const widthMode = settings.expandedWidth.expandedWidthMode;
+    if (displayMode === "drawer_history_only") return "drawer_only";
+    if (displayMode === "inline_button_popover") return "anchored_popover";
+    if (displayMode === "inline_full") {
+      if (widthMode === "contained") return "inline_contained";
+      if (widthMode === "wide" || widthMode === "full_mobile") return "inline_wide";
+      if (widthMode === "popover") return "anchored_popover";
+    }
+    return "inline_contained";
+  }
+
+  function togglePopover(entry: MessageTrackerHistoryEntry, anchorElement: HTMLElement): void {
+    if (
+      activePopoverEntry
+      && activePopoverEntry.indexEntry.messageId === entry.indexEntry.messageId
+      && activePopoverEntry.indexEntry.swipeKey === entry.indexEntry.swipeKey
+    ) {
+      closePopover();
+    } else {
+      openPopover(entry, anchorElement);
+    }
+  }
+
+  function openPopover(entry: MessageTrackerHistoryEntry, anchorElement: HTMLElement): void {
+    closePopover();
+    closeFullscreenReader();
+
+    const doc = anchorElement.ownerDocument || document;
+    const overlay = doc.createElement("div");
+    overlay.className = "ltracker-popover-overlay";
+    Object.assign(overlay.style, {
+      position: "fixed",
+      top: "0",
+      left: "0",
+      width: "100vw",
+      height: "100vh",
+      zIndex: "999999",
+      pointerEvents: "none",
+    });
+
+    const backdrop = doc.createElement("div");
+    backdrop.className = "ltracker-popover-backdrop";
+    Object.assign(backdrop.style, {
+      position: "absolute",
+      top: "0",
+      left: "0",
+      width: "100%",
+      height: "100%",
+      background: state.settings.expandedWidth.popoverBackdrop ? "rgba(0,0,0,0.55)" : "transparent",
+      pointerEvents: "auto",
+    });
+    if (state.settings.expandedWidth.closeOnBackdropClick) {
+      backdrop.addEventListener("click", closePopover);
+    }
+    overlay.appendChild(backdrop);
+
+    const panel = doc.createElement("div");
+    panel.className = "ltracker-popover-panel";
+
+    const width = state.settings.expandedWidth;
+    const body = entry.rendered.html || `<pre class="ltd-pre" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(entry.rendered.textFallback)}</pre>`;
+    const meta = [
+      entry.rendered.presetName ? entry.rendered.presetName : null,
+      entry.rendered.snapshotCreatedAt ? entry.rendered.snapshotCreatedAt : null,
+      entry.rendered.controlState.debugSwipeLabel,
+    ].filter((item): item is string => Boolean(item)).join(" / ");
+
+    const duration = state.settings.messageDisplay.showGenerationDuration
+      ? formatDurationMs(entry.rendered.generationDurationMs)
+      : null;
+    const elapsedMarkup = state.settings.messageDisplay.showGenerationDuration
+      ? entry.rendered.isRegenerating && entry.rendered.generationStartedAt
+        ? `<span class="ltd-pill" data-started-at="${escapeHtml(entry.rendered.generationStartedAt)}">${escapeHtml(currentRunningDuration(entry.rendered.generationStartedAt) ?? "0ms")}</span>`
+        : duration ? `<span class="ltd-pill">${escapeHtml(duration)}</span>` : ""
+      : "";
+    const statusMarkup = entry.rendered.isRegenerating
+      ? `<span class="ltd-pill" data-ltracker-status>generating</span>`
+      : entry.rendered.controlState.error ? `<span class="ltd-pill ltd-warning" data-ltracker-status>warning</span>` : "";
+
+    panel.innerHTML = `
+      <div class="ltd-popover-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding: 8px 12px; background: #222; border-top-left-radius: 8px; border-top-right-radius: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px; font-family: sans-serif;">
+          <span style="font-weight: bold; color: #9b5cff; font-size: 13px;">LTracker Popover</span>
+          <span style="font-size: 11px; color: #aaa; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(meta)}</span>
+          ${elapsedMarkup}
+          ${statusMarkup}
+        </div>
+        <div class="ltd-popover-actions" style="display: flex; gap: 4px; align-items: center;">
+          <button class="ltd-icon-button" data-popover-action="reader" title="Open fullscreen reader" style="width: 22px; height: 22px; padding: 0;">${iconSvg("reader")}</button>
+          <button class="ltd-icon-button" data-popover-action="toggle_regenerate" title="Regenerate" style="width: 22px; height: 22px; padding: 0;">${iconSvg(entry.rendered.isRegenerating ? "stop" : "refresh")}</button>
+          <button class="ltd-icon-button" data-popover-action="edit" title="Edit" style="width: 22px; height: 22px; padding: 0;">${iconSvg("edit")}</button>
+          <button class="ltd-icon-button" data-popover-action="delete" title="Delete" style="width: 22px; height: 22px; padding: 0;">${iconSvg("delete")}</button>
+          <button class="ltd-icon-button" data-popover-action="close" title="Close" style="background: #ea4335; border-color: #ea4335; color: #fff; width: 22px; height: 22px; padding: 0; font-weight: bold; font-size: 14px; line-height: 20px;">&times;</button>
+        </div>
+      </div>
+      <div class="ltd-popover-body" style="padding: 12px; overflow-y: auto; background: #161616; flex: 1; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; overflow-x: auto; max-width: 100%;">
+        ${body}
+      </div>
+    `;
+
+    Object.assign(panel.style, {
+      position: "absolute",
+      background: "#161616",
+      border: "1px solid #333",
+      borderRadius: "8px",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+      color: "#eee",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+      fontSize: "12px",
+      pointerEvents: "auto",
+      display: "flex",
+      flexDirection: "column",
+      boxSizing: "border-box",
+    });
+
+    const anchorRect = anchorElement.getBoundingClientRect();
+    const isMobile = doc.defaultView ? doc.defaultView.innerWidth < width.fullscreenBreakpointPx : false;
+    const viewWidth = doc.defaultView ? doc.defaultView.innerWidth : 800;
+    const viewHeight = doc.defaultView ? doc.defaultView.innerHeight : 600;
+
+    if (isMobile || (width.preferFullscreenOnMobile && isMobile)) {
+      Object.assign(panel.style, {
+        width: `calc(100vw - ${width.mobileHorizontalMarginPx * 2}px)`,
+        height: `${width.expandedContentMaxHeightVh}vh`,
+        bottom: `${width.mobileHorizontalMarginPx}px`,
+        left: `${width.mobileHorizontalMarginPx}px`,
+        position: "fixed",
+      });
+    } else {
+      const panelWidth = Math.min(width.maxExpandedWidthPx, viewWidth - 40);
+      const panelHeight = Math.min((viewHeight * width.expandedContentMaxHeightVh) / 100, 800);
+      Object.assign(panel.style, {
+        width: `${panelWidth}px`,
+        height: `${panelHeight}px`,
+      });
+
+      const top = anchorRect.bottom + (doc.defaultView?.scrollY ?? 0);
+      const left = Math.max(10, Math.min(viewWidth - panelWidth - 20, anchorRect.left + (doc.defaultView?.scrollX ?? 0)));
+
+      if (top + panelHeight > viewHeight + (doc.defaultView?.scrollY ?? 0)) {
+        const topAbove = anchorRect.top + (doc.defaultView?.scrollY ?? 0) - panelHeight - 10;
+        if (topAbove > 10) {
+          panel.style.top = `${topAbove}px`;
+        } else {
+          panel.style.top = "50%";
+          panel.style.left = "50%";
+          panel.style.transform = "translate(-50%, -50%)";
+          panel.style.position = "fixed";
+        }
+      } else {
+        panel.style.top = `${top}px`;
+      }
+      if (panel.style.position !== "fixed") {
+        panel.style.left = `${left}px`;
+      }
+    }
+
+    panel.addEventListener("click", (e) => {
+      const btn = e.target instanceof HTMLElement ? e.target.closest("[data-popover-action]") : null;
+      if (!btn) return;
+      const action = (btn as HTMLElement).dataset.popoverAction;
+      const messageId = entry.indexEntry.messageId;
+      const swipeKey = entry.indexEntry.swipeKey;
+
+      if (action === "close") {
+        closePopover();
+      }
+      if (action === "reader") {
+        closePopover();
+        openFullscreenReader(entry);
+      }
+      if (action === "toggle_regenerate") {
+        toggleMessageRegeneration(messageId, swipeKey, entry.rendered.activeJobId ?? null);
+        closePopover();
+      }
+      if (action === "edit") {
+        closePopover();
+        openTrackerEditor(entry);
+      }
+      if (action === "delete") {
+        closePopover();
+        void deleteMessageTracker(messageId, swipeKey);
+      }
+    });
+
+    overlay.appendChild(panel);
+    doc.body.appendChild(overlay);
+    activePopoverElement = overlay;
+    activePopoverEntry = entry;
+
+    localDiagnostics({
+      lastDisplaySurface: "anchored_popover",
+      lastPopoverOpenedAt: new Date().toISOString(),
+      lastPopoverMessageId: entry.indexEntry.messageId,
+      lastPopoverSwipeKey: entry.indexEntry.swipeKey,
+      lastPopoverWidthPx: panel.offsetWidth || null,
+      lastPopoverHeightPx: panel.offsetHeight || null,
+      lastResolvedViewportWidth: viewWidth,
+      lastResolvedViewportHeight: viewHeight,
+    });
+  }
+
+  function closePopover(): void {
+    if (activePopoverElement) {
+      activePopoverElement.remove();
+      activePopoverElement = null;
+      activePopoverEntry = null;
+    }
+  }
+
+  function openFullscreenReader(entry: MessageTrackerHistoryEntry): void {
+    closePopover();
+    closeFullscreenReader();
+
+    const doc = document;
+    const overlay = doc.createElement("div");
+    overlay.className = "ltracker-reader-overlay";
+    Object.assign(overlay.style, {
+      position: "fixed",
+      top: "0",
+      left: "0",
+      width: "100vw",
+      height: "100vh",
+      background: "#111",
+      zIndex: "999999",
+      color: "#eee",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+      display: "flex",
+      flexDirection: "column",
+      boxSizing: "border-box",
+    });
+
+    const meta = [
+      entry.rendered.presetName ? entry.rendered.presetName : null,
+      entry.rendered.snapshotCreatedAt ? entry.rendered.snapshotCreatedAt : null,
+      entry.rendered.controlState.debugSwipeLabel,
+    ].filter((item): item is string => Boolean(item)).join(" / ");
+
+    const duration = state.settings.messageDisplay.showGenerationDuration
+      ? formatDurationMs(entry.rendered.generationDurationMs)
+      : null;
+    const elapsedMarkup = state.settings.messageDisplay.showGenerationDuration
+      ? entry.rendered.isRegenerating && entry.rendered.generationStartedAt
+        ? `<span class="ltd-pill" data-started-at="${escapeHtml(entry.rendered.generationStartedAt)}">${escapeHtml(currentRunningDuration(entry.rendered.generationStartedAt) ?? "0ms")}</span>`
+        : duration ? `<span class="ltd-pill">${escapeHtml(duration)}</span>` : ""
+      : "";
+    const statusMarkup = entry.rendered.isRegenerating
+      ? `<span class="ltd-pill" data-ltracker-status>generating</span>`
+      : entry.rendered.controlState.error ? `<span class="ltd-pill ltd-warning" data-ltracker-status>warning</span>` : "";
+
+    const body = entry.rendered.html || `<pre class="ltd-pre" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(entry.rendered.textFallback)}</pre>`;
+
+    overlay.innerHTML = `
+      <header class="ltracker-reader-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding: 10px 16px; background: #1a1a1a; font-family: sans-serif;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <h2 style="margin: 0; font-size: 15px; font-weight: bold; color: #9b5cff;">LTracker Reader</h2>
+          <span style="font-size: 11px; color: #aaa; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(meta)}</span>
+          ${elapsedMarkup}
+          ${statusMarkup}
+        </div>
+        <div style="display: flex; gap: 6px; align-items: center;">
+          <button class="ltd-icon-button" data-reader-action="toggle_regenerate" title="Regenerate" style="width: 24px; height: 24px; padding: 0;">${iconSvg(entry.rendered.isRegenerating ? "stop" : "refresh")}</button>
+          <button class="ltd-icon-button" data-reader-action="edit" title="Edit" style="width: 24px; height: 24px; padding: 0;">${iconSvg("edit")}</button>
+          <button class="ltd-icon-button" data-reader-action="delete" title="Delete" style="width: 24px; height: 24px; padding: 0;">${iconSvg("delete")}</button>
+          <button class="ltd-icon-button" data-reader-action="close" title="Close Reader" style="background: #ea4335; border-color: #ea4335; color: #fff; width: auto; padding: 0 12px; font-weight: bold; height: 24px; font-size: 12px; line-height: 22px; cursor: pointer; border-radius: 6px;">Close</button>
+        </div>
+      </header>
+      <main class="ltracker-reader-body" style="flex: 1; padding: 18px; overflow-y: auto; background: #111; box-sizing: border-box;">
+        <div class="ltracker-reader-content-wrapper" style="max-width: 1000px; margin: 0 auto; overflow-x: auto; background: #161616; padding: 15px; border-radius: 8px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+          ${body}
+        </div>
+      </main>
+    `;
+
+    overlay.addEventListener("click", (e) => {
+      const btn = e.target instanceof HTMLElement ? e.target.closest("[data-reader-action]") : null;
+      if (!btn) return;
+      const action = (btn as HTMLElement).dataset.readerAction;
+      const messageId = entry.indexEntry.messageId;
+      const swipeKey = entry.indexEntry.swipeKey;
+
+      if (action === "close") {
+        closeFullscreenReader();
+      }
+      if (action === "toggle_regenerate") {
+        toggleMessageRegeneration(messageId, swipeKey, entry.rendered.activeJobId ?? null);
+        closeFullscreenReader();
+      }
+      if (action === "edit") {
+        closeFullscreenReader();
+        openTrackerEditor(entry);
+      }
+      if (action === "delete") {
+        closeFullscreenReader();
+        void deleteMessageTracker(messageId, swipeKey);
+      }
+    });
+
+    doc.body.appendChild(overlay);
+    activeReaderElement = overlay;
+
+    localDiagnostics({
+      lastDisplaySurface: "fullscreen_reader",
+      lastReaderOpenedAt: new Date().toISOString(),
+      lastReaderMessageId: entry.indexEntry.messageId,
+      lastReaderSwipeKey: entry.indexEntry.swipeKey,
+    });
+  }
+
+  function closeFullscreenReader(): void {
+    if (activeReaderElement) {
+      activeReaderElement.remove();
+      activeReaderElement = null;
+    }
+  }
+
   function applyExpandedWidthMode(element: Element): void {
     if (!(element instanceof HTMLElement)) return;
     const width = state.settings.expandedWidth;
@@ -1189,6 +1552,27 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     element.style.marginLeft = width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
     element.style.marginRight = width.expandedWidthMode === "full_mobile" ? `${width.mobileHorizontalMarginPx}px` : "";
     element.style.setProperty("--ltracker-expanded-max-height", `${width.expandedContentMaxHeightVh}vh`);
+
+    const details = element.querySelector("details");
+    if (details) {
+      const summary = details.querySelector("summary");
+      if (summary) {
+        summary.addEventListener("click", (e) => {
+          if (state.settings.expandedWidth.expandedWidthMode === "popover") {
+            e.preventDefault();
+            const messageId = element.dataset.ltrackerMessageId;
+            const swipeKey = element.dataset.ltrackerSwipeKey;
+            if (messageId && swipeKey) {
+              const entry = findHistoryEntry(messageId, swipeKey);
+              if (entry) {
+                togglePopover(entry, summary);
+              }
+            }
+          }
+        });
+      }
+    }
+
     localDiagnostics({
       expandedWidthModeResolved: width.expandedWidthMode,
       lastExpandedTrackerWidthPx: width.expandedWidthMode === "contained" ? null : width.maxExpandedWidthPx,
@@ -1712,7 +2096,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       return input ? input.value as T : fallback;
     };
     const expandedWidthNumberValue = (
-      name: keyof Pick<LTrackerSettings["expandedWidth"], "maxExpandedWidthPx" | "mobileHorizontalMarginPx" | "expandedContentMaxHeightVh">,
+      name: keyof Pick<LTrackerSettings["expandedWidth"], "maxExpandedWidthPx" | "mobileHorizontalMarginPx" | "expandedContentMaxHeightVh" | "fullscreenBreakpointPx">,
     ): number => {
       const input = tab.root.querySelector<HTMLInputElement>(`[data-expanded-width-setting="${name}"]`);
       return input ? Number(input.value) : state.settings.expandedWidth[name];
@@ -1720,6 +2104,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const expandedWidthSelectValue = <T extends string>(name: keyof Pick<LTrackerSettings["expandedWidth"], "expandedWidthMode">, fallback: T): T => {
       const input = tab.root.querySelector<HTMLSelectElement>(`[data-expanded-width-setting="${name}"]`);
       return input ? input.value as T : fallback;
+    };
+    const expandedWidthBooleanValue = (
+      name: keyof Pick<LTrackerSettings["expandedWidth"], "preferFullscreenOnMobile" | "popoverBackdrop" | "closeOnBackdropClick" | "closeOnEscape">,
+    ): boolean => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-expanded-width-setting="${name}"]`);
+      return input ? input.checked : state.settings.expandedWidth[name];
     };
     const connectionBooleanValue = (
       name: keyof Pick<LTrackerSettings["connection"], "refreshConnectionsOnDrawerOpen">,
@@ -1856,6 +2246,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         maxExpandedWidthPx: expandedWidthNumberValue("maxExpandedWidthPx"),
         mobileHorizontalMarginPx: expandedWidthNumberValue("mobileHorizontalMarginPx"),
         expandedContentMaxHeightVh: expandedWidthNumberValue("expandedContentMaxHeightVh"),
+        preferFullscreenOnMobile: expandedWidthBooleanValue("preferFullscreenOnMobile"),
+        fullscreenBreakpointPx: expandedWidthNumberValue("fullscreenBreakpointPx"),
+        popoverBackdrop: expandedWidthBooleanValue("popoverBackdrop"),
+        closeOnBackdropClick: expandedWidthBooleanValue("closeOnBackdropClick"),
+        closeOnEscape: expandedWidthBooleanValue("closeOnEscape"),
       },
       connection: {
         mode: connectionSelectValue<LTrackerConnectionMode>("mode", state.settings.connection.mode),
@@ -3007,19 +3402,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           <span class="ltracker-label">Tracker Connection</span>
           <div class="ltracker-settings">
             <label class="ltracker-field">
-              Mode
-              <select data-connection-setting="mode">
-                <option value="active_quiet"${selected(connectionSettings.mode === "active_quiet")}>Active chat connection</option>
-                <option value="selected_connection_quiet"${selected(connectionSettings.mode === "selected_connection_quiet")}>Selected connection, quiet mode</option>
-                <option value="selected_connection_raw"${selected(connectionSettings.mode === "selected_connection_raw")}>Selected connection, raw mode</option>
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Profile
+              Tracker Profile
               <select data-connection-setting="selectedConnectionId">
                 ${connectionOptions}
               </select>
             </label>
+            <p class="ltracker-note" style="margin-top: 2px; margin-bottom: 8px;">Fallback: Use active roleplay connection if tracker profile is unavailable</p>
             <label class="ltracker-check">
               <input type="checkbox" data-connection-setting="refreshConnectionsOnDrawerOpen"${checked(connectionSettings.refreshConnectionsOnDrawerOpen)}>
               Refresh on drawer open
@@ -3030,7 +3418,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             </label>
           </div>
           ${connectionWarning ? `<p class="ltracker-note">${escapeHtml(connectionWarning)}</p>` : ""}
-          <div class="ltracker-actions" style="margin-top: 10px;">
+          <div class="ltracker-actions" style="margin-top: 10px; margin-bottom: 10px;">
             <button class="ltracker-button" type="button" data-action="refresh-connections">Refresh Connections</button>
             <button class="ltracker-button" type="button" data-action="test-connection" ${disabled(connectionTestRunning)}>Test Tracker Connection</button>
             <button class="ltracker-button" type="button" data-action="cancel-connection-test" ${disabled(!connectionTestRunning)}>Cancel Test</button>
@@ -3047,6 +3435,53 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Refresh error", diagnostics.lastConnectionRefreshError)}
             ${renderRow("Connection test", connectionTestSummary || null)}
           </div>
+
+          <details class="ltracker-details" style="margin-top: 15px;">
+            <summary style="font-weight: bold; cursor: pointer;">Advanced Connection & Model Parameters</summary>
+            <div class="ltracker-settings" style="margin-top: 10px;">
+              <label class="ltracker-field">
+                Low-level Connection Mode
+                <select data-connection-setting="mode">
+                  <option value="selected_connection_raw"${selected(connectionSettings.mode === "selected_connection_raw")}>Selected profile + raw parameters (Default)</option>
+                  <option value="active_quiet"${selected(connectionSettings.mode === "active_quiet")}>Always use active chat connection</option>
+                  <option value="selected_connection_quiet"${selected(connectionSettings.mode === "selected_connection_quiet")}>Selected profile, quiet mode</option>
+                </select>
+              </label>
+              <label class="ltracker-field">
+                Temperature
+                <input type="number" min="0" max="2" step="0.05" data-connection-parameter="temperature" value="${escapeHtml(numberInputValue(connectionSettings.parameters.temperature))}">
+              </label>
+              <label class="ltracker-field">
+                Max tokens
+                <input type="number" min="256" max="64000" step="256" data-connection-parameter="max_tokens" value="${escapeHtml(numberInputValue(connectionSettings.parameters.max_tokens))}">
+              </label>
+              <label class="ltracker-field">
+                Top p
+                <input type="number" min="0" max="1" step="0.05" data-connection-parameter="top_p" value="${escapeHtml(numberInputValue(connectionSettings.parameters.top_p))}">
+              </label>
+              <label class="ltracker-field">
+                Frequency penalty
+                <input type="number" min="-2" max="2" step="0.05" data-connection-parameter="frequency_penalty" value="${escapeHtml(numberInputValue(connectionSettings.parameters.frequency_penalty))}">
+              </label>
+              <label class="ltracker-field">
+                Presence penalty
+                <input type="number" min="-2" max="2" step="0.05" data-connection-parameter="presence_penalty" value="${escapeHtml(numberInputValue(connectionSettings.parameters.presence_penalty))}">
+              </label>
+              <label class="ltracker-field">
+                Reasoning Source
+                <select data-connection-reasoning="source">
+                  <option value="inherit"${selected(connectionSettings.reasoning.source === "inherit")}>Inherit</option>
+                  <option value="off"${selected(connectionSettings.reasoning.source === "off")}>Off</option>
+                  <option value="custom"${selected(connectionSettings.reasoning.source === "custom")}>Custom</option>
+                </select>
+              </label>
+              ${reasoningControls}
+            </div>
+            <div class="ltracker-actions" style="margin-top: 10px;">
+              <button class="ltracker-button" type="button" data-action="reset-connection-parameters">Reset Parameters</button>
+            </div>
+          </details>
+
           <details class="ltracker-details">
             <summary>Last connection test output</summary>
             <pre class="ltracker-text">${escapeHtml(diagnostics.lastConnectionTestOutputPreview ?? "None")}</pre>
@@ -3055,50 +3490,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             <summary>Last connection test usage</summary>
             <pre class="ltracker-text">${escapeHtml(compactRecord(diagnostics.lastConnectionTestUsage) ?? "None")}</pre>
           </details>
-        </section>
-
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Tracker Generation Parameters</span>
-          <div class="ltracker-settings">
-            <label class="ltracker-field">
-              Temperature
-              <input type="number" min="0" max="2" step="0.05" data-connection-parameter="temperature" value="${escapeHtml(numberInputValue(connectionSettings.parameters.temperature))}">
-            </label>
-            <label class="ltracker-field">
-              Max tokens
-              <input type="number" min="256" max="64000" step="256" data-connection-parameter="max_tokens" value="${escapeHtml(numberInputValue(connectionSettings.parameters.max_tokens))}">
-            </label>
-            <label class="ltracker-field">
-              Top p
-              <input type="number" min="0" max="1" step="0.05" data-connection-parameter="top_p" value="${escapeHtml(numberInputValue(connectionSettings.parameters.top_p))}">
-            </label>
-            <label class="ltracker-field">
-              Frequency penalty
-              <input type="number" min="-2" max="2" step="0.05" data-connection-parameter="frequency_penalty" value="${escapeHtml(numberInputValue(connectionSettings.parameters.frequency_penalty))}">
-            </label>
-            <label class="ltracker-field">
-              Presence penalty
-              <input type="number" min="-2" max="2" step="0.05" data-connection-parameter="presence_penalty" value="${escapeHtml(numberInputValue(connectionSettings.parameters.presence_penalty))}">
-            </label>
-          </div>
-          <div class="ltracker-actions" style="margin-top: 10px;">
-            <button class="ltracker-button" type="button" data-action="reset-connection-parameters">Reset Parameters</button>
-          </div>
-        </section>
-
-        <section class="ltracker-panel">
-          <span class="ltracker-label">Tracker Reasoning</span>
-          <div class="ltracker-settings">
-            <label class="ltracker-field">
-              Source
-              <select data-connection-reasoning="source">
-                <option value="inherit"${selected(connectionSettings.reasoning.source === "inherit")}>Inherit</option>
-                <option value="off"${selected(connectionSettings.reasoning.source === "off")}>Off</option>
-                <option value="custom"${selected(connectionSettings.reasoning.source === "custom")}>Custom</option>
-              </select>
-            </label>
-            ${reasoningControls}
-          </div>
         </section>
 
         <section class="ltracker-panel ltracker-section" id="ltracker-section-memory-injection">
@@ -3452,6 +3843,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               Expanded max height
               <input type="number" min="30" max="95" step="1" data-expanded-width-setting="expandedContentMaxHeightVh" value="${escapeHtml(String(state.settings.expandedWidth.expandedContentMaxHeightVh))}">
             </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-expanded-width-setting="preferFullscreenOnMobile"${checked(state.settings.expandedWidth.preferFullscreenOnMobile)}>
+              Prefer fullscreen on mobile
+            </label>
+            <label class="ltracker-field">
+              Fullscreen breakpoint px
+              <input type="number" min="320" max="1800" step="50" data-expanded-width-setting="fullscreenBreakpointPx" value="${escapeHtml(String(state.settings.expandedWidth.fullscreenBreakpointPx))}">
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-expanded-width-setting="popoverBackdrop"${checked(state.settings.expandedWidth.popoverBackdrop)}>
+              Popover backdrop overlay
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-expanded-width-setting="closeOnBackdropClick"${checked(state.settings.expandedWidth.closeOnBackdropClick)}>
+              Close popover on backdrop click
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-expanded-width-setting="closeOnEscape"${checked(state.settings.expandedWidth.closeOnEscape)}>
+              Close popover/reader on Escape
+            </label>
             <label class="ltracker-field">
               Legacy minimized height
               <input type="number" min="0" max="400" step="10" data-message-display-setting="minimizedMaxHeightPx" value="${escapeHtml(String(state.settings.messageDisplay.minimizedMaxHeightPx))}">
@@ -3460,6 +3871,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               Message render chars
               <input type="number" min="1000" max="2000000" step="1000" data-message-display-setting="maxRenderedChars" value="${escapeHtml(String(state.settings.messageDisplay.maxRenderedChars))}">
             </label>
+          </div>
+          <div class="ltracker-presets-subsection" style="margin-top: 15px; margin-bottom: 10px;">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Display Surface Preview / Testing</span>
+            <div class="ltracker-actions">
+              <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="contained">Preview Contained</button>
+              <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="wide">Preview Wide</button>
+              <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="popover">Preview Popover</button>
+              <button class="ltracker-button" type="button" data-action="preview-display-surface" data-surface="fullscreen">Preview Fullscreen</button>
+            </div>
           </div>
           ${placementWarning}
         </section>
@@ -3791,6 +4211,17 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               ${renderRow("Last tag intercept message", diagnostics.lastTagInterceptMessageId)}
               ${renderRow("Last tag intercept swipe", diagnostics.lastTagInterceptSwipeKey)}
               ${renderRow("Last tag intercept error", diagnostics.lastTagInterceptError)}
+              ${renderRow("Last display surface", diagnostics.lastDisplaySurface)}
+              ${renderRow("Last popover opened at", diagnostics.lastPopoverOpenedAt)}
+              ${renderRow("Last popover message", diagnostics.lastPopoverMessageId)}
+              ${renderRow("Last popover swipe", diagnostics.lastPopoverSwipeKey)}
+              ${renderRow("Last popover width px", diagnostics.lastPopoverWidthPx)}
+              ${renderRow("Last popover height px", diagnostics.lastPopoverHeightPx)}
+              ${renderRow("Last reader opened at", diagnostics.lastReaderOpenedAt)}
+              ${renderRow("Last reader message", diagnostics.lastReaderMessageId)}
+              ${renderRow("Last reader swipe", diagnostics.lastReaderSwipeKey)}
+              ${renderRow("Last resolved viewport width", diagnostics.lastResolvedViewportWidth)}
+              ${renderRow("Last resolved viewport height", diagnostics.lastResolvedViewportHeight)}
             </div>
           </details>
 
@@ -3838,6 +4269,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               ${renderRow("Last connection test error", diagnostics.lastConnectionTestError)}
               ${renderRow("Last connection test finish", diagnostics.lastConnectionTestFinishReason)}
               ${renderRow("Last connection test usage", compactRecord(diagnostics.lastConnectionTestUsage))}
+              ${renderRow("Connection profile selected", diagnostics.connectionProfileSelected ? "yes" : "no")}
+              ${renderRow("Effective connection mode", diagnostics.effectiveTrackerConnectionMode)}
+              ${renderRow("Effective connection reason", diagnostics.effectiveTrackerConnectionReason)}
+              ${renderRow("Last connection fallback reason", diagnostics.lastSelectedConnectionFallbackReason)}
+              ${renderRow("Last profile missing at", diagnostics.lastTrackerProfileMissingAt)}
             </div>
           </details>
 
@@ -4110,6 +4546,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const err = state.diagnostics.lastError;
       const errText = err ? `Stage: ${err.stage}\nMessage: ${err.message}${err.detail ? `\nDetail: ${err.detail}` : ""}` : "No error recorded.";
       void copyText(errText, "last error");
+    }
+    if (action === "preview-display-surface") {
+      const surface = (target as HTMLElement).dataset.surface;
+      const entry = state.messageSnapshotHistory[0] || null;
+      if (entry) {
+        if (surface === "contained") {
+          setLocalError("Contained preview activated: check chat message bubbles.");
+        } else if (surface === "wide") {
+          setLocalError("Wide preview activated: check chat message bubbles.");
+        } else if (surface === "popover") {
+          openPopover(entry, target as HTMLElement);
+        } else if (surface === "fullscreen") {
+          openFullscreenReader(entry);
+        }
+      } else {
+        setLocalError("No message tracker history snapshot available to preview.");
+      }
     }
   };
 

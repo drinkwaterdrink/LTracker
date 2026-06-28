@@ -167,7 +167,7 @@ export function buildTrackerGenerationRequest(
       input.signal,
       parametersUsed,
       reasoningOverrideUsed,
-      "Selected connection mode requires a selected connection.",
+      "No tracker profile selected. LTracker will use the active roleplay connection until one is selected.",
     );
   }
 
@@ -177,7 +177,7 @@ export function buildTrackerGenerationRequest(
       input.signal,
       parametersUsed,
       reasoningOverrideUsed,
-      "Selected tracker connection is missing or unavailable.",
+      "Selected tracker connection profile is missing or unavailable.",
     );
   }
 

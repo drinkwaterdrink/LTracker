@@ -627,6 +627,11 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     selectedConnectionName: DEFAULT_SETTINGS.connection.selectedConnectionName,
     selectedConnectionAvailable: false,
     connectionListCount: 0,
+    connectionProfileSelected: false,
+    effectiveTrackerConnectionMode: null,
+    effectiveTrackerConnectionReason: null,
+    lastSelectedConnectionFallbackReason: null,
+    lastTrackerProfileMissingAt: null,
     lastConnectionRefreshAt: null,
     lastConnectionRefreshError: null,
     lastGenerationConnectionModeUsed: null,
@@ -649,6 +654,20 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastHistoryCleanupAt: null,
     expandedWidthModeResolved: null,
     lastExpandedTrackerWidthPx: null,
+    lastDisplaySurface: null,
+    lastPopoverOpenedAt: null,
+    lastPopoverMessageId: null,
+    lastPopoverSwipeKey: null,
+    lastPopoverWidthPx: null,
+    lastPopoverHeightPx: null,
+    lastReaderOpenedAt: null,
+    lastReaderMessageId: null,
+    lastReaderSwipeKey: null,
+    lastResolvedViewportWidth: null,
+    lastResolvedViewportHeight: null,
+    lastWidthModeResolved: null,
+    lastWidthConstraintReason: null,
+    lastWidthOverflowDetected: null,
     templateTrustMode: DEFAULT_SETTINGS.renderer.templateTrustMode,
     ultraModeEnabled: DEFAULT_SETTINGS.budget.ultraModeEnabled,
     estimatedPromptTokensLastRun: null,
@@ -1007,6 +1026,11 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     connectionListCount: typeof value.connectionListCount === "number" && Number.isFinite(value.connectionListCount)
       ? Math.max(0, Math.round(value.connectionListCount))
       : 0,
+    connectionProfileSelected: typeof value.connectionProfileSelected === "boolean" ? value.connectionProfileSelected : base.connectionProfileSelected,
+    effectiveTrackerConnectionMode: stringOrNull(value.effectiveTrackerConnectionMode),
+    effectiveTrackerConnectionReason: stringOrNull(value.effectiveTrackerConnectionReason),
+    lastSelectedConnectionFallbackReason: stringOrNull(value.lastSelectedConnectionFallbackReason),
+    lastTrackerProfileMissingAt: stringOrNull(value.lastTrackerProfileMissingAt),
     lastConnectionRefreshAt: stringOrNull(value.lastConnectionRefreshAt),
     lastConnectionRefreshError: stringOrNull(value.lastConnectionRefreshError),
     lastGenerationConnectionModeUsed: stringOrNull(value.lastGenerationConnectionModeUsed),
@@ -1033,6 +1057,20 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastHistoryCleanupAt: stringOrNull(value.lastHistoryCleanupAt),
     expandedWidthModeResolved: stringOrNull(value.expandedWidthModeResolved),
     lastExpandedTrackerWidthPx: numberOrNull(value.lastExpandedTrackerWidthPx),
+    lastDisplaySurface: value.lastDisplaySurface === "inline_contained" || value.lastDisplaySurface === "inline_wide" || value.lastDisplaySurface === "anchored_popover" || value.lastDisplaySurface === "fullscreen_reader" || value.lastDisplaySurface === "drawer_only" ? value.lastDisplaySurface : null,
+    lastPopoverOpenedAt: stringOrNull(value.lastPopoverOpenedAt),
+    lastPopoverMessageId: stringOrNull(value.lastPopoverMessageId),
+    lastPopoverSwipeKey: stringOrNull(value.lastPopoverSwipeKey),
+    lastPopoverWidthPx: numberOrNull(value.lastPopoverWidthPx),
+    lastPopoverHeightPx: numberOrNull(value.lastPopoverHeightPx),
+    lastReaderOpenedAt: stringOrNull(value.lastReaderOpenedAt),
+    lastReaderMessageId: stringOrNull(value.lastReaderMessageId),
+    lastReaderSwipeKey: stringOrNull(value.lastReaderSwipeKey),
+    lastResolvedViewportWidth: numberOrNull(value.lastResolvedViewportWidth),
+    lastResolvedViewportHeight: numberOrNull(value.lastResolvedViewportHeight),
+    lastWidthModeResolved: stringOrNull(value.lastWidthModeResolved),
+    lastWidthConstraintReason: stringOrNull(value.lastWidthConstraintReason),
+    lastWidthOverflowDetected: typeof value.lastWidthOverflowDetected === "boolean" ? value.lastWidthOverflowDetected : null,
     templateTrustMode: value.templateTrustMode === "safe" || value.templateTrustMode === "trusted" || value.templateTrustMode === "dev"
       ? value.templateTrustMode
       : base.templateTrustMode,
@@ -3450,6 +3488,25 @@ async function generateTracker(
     const rawOutput = generation.text;
     if (!isCurrentJob(jobKey, job.jobId)) return;
 
+    const profileSelected = Boolean(settings.connection.selectedConnectionId);
+    const modeUsed = generation.requestDiagnostics.modeUsed;
+    const fallbackReason = generation.requestDiagnostics.fallbackReason;
+    const cache = connectionProfilesByUser.get(userId) ?? { profiles: [] };
+    const selectedAvailable = profileSelected && cache.profiles.some((p) => p.id === settings.connection.selectedConnectionId);
+
+    let reason = "selected_profile_raw";
+    if (!profileSelected) {
+      reason = "fallback_active_no_selected_profile";
+    } else if (!selectedAvailable) {
+      reason = "fallback_active_selected_profile_missing";
+    } else if (fallbackReason) {
+      reason = "fallback_quiet_raw_unavailable";
+    }
+
+    const trackerProfileMissingAt = (!selectedAvailable && profileSelected)
+      ? new Date().toISOString()
+      : (diagnostics.lastTrackerProfileMissingAt ?? null);
+
     diagnostics = {
       ...diagnostics,
       lastRawOutput: settings.saveRawOutput
@@ -3461,6 +3518,11 @@ async function generateTracker(
       lastGenerationConnectionFallbackReason: generation.requestDiagnostics.fallbackReason,
       lastGenerationParametersUsed: generation.requestDiagnostics.parametersUsed,
       lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed,
+      connectionProfileSelected: profileSelected,
+      effectiveTrackerConnectionMode: modeUsed,
+      effectiveTrackerConnectionReason: reason,
+      lastSelectedConnectionFallbackReason: fallbackReason,
+      lastTrackerProfileMissingAt: trackerProfileMissingAt,
     };
 
     stage = "parse";
@@ -4426,6 +4488,25 @@ async function testTrackerConnection(
     ] as LlmMessageDTO[], userId, settings, job.controller.signal);
     if (connectionTestJobs.get(userId) !== job) return;
     const completedAtMs = Date.now();
+    const profileSelected = Boolean(settings.connection.selectedConnectionId);
+    const modeUsed = generation.requestDiagnostics.modeUsed;
+    const fallbackReason = generation.requestDiagnostics.fallbackReason;
+    const cache = connectionProfilesByUser.get(userId) ?? { profiles: [] };
+    const selectedAvailable = profileSelected && cache.profiles.some((p) => p.id === settings.connection.selectedConnectionId);
+
+    let reason = "selected_profile_raw";
+    if (!profileSelected) {
+      reason = "fallback_active_no_selected_profile";
+    } else if (!selectedAvailable) {
+      reason = "fallback_active_selected_profile_missing";
+    } else if (fallbackReason) {
+      reason = "fallback_quiet_raw_unavailable";
+    }
+
+    const trackerProfileMissingAt = (!selectedAvailable && profileSelected)
+      ? new Date().toISOString()
+      : (diagnostics.lastTrackerProfileMissingAt ?? null);
+
     diagnostics = {
       ...diagnostics,
       lastConnectionTestAt: new Date(completedAtMs).toISOString(),
@@ -4441,6 +4522,11 @@ async function testTrackerConnection(
       lastGenerationConnectionFallbackReason: generation.requestDiagnostics.fallbackReason,
       lastGenerationParametersUsed: generation.requestDiagnostics.parametersUsed,
       lastReasoningOverrideUsed: generation.requestDiagnostics.reasoningOverrideUsed,
+      connectionProfileSelected: profileSelected,
+      effectiveTrackerConnectionMode: modeUsed,
+      effectiveTrackerConnectionReason: reason,
+      lastSelectedConnectionFallbackReason: fallbackReason,
+      lastTrackerProfileMissingAt: trackerProfileMissingAt,
     };
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, undefined, null, payload.requestId);

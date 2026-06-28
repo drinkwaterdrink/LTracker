@@ -204,7 +204,7 @@ export function formatDurationMs(durationMs: number | null | undefined): string 
   return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
 }
 
-function currentRunningDuration(startedAt: string | null): string | null {
+export function currentRunningDuration(startedAt: string | null): string | null {
   if (!startedAt) return null;
   const startedMs = Date.parse(startedAt);
   if (!Number.isFinite(startedMs)) return null;
@@ -386,7 +386,7 @@ function buildWidgetHtml(
 </html>`;
 }
 
-function iconSvg(kind: "refresh" | "stop" | "edit" | "delete" | "generate" | "warning" | "chevron"): string {
+export function iconSvg(kind: "refresh" | "stop" | "edit" | "delete" | "generate" | "warning" | "chevron" | "reader"): string {
   if (kind === "stop") {
     return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 7h10v10H7z"/></svg>`;
   }
@@ -405,10 +405,13 @@ function iconSvg(kind: "refresh" | "stop" | "edit" | "delete" | "generate" | "wa
   if (kind === "delete") {
     return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2 .2 7h1.6l-.2-7H10Zm3.4 0-.2 7h1.6l.2-7h-1.6Z"/></svg>`;
   }
+  if (kind === "reader") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2Zm0 16H5V5h14v14ZM17 7h-4v2h4V7Zm0 4h-8v2h8v-2Zm0 4H7v2h10v-2Z"/></svg>`;
+  }
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17.7 6.3A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.67 4.22 1.76L13 11h8V3l-3.3 3.3Z"/></svg>`;
 }
 
-function domButton(action: string, label: string, icon: "refresh" | "stop" | "edit" | "delete" | "generate", enabled: boolean, extraClass = ""): string {
+function domButton(action: string, label: string, icon: "refresh" | "stop" | "edit" | "delete" | "generate" | "reader", enabled: boolean, extraClass = ""): string {
   if (!enabled) return "";
   return `<button class="ltd-icon-button${extraClass}" type="button" data-ltracker-dom-action="${escapeHtml(action)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${iconSvg(icon)}</button>`;
 }
@@ -453,7 +456,7 @@ function buildDomHtml(
   const placementClass = settings.controlPlacement === "inside_tracker_header" ? " ltd-inside-header" : " ltd-message-header";
   const hasTrackerClass = rendered.controlState.hasTracker ? " ltd-has-tracker" : " ltd-missing-tracker";
   const expandedActions = settings.showExpandedHeaderActions || !rendered.controlState.hasTracker;
-  const bodyMarkup = rendered.controlState.hasTracker ? `<div class="ltd-body">${body}</div>` : "";
+  const bodyMarkup = rendered.controlState.hasTracker ? `<div class="ltd-body" style="overflow-x: auto; max-width: 100%;">${body}</div>` : "";
   const footerActions = settings.showBottomActionsInInlineTracker && rendered.controlState.hasTracker
     ? `<div class="ltd-footer-actions" style="display: flex; gap: 4px; justify-content: flex-end; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 5px 7px;">
         ${domButton("toggle_regenerate", actionLabel, actionKind, settings.showWidgetRegenerateButton, rendered.isRegenerating ? " ltd-spinning" : "")}
@@ -467,6 +470,9 @@ function buildDomHtml(
       ? `<span class="ltd-control-icon ltd-warning">${iconSvg("warning")}</span>`
       : `<span class="ltd-control-icon">${rendered.controlState.hasTracker ? iconSvg("chevron") : iconSvg("generate")}</span>`;
   const title = rendered.controlState.hasTracker ? "L" : "";
+  const readerButton = rendered.controlState.hasTracker
+    ? domButton("reader", "Open fullscreen reader", "reader", true)
+    : "";
   return `
 <section class="ltracker-dom-tracker${compactClass}${densityClass}${placementClass}${hasTrackerClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}" data-ltracker-control-state="${escapeHtml(rendered.controlState.generationStatus)}">
   <details${open}>
@@ -481,6 +487,7 @@ function buildDomHtml(
           ${editedMarkup}
         </span>
         <span class="ltd-actions">
+          ${readerButton}
           ${domButton(primaryAction, actionLabel, actionKind, settings.showWidgetRegenerateButton || !rendered.controlState.hasTracker, rendered.isRegenerating ? " ltd-spinning" : "")}
           ${rendered.controlState.hasTracker && expandedActions ? domButton("edit", "View or edit tracker", "edit", settings.showEditButton) : ""}
           ${rendered.controlState.hasTracker && expandedActions ? domButton("delete", "Delete tracker", "delete", settings.showDeleteButton) : ""}

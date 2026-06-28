@@ -289,7 +289,7 @@ test("repairSettings adds v0.15 timing, trust, budget, and width defaults", () =
     ...NORMAL_BUDGET_DEFAULTS,
   });
   assert.equal(migrated.expandedWidth.expandedWidthMode, "wide");
-  assert.equal(migrated.expandedWidth.maxExpandedWidthPx, 900);
+  assert.equal(migrated.expandedWidth.maxExpandedWidthPx, 1100);
 
   const repaired = repairSettings({
     renderer: { allowInlineStyles: false },
@@ -363,7 +363,7 @@ test("repairSettings adds and repairs connection settings", () => {
   const migrated = repairSettings({
     recentMessageLimit: 12,
   });
-  assert.equal(migrated.connection.mode, "active_quiet");
+  assert.equal(migrated.connection.mode, "selected_connection_raw");
   assert.equal(migrated.connection.parameters.temperature, 0.2);
   assert.equal(migrated.connection.parameters.max_tokens, 8000);
   assert.equal(migrated.connection.reasoning.source, "inherit");

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18 - Display Width, Popover, Fullscreen Reader, and Connection UX Simplification
+- Simplified Tracker Connection UI, hiding raw technical modes behind an Advanced Parameters details panel and exposing human-readable Tracker Profile selection.
+- Configured default connection mode to use the selected profile with raw parameters (`selected_connection_raw`), with automatic fallback to active roleplay connection (`active_quiet`).
+- Implemented floating Popover display surface that opens overlays next to trigger summaries on desktop, falling back to centered sheet modals on mobile viewports.
+- Implemented full viewport Fullscreen Reader display surface with clean meta details and action controls.
+- Configured global Escape key event handler and popover backdrop close listeners for overlay dismissal.
+- Added Display Surface Preview / Testing buttons directly in the Display settings panel.
+- Wrapped template HTML in overflow-x: auto scroll containers to prevent wide layouts from clipping or causing horizontal overflow inside chat bubbles.
+- Documented import limits (10,000,000 Normal / 50,000,000 Ultra) in the README.
+
 ## 0.17 - Preset Pack Import/Export + Better Validation
 - Added portable `.ltracker.json` Preset Pack format containing preset properties, recommended settings, and optional example snapshot.
 - Added Export Preset Pack action with optional recommended settings and example snapshot.

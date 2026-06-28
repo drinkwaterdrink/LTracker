@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.17";
+export const EXTENSION_VERSION = "0.18";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -36,6 +36,12 @@ export type LTrackerMountPointStrategy = "official_message_body" | "official_mes
 export type TemplateTrustMode = "safe" | "trusted" | "dev";
 export type LTrackerBudgetMode = "characters" | "estimated_tokens";
 export type LTrackerExpandedWidthMode = "contained" | "wide" | "full_mobile" | "popover";
+export type LTrackerDisplaySurface =
+  | "inline_contained"
+  | "inline_wide"
+  | "anchored_popover"
+  | "fullscreen_reader"
+  | "drawer_only";
 export type SwipeKeySource = "swipe_id" | "swipe_index" | "content_hash" | "unknown";
 export type TrackerPresetOrigin = "built_in" | "user_imported" | "user_created";
 export type LTrackerErrorStage =
@@ -318,6 +324,11 @@ export interface LTrackerExpandedWidthSettings {
   maxExpandedWidthPx: number;
   mobileHorizontalMarginPx: number;
   expandedContentMaxHeightVh: number;
+  preferFullscreenOnMobile: boolean;
+  fullscreenBreakpointPx: number;
+  popoverBackdrop: boolean;
+  closeOnBackdropClick: boolean;
+  closeOnEscape: boolean;
 }
 
 export interface LTrackerConnectionParameters {
@@ -556,6 +567,11 @@ export interface LTrackerDiagnostics {
   selectedConnectionName: string | null;
   selectedConnectionAvailable: boolean;
   connectionListCount: number;
+  connectionProfileSelected: boolean;
+  effectiveTrackerConnectionMode: string | null;
+  effectiveTrackerConnectionReason: string | null;
+  lastSelectedConnectionFallbackReason: string | null;
+  lastTrackerProfileMissingAt: string | null;
   lastConnectionRefreshAt: string | null;
   lastConnectionRefreshError: string | null;
   lastGenerationConnectionModeUsed: string | null;
@@ -578,6 +594,20 @@ export interface LTrackerDiagnostics {
   lastHistoryCleanupAt: string | null;
   expandedWidthModeResolved: string | null;
   lastExpandedTrackerWidthPx: number | null;
+  lastDisplaySurface: LTrackerDisplaySurface | null;
+  lastPopoverOpenedAt: string | null;
+  lastPopoverMessageId: string | null;
+  lastPopoverSwipeKey: string | null;
+  lastPopoverWidthPx: number | null;
+  lastPopoverHeightPx: number | null;
+  lastReaderOpenedAt: string | null;
+  lastReaderMessageId: string | null;
+  lastReaderSwipeKey: string | null;
+  lastResolvedViewportWidth: number | null;
+  lastResolvedViewportHeight: number | null;
+  lastWidthModeResolved: string | null;
+  lastWidthConstraintReason: string | null;
+  lastWidthOverflowDetected: boolean | null;
   templateTrustMode: TemplateTrustMode;
   ultraModeEnabled: boolean;
   estimatedPromptTokensLastRun: number | null;

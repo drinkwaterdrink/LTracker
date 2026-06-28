@@ -47,9 +47,9 @@ export const SETTINGS_LIMITS = {
   renderedHtmlMaxChars: { min: 1_000, max: 2_000_000 },
   rawOutputMaxChars: { min: 1_000, max: 2_000_000 },
   presetImportMaxChars: { min: 10_000, max: 100_000_000 },
-  maxExpandedWidthPx: { min: 320, max: 1_800, default: 900 },
+  maxExpandedWidthPx: { min: 320, max: 1_800, default: 1100 },
   mobileHorizontalMarginPx: { min: 0, max: 32, default: 6 },
-  expandedContentMaxHeightVh: { min: 30, max: 95, default: 75 },
+  expandedContentMaxHeightVh: { min: 30, max: 95, default: 80 },
 } as const;
 
 export const DEFAULT_SETTINGS: LTrackerSettings = {
@@ -149,9 +149,14 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     maxExpandedWidthPx: SETTINGS_LIMITS.maxExpandedWidthPx.default,
     mobileHorizontalMarginPx: SETTINGS_LIMITS.mobileHorizontalMarginPx.default,
     expandedContentMaxHeightVh: SETTINGS_LIMITS.expandedContentMaxHeightVh.default,
+    preferFullscreenOnMobile: true,
+    fullscreenBreakpointPx: 640,
+    popoverBackdrop: true,
+    closeOnBackdropClick: true,
+    closeOnEscape: true,
   },
   connection: {
-    mode: "active_quiet",
+    mode: "selected_connection_raw",
     selectedConnectionId: null,
     selectedConnectionName: null,
     refreshConnectionsOnDrawerOpen: true,
@@ -688,6 +693,24 @@ export function repairSettings(value: unknown): LTrackerSettings {
         SETTINGS_LIMITS.expandedContentMaxHeightVh.min,
         SETTINGS_LIMITS.expandedContentMaxHeightVh.max,
       ),
+      preferFullscreenOnMobile: typeof expandedWidthSource.preferFullscreenOnMobile === "boolean"
+        ? expandedWidthSource.preferFullscreenOnMobile
+        : DEFAULT_SETTINGS.expandedWidth.preferFullscreenOnMobile,
+      fullscreenBreakpointPx: clampNumber(
+        expandedWidthSource.fullscreenBreakpointPx,
+        DEFAULT_SETTINGS.expandedWidth.fullscreenBreakpointPx,
+        320,
+        1800,
+      ),
+      popoverBackdrop: typeof expandedWidthSource.popoverBackdrop === "boolean"
+        ? expandedWidthSource.popoverBackdrop
+        : DEFAULT_SETTINGS.expandedWidth.popoverBackdrop,
+      closeOnBackdropClick: typeof expandedWidthSource.closeOnBackdropClick === "boolean"
+        ? expandedWidthSource.closeOnBackdropClick
+        : DEFAULT_SETTINGS.expandedWidth.closeOnBackdropClick,
+      closeOnEscape: typeof expandedWidthSource.closeOnEscape === "boolean"
+        ? expandedWidthSource.closeOnEscape
+        : DEFAULT_SETTINGS.expandedWidth.closeOnEscape,
     },
     connection: {
       mode: connectionMode(connectionSource.mode),
