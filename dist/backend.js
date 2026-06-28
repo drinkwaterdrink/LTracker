@@ -228,7 +228,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.16";
+var EXTENSION_VERSION = "0.17";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1852,6 +1852,579 @@ function estimatePresetStats(preset) {
   return { estimatedTokens, estimatedRenderedChars };
 }
 
+// src/shared/presetPack.ts
+var PRESET_PACK_KIND = "ltracker_preset_pack";
+var PRESET_PACK_FORMAT_VERSION = 1;
+function isRecord6(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringValue2(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+var SECRET_PATTERNS = [
+  /api[_-]?key/i,
+  /secret/i,
+  /password/i,
+  /token(?!s$)/i,
+  /auth[_-]?bearer/i,
+  /private[_-]?key/i,
+  /access[_-]?key/i,
+  /credential/i
+];
+function containsSecretKeys(obj, depth = 0) {
+  if (depth > 10 || !isRecord6(obj)) return false;
+  for (const key of Object.keys(obj)) {
+    if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) return true;
+    if (isRecord6(obj[key]) && containsSecretKeys(obj[key], depth + 1)) return true;
+  }
+  return false;
+}
+function stripSecretKeys(obj, depth = 0) {
+  if (depth > 10) return {};
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) continue;
+    if (isRecord6(value)) {
+      result[key] = stripSecretKeys(value, depth + 1);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+function exportPresetPack(preset, options) {
+  const presetStats = estimatePresetStats(preset);
+  const schemaKeys = isRecord6(preset.jsonSchema) ? Object.keys(preset.jsonSchema) : [];
+  const pack = {
+    kind: PRESET_PACK_KIND,
+    formatVersion: PRESET_PACK_FORMAT_VERSION,
+    exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    appCompatibility: {
+      extension: "LTracker",
+      minVersion: "0.17",
+      recommendedVersion: EXTENSION_VERSION
+    },
+    preset: {
+      id: preset.id,
+      name: preset.name,
+      description: preset.description || "",
+      version: preset.version,
+      jsonSchema: preset.jsonSchema,
+      htmlTemplate: preset.htmlTemplate ?? "",
+      promptInstructions: preset.promptInstructions,
+      notes: preset.notes || "",
+      origin: preset.origin
+    },
+    validation: {
+      expectedRootFields: schemaKeys,
+      estimatedTokens: presetStats.estimatedTokens,
+      estimatedRenderedChars: presetStats.estimatedRenderedChars
+    }
+  };
+  if (options?.author) {
+    pack.exportedBy = options.author;
+    pack.preset.author = options.author;
+  }
+  if (options?.includeRecommendedSettings && options.settings) {
+    const settings = options.settings;
+    const recommended = {};
+    const connRec = {
+      mode: settings.connection.mode,
+      parameters: { ...settings.connection.parameters },
+      reasoning: { ...settings.connection.reasoning }
+    };
+    recommended.connection = connRec;
+    recommended.memory = {
+      enabled: settings.memory.enabled,
+      includeInTrackerGeneration: settings.memory.includeInTrackerGeneration,
+      retainCount: settings.memory.retainCount,
+      fullSnapshotCount: settings.memory.fullSnapshotCount,
+      compactOlderSnapshots: settings.memory.compactOlderSnapshots,
+      maxMemoryChars: settings.memory.maxMemoryChars,
+      source: settings.memory.source,
+      order: settings.memory.order
+    };
+    recommended.injection = {
+      enabled: settings.injection.enabled,
+      format: settings.injection.format,
+      retainCount: settings.injection.retainCount,
+      injectionPlacement: settings.injection.injectionPlacement,
+      maxInjectedChars: settings.injection.maxInjectedChars
+    };
+    recommended.renderer = {
+      enabled: settings.renderer.enabled,
+      previewSource: settings.renderer.previewSource,
+      maxRenderedChars: settings.renderer.maxRenderedChars,
+      allowInlineStyles: settings.renderer.allowInlineStyles,
+      templateTrustMode: settings.renderer.templateTrustMode
+    };
+    recommended.messageDisplay = {
+      enabled: settings.messageDisplay.enabled,
+      useDomInjection: settings.messageDisplay.useDomInjection,
+      displayMode: settings.messageDisplay.displayMode,
+      placement: settings.messageDisplay.placement,
+      renderMode: settings.messageDisplay.renderMode,
+      allowInlineStyles: settings.messageDisplay.allowInlineStyles,
+      showTimestamp: settings.messageDisplay.showTimestamp,
+      showPresetName: settings.messageDisplay.showPresetName,
+      showGenerationDuration: settings.messageDisplay.showGenerationDuration,
+      maxRenderedChars: settings.messageDisplay.maxRenderedChars
+    };
+    recommended.expandedWidth = {
+      expandedWidthMode: settings.expandedWidth.expandedWidthMode,
+      maxExpandedWidthPx: settings.expandedWidth.maxExpandedWidthPx,
+      mobileHorizontalMarginPx: settings.expandedWidth.mobileHorizontalMarginPx,
+      expandedContentMaxHeightVh: settings.expandedWidth.expandedContentMaxHeightVh
+    };
+    recommended.budget = {
+      mode: settings.budget.mode,
+      ultraModeEnabled: settings.budget.ultraModeEnabled,
+      maxTrackerOutputTokens: settings.budget.maxTrackerOutputTokens,
+      renderedHtmlMaxChars: settings.budget.renderedHtmlMaxChars
+    };
+    pack.recommendedSettings = recommended;
+  }
+  if (options?.exampleSnapshot && isRecord6(options.exampleSnapshot)) {
+    pack.exampleSnapshot = options.exampleSnapshot;
+  }
+  return pack;
+}
+function validatePackRecommendedSettings(value) {
+  if (!isRecord6(value)) return null;
+  const result = {};
+  if (isRecord6(value.connection)) result.connection = stripSecretKeys(value.connection);
+  if (isRecord6(value.memory)) result.memory = value.memory;
+  if (isRecord6(value.injection)) result.injection = value.injection;
+  if (isRecord6(value.renderer)) result.renderer = value.renderer;
+  if (isRecord6(value.messageDisplay)) result.messageDisplay = value.messageDisplay;
+  if (isRecord6(value.expandedWidth)) result.expandedWidth = value.expandedWidth;
+  if (isRecord6(value.budget)) result.budget = stripSecretKeys(value.budget);
+  return Object.keys(result).length > 0 ? result : null;
+}
+function importPresetPack(value, existingIds, now) {
+  if (!isRecord6(value)) {
+    return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import must be a JSON object.", warnings: [], packMeta: null };
+  }
+  if (value.kind === PRESET_PACK_KIND) {
+    if (value.formatVersion !== PRESET_PACK_FORMAT_VERSION) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: `Unsupported preset pack format version: ${value.formatVersion}. Expected ${PRESET_PACK_FORMAT_VERSION}.`, warnings: [], packMeta: null };
+    }
+    if (containsSecretKeys(value)) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import rejected: pack contains potential secret/API key fields.", warnings: [], packMeta: null };
+    }
+    const presetData = isRecord6(value.preset) ? value.preset : null;
+    if (!presetData) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import preset data is missing or invalid.", warnings: [], packMeta: null };
+    }
+    const compat = isRecord6(value.appCompatibility) ? value.appCompatibility : null;
+    const warnings = [];
+    const existing = new Set(existingIds);
+    const rawId = sanitizePresetId(stringValue2(presetData.id, stringValue2(presetData.name, "imported")));
+    const id = existing.has(rawId) || rawId === DEFAULT_TRACKER_PRESET_ID ? createPresetId(stringValue2(presetData.name, "Imported Preset"), existing) : rawId;
+    const preset = {
+      id,
+      name: stringValue2(presetData.name, "Imported Preset").trim() || "Imported Preset",
+      description: stringValue2(presetData.description),
+      version: stringValue2(presetData.version, "1.0"),
+      createdAt: now,
+      updatedAt: now,
+      jsonSchema: isRecord6(presetData.jsonSchema) ? presetData.jsonSchema : {},
+      promptInstructions: stringValue2(presetData.promptInstructions),
+      htmlTemplate: typeof presetData.htmlTemplate === "string" ? presetData.htmlTemplate : "",
+      notes: typeof presetData.notes === "string" ? presetData.notes : "",
+      origin: "user_imported",
+      capabilities: {
+        supportsHtmlTemplate: typeof presetData.htmlTemplate === "string" && presetData.htmlTemplate.trim().length > 0
+      }
+    };
+    if (!preset.name.trim()) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Imported preset name is empty.", warnings, packMeta: null };
+    }
+    if (Object.keys(preset.jsonSchema).length === 0) {
+      warnings.push("Imported preset has an empty JSON schema.");
+    }
+    if (!preset.promptInstructions.trim()) {
+      warnings.push("Imported preset has empty prompt instructions.");
+    }
+    const recommendedSettings = validatePackRecommendedSettings(value.recommendedSettings);
+    const exampleSnapshot = isRecord6(value.exampleSnapshot) ? value.exampleSnapshot : null;
+    const tags = Array.isArray(presetData.tags) ? presetData.tags.filter((t) => typeof t === "string") : [];
+    const packMeta = {
+      kind: PRESET_PACK_KIND,
+      formatVersion: PRESET_PACK_FORMAT_VERSION,
+      exportedAt: stringValue2(value.exportedAt, ""),
+      minVersion: compat ? stringValue2(compat.minVersion) : null,
+      recommendedVersion: compat ? stringValue2(compat.recommendedVersion) : null,
+      tags,
+      author: stringValue2(value.exportedBy) || stringValue2(presetData.author) || null
+    };
+    return { ok: true, preset, recommendedSettings, exampleSnapshot, error: null, warnings, packMeta };
+  }
+  if (value.kind === PRESET_EXPORT_KIND) {
+    const oldResult = importTrackerPresetEnvelope(value, existingIds, now);
+    if (!oldResult.ok || !oldResult.preset) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: oldResult.error ?? "Invalid legacy preset import.", warnings: [], packMeta: null };
+    }
+    return {
+      ok: true,
+      preset: oldResult.preset,
+      recommendedSettings: null,
+      exampleSnapshot: null,
+      error: null,
+      warnings: ["Imported using legacy ltracker_schema_preset format."],
+      packMeta: { kind: PRESET_EXPORT_KIND, formatVersion: PRESET_EXPORT_FORMAT_VERSION, exportedAt: null, minVersion: null, recommendedVersion: null, tags: [], author: null }
+    };
+  }
+  if (isRecord6(value) && isRecord6(value.jsonSchema) && typeof value.promptInstructions === "string") {
+    const repaired = repairTrackerPreset({
+      ...value,
+      origin: value.origin ?? "user_imported",
+      id: value.id ?? sanitizePresetId(stringValue2(value.name, "imported"))
+    });
+    if (!repaired) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Raw preset object could not be repaired.", warnings: [], packMeta: null };
+    }
+    const existing = new Set(existingIds);
+    const id = existing.has(repaired.id) || repaired.id === DEFAULT_TRACKER_PRESET_ID ? createPresetId(repaired.name, existing) : repaired.id;
+    return {
+      ok: true,
+      preset: { ...repaired, id, origin: "user_imported", createdAt: now, updatedAt: now },
+      recommendedSettings: null,
+      exampleSnapshot: null,
+      error: null,
+      warnings: ["Imported as raw preset object (no pack envelope)."],
+      packMeta: null
+    };
+  }
+  return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Unrecognized import format. Expected ltracker_preset_pack, ltracker_schema_preset, or a raw preset object with jsonSchema and promptInstructions.", warnings: [], packMeta: null };
+}
+var SAMPLE_MAX_DEPTH = 5;
+var SAMPLE_MAX_ARRAY_LENGTH = 2;
+var FIELD_HEURISTICS = [
+  [/^name$/i, () => "Example Name"],
+  [/^(full|display|character)[-_]?name$/i, () => "Aria Voss"],
+  [/^location$/i, () => "Example Location"],
+  [/^(current[-_]?)?scene$/i, () => "A dimly lit study"],
+  [/^mood$/i, () => "tense"],
+  [/^emotion$/i, () => "curious"],
+  [/^status$/i, () => "active"],
+  [/^(health|hp)$/i, () => 85],
+  [/^(mana|mp|energy)$/i, () => 60],
+  [/^percent(age)?$|^progress$/i, () => 66],
+  [/^level$/i, () => 5],
+  [/^(color|colour)$/i, () => "#9b5cff"],
+  [/^(background[-_]?)?color$/i, () => "#1a1a2e"],
+  [/^description$/i, () => "A brief description of the current state."],
+  [/^notes?$/i, () => "No special notes."],
+  [/^time$/i, () => "Late evening"],
+  [/^weather$/i, () => "Overcast"],
+  [/^(score|rating)$/i, () => 7],
+  [/^(count|total|number)$/i, () => 3],
+  [/^(title|heading)$/i, () => "Sample Title"],
+  [/^(summary|overview)$/i, () => "Brief summary of events."],
+  [/^(goal|objective)$/i, () => "Investigate the strange noises."],
+  [/^(threat|danger)[-_]?level$/i, () => "moderate"],
+  [/^(relationship|bond)$/i, () => "cautious ally"],
+  [/^(attitude|disposition)$/i, () => "neutral"],
+  [/^(class|role|type)$/i, () => "Researcher"],
+  [/^(item|weapon|tool)$/i, () => "Brass compass"],
+  [/^(gold|money|currency|coins?)$/i, () => 150],
+  [/^(strength|dexterity|intelligence|wisdom|charisma|constitution)$/i, () => 14],
+  [/^(active|enabled|visible|alive|conscious)$/i, () => true],
+  [/^(dead|unconscious|hidden|disabled)$/i, () => false],
+  [/url$/i, () => "https://example.com"],
+  [/^id$/i, () => "sample-001"]
+];
+function sampleValueForField(fieldName, depth) {
+  for (const [pattern, generator] of FIELD_HEURISTICS) {
+    if (pattern.test(fieldName)) return generator();
+  }
+  if (fieldName.endsWith("s") && depth < SAMPLE_MAX_DEPTH) {
+    return `Example ${fieldName}`;
+  }
+  return `Example ${fieldName.replace(/[-_]/g, " ")}`;
+}
+function generateSampleFromSchema(schema, depth = 0) {
+  if (depth > SAMPLE_MAX_DEPTH) return "[max depth]";
+  if (!isRecord6(schema)) {
+    return "sample value";
+  }
+  const schemaType = stringValue2(schema.type, "object");
+  if (schemaType === "object" || schema.properties && isRecord6(schema.properties)) {
+    const properties = isRecord6(schema.properties) ? schema.properties : schema;
+    const result = {};
+    for (const [key, value] of Object.entries(properties)) {
+      if (key === "type" || key === "properties" || key === "required" || key === "description" || key === "items" || key === "default" || key === "enum") continue;
+      if (isRecord6(value)) {
+        result[key] = generateSampleForProperty(key, value, depth + 1);
+      } else {
+        result[key] = sampleValueForField(key, depth);
+      }
+    }
+    if (Object.keys(result).length === 0 && !schema.properties) {
+      for (const key of Object.keys(schema)) {
+        if (isRecord6(schema[key])) {
+          result[key] = generateSampleFromSchema(schema[key], depth + 1);
+        } else {
+          result[key] = sampleValueForField(key, depth);
+        }
+      }
+    }
+    return result;
+  }
+  if (schemaType === "array") {
+    const items = isRecord6(schema.items) ? schema.items : null;
+    const sample = items ? generateSampleFromSchema(items, depth + 1) : "sample item";
+    return Array.from(
+      { length: Math.min(SAMPLE_MAX_ARRAY_LENGTH, 2) },
+      () => isRecord6(sample) ? { ...sample } : sample
+    );
+  }
+  if (schemaType === "string") {
+    if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+      return schema.enum[0];
+    }
+    if (typeof schema.default === "string") return schema.default;
+    return "sample text";
+  }
+  if (schemaType === "number" || schemaType === "integer") {
+    if (typeof schema.default === "number") return schema.default;
+    return 42;
+  }
+  if (schemaType === "boolean") {
+    if (typeof schema.default === "boolean") return schema.default;
+    return true;
+  }
+  return "sample value";
+}
+function generateSampleForProperty(fieldName, prop, depth) {
+  if (depth > SAMPLE_MAX_DEPTH) return "[max depth]";
+  if (typeof prop.default !== "undefined") return prop.default;
+  if (Array.isArray(prop.enum) && prop.enum.length > 0) return prop.enum[0];
+  const propType = stringValue2(prop.type, "");
+  if (propType === "object" || isRecord6(prop.properties)) {
+    return generateSampleFromSchema(prop, depth);
+  }
+  if (propType === "array") {
+    const items = isRecord6(prop.items) ? prop.items : null;
+    const itemSample = items ? generateSampleFromSchema(items, depth + 1) : sampleValueForField(fieldName, depth);
+    return Array.from(
+      { length: SAMPLE_MAX_ARRAY_LENGTH },
+      () => isRecord6(itemSample) ? { ...itemSample } : itemSample
+    );
+  }
+  if (propType === "number" || propType === "integer") {
+    const heuristic = sampleValueForField(fieldName, depth);
+    return typeof heuristic === "number" ? heuristic : 42;
+  }
+  if (propType === "boolean") {
+    const heuristic = sampleValueForField(fieldName, depth);
+    return typeof heuristic === "boolean" ? heuristic : true;
+  }
+  return sampleValueForField(fieldName, depth);
+}
+function generateSampleSnapshot(jsonSchema) {
+  const result = generateSampleFromSchema(jsonSchema, 0);
+  return isRecord6(result) ? result : { data: result };
+}
+function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
+  if (depth > 5) return [];
+  if (isRecord6(schema.properties)) {
+    return collectSchemaFieldNames(schema.properties, prefix, depth);
+  }
+  const fields = [];
+  for (const key of Object.keys(schema)) {
+    if (key === "type" || key === "properties" || key === "required" || key === "description" || key === "items" || key === "default" || key === "enum") continue;
+    const fullKey = prefix ? `${prefix}.${key}` : key;
+    fields.push(fullKey);
+    const val = schema[key];
+    if (isRecord6(val)) {
+      if (isRecord6(val.properties)) {
+        fields.push(...collectSchemaFieldNames(val.properties, fullKey, depth + 1));
+      } else if (val.type !== "string" && val.type !== "number" && val.type !== "boolean" && val.type !== "integer" && val.type !== "array") {
+        fields.push(...collectSchemaFieldNames(val, fullKey, depth + 1));
+      }
+    }
+  }
+  return fields;
+}
+function findTemplatePlaceholders(template) {
+  const placeholders = [];
+  const pattern = /\{\{\s*(?:#each\s+)?([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*\}\}/g;
+  let match = pattern.exec(template);
+  while (match) {
+    const val = match[1];
+    if (val && !placeholders.includes(val)) {
+      placeholders.push(val);
+    }
+    match = pattern.exec(template);
+  }
+  return placeholders;
+}
+function presetName(preset) {
+  return preset.name ?? "";
+}
+function presetId(preset) {
+  return "id" in preset && typeof preset.id === "string" ? preset.id : "validation_target";
+}
+function validatePresetReport(preset, options) {
+  const entries = [];
+  const missingPlaceholders = [];
+  const unusedSchemaFields = [];
+  const sanitizerWarningGroups = [];
+  let sampleRenderResult = null;
+  if (preset.name?.trim()) {
+    entries.push({ severity: "pass", category: "Metadata", message: "Preset name exists." });
+  } else {
+    entries.push({ severity: "error", category: "Metadata", message: "Preset name is empty." });
+  }
+  if (preset.version?.trim()) {
+    entries.push({ severity: "pass", category: "Metadata", message: "Preset version exists." });
+  } else {
+    entries.push({ severity: "error", category: "Metadata", message: "Preset version is missing." });
+  }
+  if (isRecord6(preset.jsonSchema)) {
+    const rootKeys = Object.keys(preset.jsonSchema);
+    if (rootKeys.length > 0) {
+      entries.push({ severity: "pass", category: "Schema", message: `JSON schema has ${rootKeys.length} root field(s): ${rootKeys.slice(0, 10).join(", ")}${rootKeys.length > 10 ? "..." : ""}.` });
+    } else {
+      entries.push({ severity: "error", category: "Schema", message: "JSON schema is empty (no root fields)." });
+    }
+    const schemaJson = JSON.stringify(preset.jsonSchema, null, 2);
+    const schemaSize = schemaJson.length;
+    if (schemaSize > 5e4) {
+      entries.push({ severity: "warning", category: "Schema", message: `JSON schema is very large (${schemaSize.toLocaleString()} chars). Consider simplifying.` });
+    } else {
+      entries.push({ severity: "info", category: "Schema", message: `JSON schema size: ${schemaSize.toLocaleString()} chars.` });
+    }
+    const schemaObj = preset.jsonSchema;
+    if (Array.isArray(schemaObj.required)) {
+      const requiredFields = schemaObj.required.filter((f) => typeof f === "string");
+      const invalidRequired = requiredFields.filter((f) => !rootKeys.includes(f) && !(isRecord6(schemaObj.properties) && f in schemaObj.properties));
+      if (invalidRequired.length > 0) {
+        entries.push({ severity: "warning", category: "Schema", message: `Required fields not in schema properties: ${invalidRequired.join(", ")}.` });
+      }
+    }
+  } else {
+    entries.push({ severity: "error", category: "Schema", message: "JSON schema is not a valid object." });
+  }
+  const prompt = preset.promptInstructions ?? "";
+  if (prompt.trim()) {
+    entries.push({ severity: "pass", category: "Prompt", message: "Prompt instructions exist." });
+    const promptTokens = Math.ceil(prompt.length / 4);
+    entries.push({ severity: "info", category: "Prompt", message: `Estimated prompt tokens: ~${promptTokens.toLocaleString()}.` });
+    if (promptTokens > 8e3) {
+      entries.push({ severity: "warning", category: "Prompt", message: `Prompt is very large (~${promptTokens.toLocaleString()} tokens). Consider reducing if generation is slow.` });
+    }
+    const hasJsonInstruction = /json[\s-]*only|respond[\s]*(?:only[\s]*)?(?:with|in)[\s]*json|output[\s]*(?:must[\s]*be[\s]*)?json|no[\s]*(?:markdown|prose|explanation)/i.test(prompt);
+    if (!hasJsonInstruction) {
+      entries.push({ severity: "warning", category: "Prompt", message: "Prompt may not contain a clear JSON-only instruction. Consider adding 'Respond only with JSON' to prevent prose around the tracker output." });
+    }
+  } else {
+    entries.push({ severity: "error", category: "Prompt", message: "Prompt instructions are empty." });
+  }
+  const template = preset.htmlTemplate ?? "";
+  if (template.trim()) {
+    entries.push({ severity: "pass", category: "Template", message: "HTML template exists." });
+    entries.push({ severity: "info", category: "Template", message: `Template size: ${template.length.toLocaleString()} chars.` });
+    if (isRecord6(preset.jsonSchema)) {
+      const schemaFields = collectSchemaFieldNames(preset.jsonSchema);
+      const templatePlaceholders = findTemplatePlaceholders(template);
+      for (const placeholder of templatePlaceholders) {
+        const rootField = placeholder.split(".")[0];
+        if (!schemaFields.some((f) => f === placeholder || f.startsWith(placeholder + ".") || f === rootField)) {
+          missingPlaceholders.push(placeholder);
+        }
+      }
+      if (missingPlaceholders.length > 0) {
+        entries.push({ severity: "warning", category: "Template", message: `Template references fields not in schema: ${missingPlaceholders.join(", ")}.` });
+      }
+      for (const field of schemaFields) {
+        const rootField = field.split(".")[0];
+        if (!templatePlaceholders.some((p) => p === field || p === rootField || field.startsWith(p + "."))) {
+          unusedSchemaFields.push(field);
+        }
+      }
+      if (unusedSchemaFields.length > 0 && unusedSchemaFields.length <= 20) {
+        entries.push({ severity: "info", category: "Template", message: `Schema fields not referenced in template: ${unusedSchemaFields.join(", ")}.` });
+      }
+    }
+    const sampleData = isRecord6(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema) : {};
+    sampleRenderResult = renderHtmlTemplate(
+      { template, snapshotData: sampleData, presetId: presetId(preset), presetName: presetName(preset) },
+      {
+        allowInlineStyles: options?.allowInlineStyles ?? true,
+        maxRenderedChars: options?.maxRenderedChars ?? 5e5,
+        deduplicateWarnings: true,
+        maxWarnings: 50
+      }
+    );
+    if (sampleRenderResult.ok) {
+      entries.push({ severity: "pass", category: "Template", message: "Template renders successfully with sample data." });
+      const renderedSize = sampleRenderResult.html.length;
+      entries.push({ severity: "info", category: "Template", message: `Rendered HTML size: ${renderedSize.toLocaleString()} chars.` });
+      if (renderedSize > 1e5) {
+        entries.push({ severity: "warning", category: "Template", message: "Rendered output is very large. May be slow on mobile devices." });
+      }
+    } else {
+      entries.push({ severity: "warning", category: "Template", message: `Template render failed with sample data: ${sampleRenderResult.errors.join("; ")}` });
+    }
+    if (sampleRenderResult && sampleRenderResult.warnings.length > 0) {
+      const warningGroups = /* @__PURE__ */ new Map();
+      for (const w of sampleRenderResult.warnings) {
+        const key = w.replace(/["'][^"']*["']/g, "...").replace(/\d+/g, "N");
+        warningGroups.set(key, (warningGroups.get(key) ?? 0) + 1);
+      }
+      for (const [group, count] of warningGroups) {
+        const label = count > 1 ? `(\xD7${count}) ${group}` : group;
+        sanitizerWarningGroups.push(label);
+      }
+      if (sanitizerWarningGroups.length > 0) {
+        entries.push({ severity: "warning", category: "Sanitizer", message: `${sanitizerWarningGroups.length} sanitizer warning group(s).` });
+      }
+    }
+  } else {
+    entries.push({ severity: "info", category: "Template", message: "No HTML template. Text fallback will be used for display." });
+  }
+  const schemaPreset = {
+    id: presetId(preset),
+    name: preset.name ?? "",
+    description: "description" in preset && typeof preset.description === "string" ? preset.description : "",
+    version: preset.version ?? "1.0",
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    jsonSchema: isRecord6(preset.jsonSchema) ? preset.jsonSchema : {},
+    promptInstructions: preset.promptInstructions ?? "",
+    htmlTemplate: preset.htmlTemplate ?? "",
+    notes: preset.notes ?? "",
+    origin: "origin" in preset && typeof preset.origin === "string" ? preset.origin : "user_created"
+  };
+  const stats = estimatePresetStats(schemaPreset);
+  const packSizeEstimate = JSON.stringify(preset).length;
+  const errorCount = entries.filter((e) => e.severity === "error").length;
+  const warningCount = entries.filter((e) => e.severity === "warning").length;
+  const passCount = entries.filter((e) => e.severity === "pass").length;
+  return {
+    ok: errorCount === 0,
+    entries,
+    errorCount,
+    warningCount,
+    passCount,
+    estimatedPromptTokens: stats.estimatedTokens,
+    estimatedRenderedChars: stats.estimatedRenderedChars,
+    estimatedPackSizeChars: packSizeEstimate,
+    missingPlaceholders,
+    unusedSchemaFields,
+    sanitizerWarningGroups,
+    sampleRenderResult
+  };
+}
+function sanitizePackFileName(presetName2, presetVersion) {
+  const name = (presetName2 ?? "").trim().replace(/[^a-zA-Z0-9_\- ]+/g, "").replace(/\s+/g, "-").replace(/^-+|-+$/g, "") || "preset";
+  const version = (presetVersion ?? "").trim().replace(/[^a-zA-Z0-9._-]+/g, "") || "1.0";
+  return `${name}-${version}.ltracker.json`;
+}
+
 // src/shared/generationRequest.ts
 var TRACKER_CONNECTION_DEFAULT_TEST_PROMPT = "Return a compact JSON object with ok true and a short status.";
 var TRACKER_CONNECTION_PARAMETER_LIMITS = {
@@ -2136,7 +2709,7 @@ var DEFAULT_SETTINGS = {
     cleanupDuplicatesOnly: true
   }
 };
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null;
 }
 function clampNumber(value, fallback, min, max) {
@@ -2203,20 +2776,20 @@ function thinkingDisplay(value) {
   return value === "auto" || value === "summarized" || value === "omitted" ? value : DEFAULT_SETTINGS.connection.reasoning.thinkingDisplay;
 }
 function repairSettings(value) {
-  const source = isRecord6(value) ? value : {};
-  const autoSource = isRecord6(source.auto) ? source.auto : {};
-  const historySource = isRecord6(source.history) ? source.history : {};
-  const storageMaintenanceSource = isRecord6(source.storageMaintenance) ? source.storageMaintenance : {};
-  const autoTimingSource = isRecord6(source.autoTiming) ? source.autoTiming : {};
-  const budgetSource = isRecord6(source.budget) ? source.budget : {};
-  const memorySourceObject = isRecord6(source.memory) ? source.memory : {};
-  const injectionSource = isRecord6(source.injection) ? source.injection : {};
-  const rendererSource = isRecord6(source.renderer) ? source.renderer : {};
-  const messageDisplaySource = isRecord6(source.messageDisplay) ? source.messageDisplay : {};
-  const expandedWidthSource = isRecord6(source.expandedWidth) ? source.expandedWidth : {};
-  const connectionSource = isRecord6(source.connection) ? source.connection : {};
-  const connectionParameterSource = isRecord6(connectionSource.parameters) ? connectionSource.parameters : {};
-  const connectionReasoningSource = isRecord6(connectionSource.reasoning) ? connectionSource.reasoning : {};
+  const source = isRecord7(value) ? value : {};
+  const autoSource = isRecord7(source.auto) ? source.auto : {};
+  const historySource = isRecord7(source.history) ? source.history : {};
+  const storageMaintenanceSource = isRecord7(source.storageMaintenance) ? source.storageMaintenance : {};
+  const autoTimingSource = isRecord7(source.autoTiming) ? source.autoTiming : {};
+  const budgetSource = isRecord7(source.budget) ? source.budget : {};
+  const memorySourceObject = isRecord7(source.memory) ? source.memory : {};
+  const injectionSource = isRecord7(source.injection) ? source.injection : {};
+  const rendererSource = isRecord7(source.renderer) ? source.renderer : {};
+  const messageDisplaySource = isRecord7(source.messageDisplay) ? source.messageDisplay : {};
+  const expandedWidthSource = isRecord7(source.expandedWidth) ? source.expandedWidth : {};
+  const connectionSource = isRecord7(source.connection) ? source.connection : {};
+  const connectionParameterSource = isRecord7(connectionSource.parameters) ? connectionSource.parameters : {};
+  const connectionReasoningSource = isRecord7(connectionSource.reasoning) ? connectionSource.reasoning : {};
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot" ? rendererSource.previewSource : DEFAULT_SETTINGS.renderer.previewSource;
   const messageDisplayPlacement = messageDisplaySource.placement === "bottom" || messageDisplaySource.placement === "top" ? messageDisplaySource.placement : DEFAULT_SETTINGS.messageDisplay.placement;
   const messageDisplaySourceSetting = messageDisplaySource.source === "latest_chat_snapshot" || messageDisplaySource.source === "message_attached_snapshot" ? messageDisplaySource.source : DEFAULT_SETTINGS.messageDisplay.source;
@@ -2808,8 +3381,8 @@ function diagnosticsPath(chatId) {
 function activePresetPath(chatId) {
   return `chats/${encodeStorageSegment(chatId)}/active-preset.json`;
 }
-function presetPath(presetId) {
-  return `presets/${encodeStorageSegment(presetId)}.json`;
+function presetPath(presetId2) {
+  return `presets/${encodeStorageSegment(presetId2)}.json`;
 }
 var PRESETS_INDEX_PATH = "presets/index.json";
 var SETTINGS_PATH = "settings.json";
@@ -2885,7 +3458,7 @@ var EMPTY_MEMORY = {
   truncated: false,
   skippedReason: null
 };
-function isRecord7(value) {
+function isRecord8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function primitiveToString3(value) {
@@ -2896,7 +3469,7 @@ function primitiveToString3(value) {
 }
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (isRecord7(value)) {
+  if (isRecord8(value)) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
@@ -2942,14 +3515,14 @@ function compactValue(value) {
     const rendered = value.map((item) => {
       const itemPrimitive = primitiveToString3(item);
       if (itemPrimitive) return itemPrimitive;
-      if (isRecord7(item)) {
+      if (isRecord8(item)) {
         return primitiveToString3(item.name) ?? primitiveToString3(item.title) ?? primitiveToString3(item.id);
       }
       return null;
     }).filter((item) => Boolean(item));
     return rendered.length > 0 ? rendered.slice(0, 5).join("; ") : null;
   }
-  if (isRecord7(value)) {
+  if (isRecord8(value)) {
     for (const key of ["location", "time", "date", "mood", "status", "name", "title", "summary"]) {
       const rendered = primitiveToString3(value[key]);
       if (rendered) return rendered;
@@ -2958,7 +3531,7 @@ function compactValue(value) {
   return null;
 }
 function compactPayloadSummary(payload) {
-  const scene = isRecord7(payload.scene) ? payload.scene : null;
+  const scene = isRecord8(payload.scene) ? payload.scene : null;
   const sceneParts = [
     scene ? compactValue(scene.location) : null,
     scene ? compactValue(scene.time) ?? compactValue(scene.date) : null,
@@ -3171,7 +3744,7 @@ function cleanRecentlyDeletedSnapshots() {
     }
   }
 }
-function isRecord8(value) {
+function isRecord9(value) {
   return typeof value === "object" && value !== null;
 }
 function nowIso() {
@@ -3200,7 +3773,7 @@ function diagnosticError(error, fallbackStage) {
   return result;
 }
 function isFrontendMessage(payload) {
-  if (!isRecord8(payload) || typeof payload.type !== "string") return false;
+  if (!isRecord9(payload) || typeof payload.type !== "string") return false;
   if (![
     "ready",
     "refresh_state",
@@ -3229,7 +3802,11 @@ function isFrontendMessage(payload) {
     "embedded_tracker_tag_intercepted",
     "restore_deleted_tracker",
     "run_storage_maintenance_scan",
-    "cleanup_missing_index_entries"
+    "cleanup_missing_index_entries",
+    "import_preset_pack",
+    "export_preset_pack",
+    "validate_preset_report",
+    "generate_sample_snapshot"
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if ([
@@ -3258,13 +3835,17 @@ function isFrontendMessage(payload) {
     "embedded_tracker_tag_intercepted",
     "restore_deleted_tracker",
     "run_storage_maintenance_scan",
-    "cleanup_missing_index_entries"
+    "cleanup_missing_index_entries",
+    "import_preset_pack",
+    "export_preset_pack",
+    "validate_preset_report",
+    "generate_sample_snapshot"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
-  if (payload.type === "save_settings" && !isRecord8(payload.settings)) return false;
-  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord8(payload.settings)) return false;
-  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord8(payload.preset)) return false;
+  if (payload.type === "save_settings" && !isRecord9(payload.settings)) return false;
+  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord9(payload.settings)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset", "validate_preset_report"].includes(payload.type) && !isRecord9(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
-  if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
+  if (["import_preset", "import_preset_pack"].includes(payload.type) && typeof payload.importText !== "string") return false;
   if (payload.type === "regenerate_message_tracker" && (typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
   if (payload.type === "generate_message_tracker" && (typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
   if (payload.type === "cancel_tracker_generation" && ("jobId" in payload && payload.jobId !== null && payload.jobId !== void 0 && typeof payload.jobId !== "string")) return false;
@@ -3476,7 +4057,20 @@ function defaultDiagnostics(chatId) {
     staleJobsEvictedCount: 0,
     lastHistoryOrphanCount: 0,
     lastPresetEstimatedTokens: null,
-    lastPresetEstimatedRenderedChars: null
+    lastPresetEstimatedRenderedChars: null,
+    lastPresetPackImportAt: null,
+    lastPresetPackImportStatus: null,
+    lastPresetPackImportError: null,
+    lastPresetPackImportSizeChars: null,
+    lastPresetPackImportEstimatedTokens: null,
+    lastPresetPackExportAt: null,
+    lastPresetPackExportName: null,
+    lastPresetValidationAt: null,
+    lastPresetValidationStatus: null,
+    lastPresetValidationErrorCount: 0,
+    lastPresetValidationWarningCount: 0,
+    lastPresetValidationEstimatedTokens: null,
+    lastPresetValidationEstimatedRenderedChars: null
   };
 }
 function stringOrNull3(value) {
@@ -3492,7 +4086,7 @@ function stringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 function recordOrNull(value) {
-  return isRecord8(value) && !Array.isArray(value) ? value : null;
+  return isRecord9(value) && !Array.isArray(value) ? value : null;
 }
 function sourceKindOrNull(value) {
   return value === "manual" || value === "auto" || value === "widget" ? value : null;
@@ -3536,11 +4130,11 @@ function connectionTestStatus(value) {
 function activeTrackerJobsOrEmpty(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => {
-    return isRecord8(item) && typeof item.jobId === "string" && typeof item.messageId === "string" && typeof item.swipeKey === "string" && typeof item.startedAt === "string";
+    return isRecord9(item) && typeof item.jobId === "string" && typeof item.messageId === "string" && typeof item.swipeKey === "string" && typeof item.startedAt === "string";
   });
 }
 function errorOrNull(value) {
-  if (!isRecord8(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
+  if (!isRecord9(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
   const error = {
     stage: value.stage,
     message: value.message,
@@ -3550,7 +4144,7 @@ function errorOrNull(value) {
   return error;
 }
 function cancellationOrNull(value) {
-  if (!isRecord8(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
+  if (!isRecord9(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
   return {
     jobId: value.jobId,
     requestId: value.requestId,
@@ -3560,7 +4154,7 @@ function cancellationOrNull(value) {
 }
 function repairDiagnostics(value, chatId) {
   const base = defaultDiagnostics(chatId);
-  if (!isRecord8(value)) return base;
+  if (!isRecord9(value)) return base;
   return {
     ...base,
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
@@ -3730,7 +4324,33 @@ function repairDiagnostics(value, chatId) {
     ultraModeEnabled: typeof value.ultraModeEnabled === "boolean" ? value.ultraModeEnabled : base.ultraModeEnabled,
     estimatedPromptTokensLastRun: numberOrNull2(value.estimatedPromptTokensLastRun),
     estimatedMemoryTokensLastRun: numberOrNull2(value.estimatedMemoryTokensLastRun),
-    iframeFallbackVisibleInMainUi: typeof value.iframeFallbackVisibleInMainUi === "boolean" ? value.iframeFallbackVisibleInMainUi : false
+    iframeFallbackVisibleInMainUi: typeof value.iframeFallbackVisibleInMainUi === "boolean" ? value.iframeFallbackVisibleInMainUi : false,
+    lastMemoryIndexCount: typeof value.lastMemoryIndexCount === "number" && Number.isFinite(value.lastMemoryIndexCount) ? Math.max(0, Math.round(value.lastMemoryIndexCount)) : 0,
+    lastMemoryCandidateCount: typeof value.lastMemoryCandidateCount === "number" && Number.isFinite(value.lastMemoryCandidateCount) ? Math.max(0, Math.round(value.lastMemoryCandidateCount)) : 0,
+    lastMemoryLoadedSnapshotCount: typeof value.lastMemoryLoadedSnapshotCount === "number" && Number.isFinite(value.lastMemoryLoadedSnapshotCount) ? Math.max(0, Math.round(value.lastMemoryLoadedSnapshotCount)) : 0,
+    lastMemoryLoadDurationMs: typeof value.lastMemoryLoadDurationMs === "number" && Number.isFinite(value.lastMemoryLoadDurationMs) ? Math.max(0, Math.round(value.lastMemoryLoadDurationMs)) : 0,
+    lastMemoryLoadSkippedCount: typeof value.lastMemoryLoadSkippedCount === "number" && Number.isFinite(value.lastMemoryLoadSkippedCount) ? Math.max(0, Math.round(value.lastMemoryLoadSkippedCount)) : 0,
+    lastJobTimeoutAt: stringOrNull3(value.lastJobTimeoutAt),
+    lastJobTimeoutJobId: stringOrNull3(value.lastJobTimeoutJobId),
+    lastJobTimeoutMessageId: stringOrNull3(value.lastJobTimeoutMessageId),
+    lastJobTimeoutSwipeKey: stringOrNull3(value.lastJobTimeoutSwipeKey),
+    staleJobsEvictedCount: typeof value.staleJobsEvictedCount === "number" && Number.isFinite(value.staleJobsEvictedCount) ? Math.max(0, Math.round(value.staleJobsEvictedCount)) : 0,
+    lastHistoryOrphanCount: typeof value.lastHistoryOrphanCount === "number" && Number.isFinite(value.lastHistoryOrphanCount) ? Math.max(0, Math.round(value.lastHistoryOrphanCount)) : 0,
+    lastPresetEstimatedTokens: numberOrNull2(value.lastPresetEstimatedTokens),
+    lastPresetEstimatedRenderedChars: numberOrNull2(value.lastPresetEstimatedRenderedChars),
+    lastPresetPackImportAt: stringOrNull3(value.lastPresetPackImportAt),
+    lastPresetPackImportStatus: stringOrNull3(value.lastPresetPackImportStatus),
+    lastPresetPackImportError: stringOrNull3(value.lastPresetPackImportError),
+    lastPresetPackImportSizeChars: numberOrNull2(value.lastPresetPackImportSizeChars),
+    lastPresetPackImportEstimatedTokens: numberOrNull2(value.lastPresetPackImportEstimatedTokens),
+    lastPresetPackExportAt: stringOrNull3(value.lastPresetPackExportAt),
+    lastPresetPackExportName: stringOrNull3(value.lastPresetPackExportName),
+    lastPresetValidationAt: stringOrNull3(value.lastPresetValidationAt),
+    lastPresetValidationStatus: stringOrNull3(value.lastPresetValidationStatus),
+    lastPresetValidationErrorCount: typeof value.lastPresetValidationErrorCount === "number" && Number.isFinite(value.lastPresetValidationErrorCount) ? Math.max(0, Math.round(value.lastPresetValidationErrorCount)) : 0,
+    lastPresetValidationWarningCount: typeof value.lastPresetValidationWarningCount === "number" && Number.isFinite(value.lastPresetValidationWarningCount) ? Math.max(0, Math.round(value.lastPresetValidationWarningCount)) : 0,
+    lastPresetValidationEstimatedTokens: numberOrNull2(value.lastPresetValidationEstimatedTokens),
+    lastPresetValidationEstimatedRenderedChars: numberOrNull2(value.lastPresetValidationEstimatedRenderedChars)
   };
 }
 async function getSettings(userId) {
@@ -3768,8 +4388,8 @@ async function savePresetIndex(ids, userId) {
   const unique = [...new Set(ids.filter((id) => id !== DEFAULT_TRACKER_PRESET_ID))];
   await spindle.userStorage.setJson(PRESETS_INDEX_PATH, unique, { indent: 2, userId });
 }
-async function loadUserPreset(presetId, userId) {
-  const raw = await spindle.userStorage.getJson(presetPath(presetId), {
+async function loadUserPreset(presetId2, userId) {
+  const raw = await spindle.userStorage.getJson(presetPath(presetId2), {
     fallback: null,
     userId
   });
@@ -3797,7 +4417,7 @@ async function loadActivePresetState(chatId, userId) {
     fallback: null,
     userId
   });
-  if (!isRecord8(raw) || typeof raw.selectedPresetId !== "string") {
+  if (!isRecord9(raw) || typeof raw.selectedPresetId !== "string") {
     return defaultActivePresetState();
   }
   return {
@@ -3805,16 +4425,16 @@ async function loadActivePresetState(chatId, userId) {
     selectedAt: typeof raw.selectedAt === "string" ? raw.selectedAt : nowIso()
   };
 }
-async function saveActivePresetState(chatId, presetId, userId) {
+async function saveActivePresetState(chatId, presetId2, userId) {
   const state = {
-    selectedPresetId: presetId,
+    selectedPresetId: presetId2,
     selectedAt: nowIso()
   };
   await spindle.userStorage.setJson(activePresetPath(chatId), state, { indent: 2, userId });
   return state;
 }
-function presetById(presets, presetId) {
-  return presets.find((preset) => preset.id === presetId) ?? null;
+function presetById(presets, presetId2) {
+  return presets.find((preset) => preset.id === presetId2) ?? null;
 }
 async function resolveActivePreset(chatId, userId) {
   const presets = await loadPresetCatalog(userId);
@@ -3838,13 +4458,13 @@ async function saveUserPreset(preset, userId) {
   const ids = await loadPresetIndex(userId);
   if (!ids.includes(preset.id)) await savePresetIndex([...ids, preset.id], userId);
 }
-async function deleteUserPreset(presetId, userId) {
-  if (presetId === DEFAULT_TRACKER_PRESET_ID) throw new Error("Built-in presets cannot be deleted.");
+async function deleteUserPreset(presetId2, userId) {
+  if (presetId2 === DEFAULT_TRACKER_PRESET_ID) throw new Error("Built-in presets cannot be deleted.");
   const ids = await loadPresetIndex(userId);
-  if (await spindle.userStorage.exists(presetPath(presetId), userId)) {
-    await spindle.userStorage.delete(presetPath(presetId), userId);
+  if (await spindle.userStorage.exists(presetPath(presetId2), userId)) {
+    await spindle.userStorage.delete(presetPath(presetId2), userId);
   }
-  await savePresetIndex(ids.filter((id) => id !== presetId), userId);
+  await savePresetIndex(ids.filter((id) => id !== presetId2), userId);
 }
 async function loadSnapshot(chatId, userId) {
   if (!chatId) return null;
@@ -4456,7 +5076,7 @@ function normalizeMessages(messages) {
 }
 function normalizeGenerationText(result) {
   if (typeof result === "string" && result.trim()) return result;
-  if (!isRecord8(result)) {
+  if (!isRecord9(result)) {
     throw new Error("Lumiverse generation returned an unsupported response.");
   }
   for (const key of ["content", "text", "output", "response"]) {
@@ -4465,19 +5085,19 @@ function normalizeGenerationText(result) {
   }
   const message = result.message;
   if (typeof message === "string" && message.trim()) return message;
-  if (isRecord8(message) && typeof message.content === "string" && message.content.trim()) {
+  if (isRecord9(message) && typeof message.content === "string" && message.content.trim()) {
     return message.content;
   }
   throw new Error("Lumiverse generation completed without textual content.");
 }
 function generationFinishReason(result) {
-  if (!isRecord8(result)) return null;
+  if (!isRecord9(result)) return null;
   for (const key of ["finish_reason", "finishReason", "stop_reason", "stopReason"]) {
     const value = result[key];
     if (typeof value === "string") return value;
   }
   const choice = Array.isArray(result.choices) ? result.choices[0] : null;
-  if (isRecord8(choice)) {
+  if (isRecord9(choice)) {
     for (const key of ["finish_reason", "finishReason"]) {
       const value = choice[key];
       if (typeof value === "string") return value;
@@ -4486,7 +5106,7 @@ function generationFinishReason(result) {
   return null;
 }
 function generationUsage(result) {
-  if (!isRecord8(result)) return null;
+  if (!isRecord9(result)) return null;
   const usage = result.usage ?? result.token_usage ?? result.tokenUsage;
   return recordOrNull(usage);
 }
@@ -4813,11 +5433,11 @@ function targetUsersForChat(chatId, userId) {
   return [...usersByChat.get(chatId) ?? []];
 }
 function isChatMessage(value) {
-  return isRecord8(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
+  return isRecord9(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
 }
 function messageFromEventPayload(payload) {
   if (isChatMessage(payload)) return payload;
-  if (isRecord8(payload) && isChatMessage(payload.message)) return payload.message;
+  if (isRecord9(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
 }
 async function queueAutoDebounce(input) {
@@ -5153,7 +5773,7 @@ async function handleMessageSent(payload, userId) {
   }
 }
 async function handleMessageSwiped(payload, userId) {
-  if (!isRecord8(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  if (!isRecord9(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
   const message = payload.message;
   const identity = deriveSwipeTrackerIdentity(payload.chatId, message);
   const users = targetUsersForChat(payload.chatId, userId);
@@ -5192,7 +5812,7 @@ async function handleMessageSwiped(payload, userId) {
   }
 }
 async function handleSwipeEdited(payload, userId) {
-  if (!isRecord8(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  if (!isRecord9(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
   await handleMessageSwiped({
     chatId: payload.chatId,
     message: payload.message,
@@ -5200,14 +5820,14 @@ async function handleSwipeEdited(payload, userId) {
   }, userId);
 }
 function handleChatSwitched(payload, userId) {
-  if (!userId || !isRecord8(payload)) return;
+  if (!userId || !isRecord9(payload)) return;
   const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
   rememberActiveChat(userId, chatId);
 }
 function stringAtPath2(value, path) {
   let current = value;
   for (const segment of path) {
-    if (!isRecord8(current)) return null;
+    if (!isRecord9(current)) return null;
     current = current[segment];
   }
   return typeof current === "string" && current.trim() ? current : null;
@@ -5940,13 +6560,13 @@ function normalizePresetDraft(value) {
     name: typeof value.name === "string" ? value.name : "",
     description: typeof value.description === "string" ? value.description : "",
     version: typeof value.version === "string" ? value.version : "1.0",
-    jsonSchema: isRecord8(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord9(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: typeof value.promptInstructions === "string" ? value.promptInstructions : ""
   };
   if (typeof value.id === "string") draft.id = value.id;
   if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
   if (typeof value.notes === "string") draft.notes = value.notes;
-  if (isRecord8(value.capabilities)) {
+  if (isRecord9(value.capabilities)) {
     const capabilities = {};
     if (typeof value.capabilities.supportsHtmlTemplate === "boolean") {
       capabilities.supportsHtmlTemplate = value.capabilities.supportsHtmlTemplate;
@@ -5981,11 +6601,11 @@ async function recordPresetDiagnostic(chatId, userId, fields) {
   };
   await tryPersistDiagnostics(diagnostics, userId);
 }
-async function selectPreset(chatId, userId, presetId, requestId) {
+async function selectPreset(chatId, userId, presetId2, requestId) {
   const resolvedChatId = await presetOperationChatId(chatId, userId);
   const presets = await loadPresetCatalog(userId);
-  const selected = presetById(presets, presetId);
-  if (!selected) throw new Error(`Preset ${presetId} was not found.`);
+  const selected = presetById(presets, presetId2);
+  if (!selected) throw new Error(`Preset ${presetId2} was not found.`);
   await saveActivePresetState(resolvedChatId, selected.id, userId);
   await recordPresetDiagnostic(resolvedChatId, userId, {
     lastPresetValidationError: null,
@@ -6027,15 +6647,15 @@ async function savePresetFromDraft(input) {
   });
   await sendState(resolvedChatId, input.userId, "idle", null, input.requestId);
 }
-async function deletePreset(chatId, userId, presetId, requestId) {
+async function deletePreset(chatId, userId, presetId2, requestId) {
   const resolvedChatId = await presetOperationChatId(chatId, userId);
   const presets = await loadPresetCatalog(userId);
-  const preset = presetById(presets, presetId);
+  const preset = presetById(presets, presetId2);
   if (!preset) throw new Error("Preset to delete was not found.");
   if (!canModifyPreset(preset)) throw new Error("Built-in presets cannot be deleted.");
-  await deleteUserPreset(presetId, userId);
+  await deleteUserPreset(presetId2, userId);
   const active = await loadActivePresetState(resolvedChatId, userId);
-  if (active.selectedPresetId === presetId) {
+  if (active.selectedPresetId === presetId2) {
     await saveActivePresetState(resolvedChatId, DEFAULT_TRACKER_PRESET_ID, userId);
   }
   await recordPresetDiagnostic(resolvedChatId, userId, {
@@ -6103,6 +6723,252 @@ async function validatePreset(chatId, userId, draftValue, requestId) {
   });
   if (validationError) throw new Error(validationError);
   await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+async function exportPresetPackHandler(chatId, userId, options, requestId) {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const presets = await loadPresetCatalog(userId);
+  const activeState = await loadActivePresetState(resolvedChatId, userId);
+  const activePreset = presetById(presets, activeState.selectedPresetId) ?? DEFAULT_TRACKER_PRESET;
+  const settings = await getSettings(userId);
+  const now = nowIso();
+  let exampleSnapshot;
+  if (options.includeExampleSnapshot) {
+    const latestSnapshot = await loadSnapshot(resolvedChatId, userId);
+    if (latestSnapshot && latestSnapshot.data) {
+      exampleSnapshot = latestSnapshot.data;
+    }
+  }
+  const exportOpts = {};
+  if (options.includeRecommendedSettings !== void 0) {
+    exportOpts.includeRecommendedSettings = options.includeRecommendedSettings;
+  }
+  if (settings !== void 0) {
+    exportOpts.settings = settings;
+  }
+  if (exampleSnapshot !== void 0) {
+    exportOpts.exampleSnapshot = exampleSnapshot;
+  }
+  const pack = exportPresetPack(activePreset, exportOpts);
+  const jsonStr = JSON.stringify(pack, null, 2);
+  const fileName = sanitizePackFileName(activePreset.name, activePreset.version);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetPackExportAt: now,
+    lastPresetPackExportName: fileName
+  });
+  const response = {
+    type: "preset_pack_export_ready",
+    json: jsonStr,
+    fileName,
+    requestId
+  };
+  send(response, userId);
+}
+async function importPresetPackHandler(chatId, userId, importText, options, requestId) {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const settings = await getSettings(userId);
+  const now = nowIso();
+  if (importText.length > settings.budget.presetImportMaxChars) {
+    const errorMsg = `Import payload size (${importText.length} characters) exceeds the size limit of ${settings.budget.presetImportMaxChars} characters.`;
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: errorMsg,
+      lastPresetFallbackReason: null,
+      lastPresetPackImportAt: now,
+      lastPresetPackImportStatus: "error",
+      lastPresetPackImportError: errorMsg,
+      lastPresetPackImportSizeChars: importText.length,
+      lastPresetPackImportEstimatedTokens: null
+    });
+    throw new Error(errorMsg);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(importText);
+  } catch (error) {
+    const errorMsg = `Import JSON is invalid: ${error instanceof Error ? error.message : String(error)}`;
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: errorMsg,
+      lastPresetFallbackReason: null,
+      lastPresetPackImportAt: now,
+      lastPresetPackImportStatus: "error",
+      lastPresetPackImportError: errorMsg,
+      lastPresetPackImportSizeChars: importText.length,
+      lastPresetPackImportEstimatedTokens: null
+    });
+    throw new Error(errorMsg);
+  }
+  const presets = await loadPresetCatalog(userId);
+  const existingIds = presets.map((p) => p.id);
+  const result = importPresetPack(parsed, existingIds, now);
+  if (!result.ok || !result.preset) {
+    const errorMsg = result.error ?? "Imported preset is invalid.";
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: errorMsg,
+      lastPresetFallbackReason: null,
+      lastPresetPackImportAt: now,
+      lastPresetPackImportStatus: "error",
+      lastPresetPackImportError: errorMsg,
+      lastPresetPackImportSizeChars: importText.length,
+      lastPresetPackImportEstimatedTokens: null
+    });
+    throw new Error(errorMsg);
+  }
+  const importedPreset = result.preset;
+  if (options.presetName && options.presetName.trim()) {
+    importedPreset.name = options.presetName.trim();
+  }
+  if (options.overwritePresetId) {
+    if (options.overwritePresetId === DEFAULT_TRACKER_PRESET_ID) {
+      throw new Error("Built-in presets cannot be overwritten.");
+    }
+    const toOverwrite = presets.find((p) => p.id === options.overwritePresetId);
+    if (!toOverwrite) {
+      throw new Error(`Preset to overwrite was not found: ${options.overwritePresetId}`);
+    }
+    if (toOverwrite.origin === "built_in") {
+      throw new Error("Built-in presets cannot be overwritten.");
+    }
+    importedPreset.id = options.overwritePresetId;
+  }
+  if (options.trustMode === "trusted" || options.trustMode === "safe") {
+    settings.renderer.templateTrustMode = options.trustMode;
+    await saveSettings(settings, userId);
+  }
+  if (options.applyRecommendedSettings && result.recommendedSettings) {
+    const rec = result.recommendedSettings;
+    if (rec.connection) {
+      const conn = rec.connection;
+      if (conn.mode) settings.connection.mode = conn.mode;
+      if (typeof conn.parameters?.temperature === "number") settings.connection.parameters.temperature = conn.parameters.temperature;
+      if (typeof conn.parameters?.max_tokens === "number") settings.connection.parameters.max_tokens = conn.parameters.max_tokens;
+      if (conn.reasoning) {
+        if (conn.reasoning.source) settings.connection.reasoning.source = conn.reasoning.source;
+        if (conn.reasoning.effort) settings.connection.reasoning.effort = conn.reasoning.effort;
+      }
+    }
+    if (rec.memory) {
+      const mem = rec.memory;
+      if (typeof mem.enabled === "boolean") settings.memory.enabled = mem.enabled;
+      if (typeof mem.includeInTrackerGeneration === "boolean") settings.memory.includeInTrackerGeneration = mem.includeInTrackerGeneration;
+      if (typeof mem.retainCount === "number") settings.memory.retainCount = mem.retainCount;
+      if (typeof mem.fullSnapshotCount === "number") settings.memory.fullSnapshotCount = mem.fullSnapshotCount;
+      if (typeof mem.compactOlderSnapshots === "boolean") settings.memory.compactOlderSnapshots = mem.compactOlderSnapshots;
+      if (typeof mem.maxMemoryChars === "number") settings.memory.maxMemoryChars = mem.maxMemoryChars;
+      if (mem.source) settings.memory.source = mem.source;
+      if (mem.order) settings.memory.order = mem.order;
+    }
+    if (rec.injection) {
+      const inj = rec.injection;
+      if (typeof inj.enabled === "boolean") settings.injection.enabled = inj.enabled;
+      if (inj.format) settings.injection.format = inj.format;
+      if (typeof inj.retainCount === "number") settings.injection.retainCount = inj.retainCount;
+      if (inj.injectionPlacement) settings.injection.injectionPlacement = inj.injectionPlacement;
+      if (typeof inj.maxInjectedChars === "number") settings.injection.maxInjectedChars = inj.maxInjectedChars;
+    }
+    if (rec.renderer) {
+      const ren = rec.renderer;
+      if (typeof ren.enabled === "boolean") settings.renderer.enabled = ren.enabled;
+      if (ren.previewSource) settings.renderer.previewSource = ren.previewSource;
+      if (typeof ren.maxRenderedChars === "number") settings.renderer.maxRenderedChars = ren.maxRenderedChars;
+    }
+    if (rec.messageDisplay) {
+      const disp = rec.messageDisplay;
+      if (typeof disp.enabled === "boolean") settings.messageDisplay.enabled = disp.enabled;
+      if (typeof disp.useDomInjection === "boolean") settings.messageDisplay.useDomInjection = disp.useDomInjection;
+      if (disp.displayMode) settings.messageDisplay.displayMode = disp.displayMode;
+      if (disp.placement) settings.messageDisplay.placement = disp.placement;
+      if (disp.renderMode) settings.messageDisplay.renderMode = disp.renderMode;
+      if (typeof disp.showTimestamp === "boolean") settings.messageDisplay.showTimestamp = disp.showTimestamp;
+      if (typeof disp.showPresetName === "boolean") settings.messageDisplay.showPresetName = disp.showPresetName;
+      if (typeof disp.showGenerationDuration === "boolean") settings.messageDisplay.showGenerationDuration = disp.showGenerationDuration;
+      if (typeof disp.maxRenderedChars === "number") settings.messageDisplay.maxRenderedChars = disp.maxRenderedChars;
+    }
+    if (rec.expandedWidth) {
+      const w = rec.expandedWidth;
+      if (w.expandedWidthMode) settings.expandedWidth.expandedWidthMode = w.expandedWidthMode;
+      if (typeof w.maxExpandedWidthPx === "number") settings.expandedWidth.maxExpandedWidthPx = w.maxExpandedWidthPx;
+      if (typeof w.mobileHorizontalMarginPx === "number") settings.expandedWidth.mobileHorizontalMarginPx = w.mobileHorizontalMarginPx;
+      if (typeof w.expandedContentMaxHeightVh === "number") settings.expandedWidth.expandedContentMaxHeightVh = w.expandedContentMaxHeightVh;
+    }
+    if (rec.budget) {
+      const b = rec.budget;
+      if (b.mode) settings.budget.mode = b.mode;
+      if (typeof b.ultraModeEnabled === "boolean") settings.budget.ultraModeEnabled = b.ultraModeEnabled;
+      if (typeof b.maxTrackerOutputTokens === "number") settings.budget.maxTrackerOutputTokens = b.maxTrackerOutputTokens;
+      if (typeof b.renderedHtmlMaxChars === "number") settings.budget.renderedHtmlMaxChars = b.renderedHtmlMaxChars;
+    }
+    await saveSettings(settings, userId);
+  }
+  await saveUserPreset(importedPreset, userId);
+  await saveActivePresetState(resolvedChatId, importedPreset.id, userId);
+  const stats = estimatePresetStats(importedPreset);
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null,
+    lastPresetPackImportAt: now,
+    lastPresetPackImportStatus: "success",
+    lastPresetPackImportError: null,
+    lastPresetPackImportSizeChars: importText.length,
+    lastPresetPackImportEstimatedTokens: stats.estimatedTokens
+  });
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+async function validatePresetReportHandler(chatId, userId, draftValue, requestId) {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const draft = normalizePresetDraft(draftValue);
+  const settings = await getSettings(userId);
+  const report = validatePresetReport(draft, {
+    allowInlineStyles: settings.renderer.allowInlineStyles,
+    maxRenderedChars: settings.renderer.maxRenderedChars
+  });
+  const now = nowIso();
+  const errorMsg = report.ok ? null : "Preset validation failed.";
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: errorMsg,
+    lastPresetFallbackReason: null,
+    lastPresetValidationAt: now,
+    lastPresetValidationStatus: report.ok ? "success" : "error",
+    lastPresetValidationErrorCount: report.errorCount,
+    lastPresetValidationWarningCount: report.warningCount,
+    lastPresetValidationEstimatedTokens: report.estimatedPromptTokens,
+    lastPresetValidationEstimatedRenderedChars: report.estimatedRenderedChars
+  });
+  const response = {
+    type: "preset_pack_validation_report",
+    report,
+    requestId
+  };
+  send(response, userId);
+}
+async function generateSampleSnapshotHandler(chatId, userId, requestId) {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const presets = await loadPresetCatalog(userId);
+  const activeState = await loadActivePresetState(resolvedChatId, userId);
+  const activePreset = presetById(presets, activeState.selectedPresetId) ?? DEFAULT_TRACKER_PRESET;
+  const settings = await getSettings(userId);
+  const snapshotData = generateSampleSnapshot(activePreset.jsonSchema);
+  let renderResult = null;
+  if (activePreset.htmlTemplate?.trim()) {
+    renderResult = renderHtmlTemplate(
+      {
+        template: activePreset.htmlTemplate,
+        snapshotData,
+        presetId: activePreset.id,
+        presetName: activePreset.name
+      },
+      {
+        allowInlineStyles: settings.renderer.allowInlineStyles,
+        maxRenderedChars: settings.renderer.maxRenderedChars,
+        deduplicateWarnings: true
+      }
+    );
+  }
+  const response = {
+    type: "sample_snapshot_ready",
+    snapshot: snapshotData,
+    renderResult,
+    requestId
+  };
+  send(response, userId);
 }
 async function handleSettingsSave(payload, userId) {
   const settings = await saveSettings(payload.settings, userId).catch((error) => {
@@ -6783,8 +7649,43 @@ spindle.onFrontendMessage((payload, userId) => {
         await importPreset(chatId, userId, payload.importText, payload.requestId);
         return;
       }
+      if (payload.type === "import_preset_pack") {
+        const importOpts = {};
+        if (payload.presetName !== void 0) importOpts.presetName = payload.presetName;
+        if (payload.overwritePresetId !== void 0) importOpts.overwritePresetId = payload.overwritePresetId;
+        if (payload.trustMode !== void 0) importOpts.trustMode = payload.trustMode;
+        if (payload.applyRecommendedSettings !== void 0) importOpts.applyRecommendedSettings = payload.applyRecommendedSettings;
+        await importPresetPackHandler(
+          chatId,
+          userId,
+          payload.importText,
+          importOpts,
+          payload.requestId
+        );
+        return;
+      }
+      if (payload.type === "export_preset_pack") {
+        const exportOpts = {};
+        if (payload.includeRecommendedSettings !== void 0) exportOpts.includeRecommendedSettings = payload.includeRecommendedSettings;
+        if (payload.includeExampleSnapshot !== void 0) exportOpts.includeExampleSnapshot = payload.includeExampleSnapshot;
+        await exportPresetPackHandler(
+          chatId,
+          userId,
+          exportOpts,
+          payload.requestId
+        );
+        return;
+      }
       if (payload.type === "validate_preset") {
         await validatePreset(chatId, userId, payload.preset, payload.requestId);
+        return;
+      }
+      if (payload.type === "validate_preset_report") {
+        await validatePresetReportHandler(chatId, userId, payload.preset, payload.requestId);
+        return;
+      }
+      if (payload.type === "generate_sample_snapshot") {
+        await generateSampleSnapshotHandler(chatId, userId, payload.requestId);
         return;
       }
       if (payload.type === "render_template") {

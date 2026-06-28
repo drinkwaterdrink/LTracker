@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17 - Preset Pack Import/Export + Better Validation
+- Added portable `.ltracker.json` Preset Pack format containing preset properties, recommended settings, and optional example snapshot.
+- Added Export Preset Pack action with optional recommended settings and example snapshot.
+- Added Import Preset Pack file/pasted UI with Import Review showing meta, preset properties, trust mode, and recommended settings toggle.
+- Upgraded preset validation to generate a diagnostic report showing passes, warnings, errors, estimates, missing placeholders, and sanitizer warnings.
+- Added Sample Snapshot Generator that yields bounded mockup snapshots (max depth 5, array length 2) for rendering templates.
+- Bumped internal extension version to 0.17.
+
 ## 0.16 - Stabilization, performance, and safety hardening
 - Bounded tracker memory snapshot loading so long chats do not trigger unbounded sequential storage reads.
 - Added candidate selection, deduplication, concurrency limiting, and diagnostics for tracker memory loads.

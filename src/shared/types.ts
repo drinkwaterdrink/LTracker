@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.16";
+export const EXTENSION_VERSION = "0.17";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -596,6 +596,19 @@ export interface LTrackerDiagnostics {
   lastHistoryOrphanCount: number;
   lastPresetEstimatedTokens: number | null;
   lastPresetEstimatedRenderedChars: number | null;
+  lastPresetPackImportAt: string | null;
+  lastPresetPackImportStatus: string | null;
+  lastPresetPackImportError: string | null;
+  lastPresetPackImportSizeChars: number | null;
+  lastPresetPackImportEstimatedTokens: number | null;
+  lastPresetPackExportAt: string | null;
+  lastPresetPackExportName: string | null;
+  lastPresetValidationAt: string | null;
+  lastPresetValidationStatus: string | null;
+  lastPresetValidationErrorCount: number;
+  lastPresetValidationWarningCount: number;
+  lastPresetValidationEstimatedTokens: number | null;
+  lastPresetValidationEstimatedRenderedChars: number | null;
 }
 
 export interface PermissionState {
@@ -706,7 +719,11 @@ export type FrontendMessage =
   | { type: "delete_preset"; chatId: string | null; presetId: string; requestId: string }
   | { type: "reset_preset"; chatId: string | null; requestId: string }
   | { type: "import_preset"; chatId: string | null; importText: string; requestId: string }
+  | { type: "import_preset_pack"; chatId: string | null; importText: string; presetName?: string; overwritePresetId?: string; trustMode?: TemplateTrustMode; applyRecommendedSettings?: boolean; requestId: string }
+  | { type: "export_preset_pack"; chatId: string | null; includeRecommendedSettings?: boolean; includeExampleSnapshot?: boolean; requestId: string }
   | { type: "validate_preset"; chatId: string | null; preset: TrackerPresetDraft; requestId: string }
+  | { type: "validate_preset_report"; chatId: string | null; preset: TrackerPresetDraft; requestId: string }
+  | { type: "generate_sample_snapshot"; chatId: string | null; requestId: string }
   | { type: "render_template"; chatId: string | null; source?: LTrackerRenderSource; requestId: string }
   | { type: "generate_message_tracker"; chatId: string | null; messageId: string; swipeKey?: string | null; requestId: string }
   | { type: "regenerate_message_tracker"; chatId: string | null; messageId: string; swipeKey?: string | null; requestId: string }
@@ -721,4 +738,7 @@ export type FrontendMessage =
 
 export type BackendMessage =
   | { type: "state"; state: FrontendState; requestId?: string }
-  | { type: "error"; message: string; requestId?: string; state?: FrontendState };
+  | { type: "error"; message: string; requestId?: string; state?: FrontendState }
+  | { type: "preset_pack_export_ready"; json: string; fileName: string; requestId?: string }
+  | { type: "preset_pack_validation_report"; report: import("./presetPack").PresetValidationReport; requestId?: string }
+  | { type: "sample_snapshot_ready"; snapshot: Record<string, unknown>; renderResult: import("./htmlTemplateRenderer").HtmlTemplateRenderResult | null; requestId?: string };

@@ -30,6 +30,7 @@ import {
 import {
   formatTemplateTextFallback,
   renderHtmlTemplate,
+  type HtmlTemplateRenderResult,
 } from "./shared/htmlTemplateRenderer";
 import {
   buildMessageTrackerHistory,
@@ -76,6 +77,14 @@ import {
   validateTrackerPreset,
   estimatePresetStats,
 } from "./shared/presets";
+import {
+  exportPresetPack,
+  importPresetPack,
+  generateSampleSnapshot,
+  validatePresetReport,
+  PRESET_PACK_KIND,
+  sanitizePackFileName,
+} from "./shared/presetPack";
 import {
   DEFAULT_SETTINGS,
   repairSettings,
@@ -130,6 +139,7 @@ import {
   type AutoTrackerTriggerSource,
   type BackendMessage,
   type FrontendMessage,
+  type TemplateTrustMode,
   type FrontendState,
   type LTrackerBuildInfo,
   type LTrackerCancellation,
@@ -365,6 +375,10 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "restore_deleted_tracker",
     "run_storage_maintenance_scan",
     "cleanup_missing_index_entries",
+    "import_preset_pack",
+    "export_preset_pack",
+    "validate_preset_report",
+    "generate_sample_snapshot",
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if (
@@ -395,14 +409,18 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "restore_deleted_tracker",
       "run_storage_maintenance_scan",
       "cleanup_missing_index_entries",
+      "import_preset_pack",
+      "export_preset_pack",
+      "validate_preset_report",
+      "generate_sample_snapshot",
     ].includes(payload.type)
     && typeof payload.requestId !== "string"
   ) return false;
   if (payload.type === "save_settings" && !isRecord(payload.settings)) return false;
   if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== undefined && !isRecord(payload.settings)) return false;
-  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset"].includes(payload.type) && !isRecord(payload.preset)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset", "validate_preset_report"].includes(payload.type) && !isRecord(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
-  if (payload.type === "import_preset" && typeof payload.importText !== "string") return false;
+  if (["import_preset", "import_preset_pack"].includes(payload.type) && typeof payload.importText !== "string") return false;
   if (
     payload.type === "regenerate_message_tracker"
     && (typeof payload.messageId !== "string" || ("swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== undefined && typeof payload.swipeKey !== "string"))
@@ -649,6 +667,19 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastHistoryOrphanCount: 0,
     lastPresetEstimatedTokens: null,
     lastPresetEstimatedRenderedChars: null,
+    lastPresetPackImportAt: null,
+    lastPresetPackImportStatus: null,
+    lastPresetPackImportError: null,
+    lastPresetPackImportSizeChars: null,
+    lastPresetPackImportEstimatedTokens: null,
+    lastPresetPackExportAt: null,
+    lastPresetPackExportName: null,
+    lastPresetValidationAt: null,
+    lastPresetValidationStatus: null,
+    lastPresetValidationErrorCount: 0,
+    lastPresetValidationWarningCount: 0,
+    lastPresetValidationEstimatedTokens: null,
+    lastPresetValidationEstimatedRenderedChars: null,
   };
 }
 
@@ -1009,6 +1040,32 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     estimatedPromptTokensLastRun: numberOrNull(value.estimatedPromptTokensLastRun),
     estimatedMemoryTokensLastRun: numberOrNull(value.estimatedMemoryTokensLastRun),
     iframeFallbackVisibleInMainUi: typeof value.iframeFallbackVisibleInMainUi === "boolean" ? value.iframeFallbackVisibleInMainUi : false,
+    lastMemoryIndexCount: typeof value.lastMemoryIndexCount === "number" && Number.isFinite(value.lastMemoryIndexCount) ? Math.max(0, Math.round(value.lastMemoryIndexCount)) : 0,
+    lastMemoryCandidateCount: typeof value.lastMemoryCandidateCount === "number" && Number.isFinite(value.lastMemoryCandidateCount) ? Math.max(0, Math.round(value.lastMemoryCandidateCount)) : 0,
+    lastMemoryLoadedSnapshotCount: typeof value.lastMemoryLoadedSnapshotCount === "number" && Number.isFinite(value.lastMemoryLoadedSnapshotCount) ? Math.max(0, Math.round(value.lastMemoryLoadedSnapshotCount)) : 0,
+    lastMemoryLoadDurationMs: typeof value.lastMemoryLoadDurationMs === "number" && Number.isFinite(value.lastMemoryLoadDurationMs) ? Math.max(0, Math.round(value.lastMemoryLoadDurationMs)) : 0,
+    lastMemoryLoadSkippedCount: typeof value.lastMemoryLoadSkippedCount === "number" && Number.isFinite(value.lastMemoryLoadSkippedCount) ? Math.max(0, Math.round(value.lastMemoryLoadSkippedCount)) : 0,
+    lastJobTimeoutAt: stringOrNull(value.lastJobTimeoutAt),
+    lastJobTimeoutJobId: stringOrNull(value.lastJobTimeoutJobId),
+    lastJobTimeoutMessageId: stringOrNull(value.lastJobTimeoutMessageId),
+    lastJobTimeoutSwipeKey: stringOrNull(value.lastJobTimeoutSwipeKey),
+    staleJobsEvictedCount: typeof value.staleJobsEvictedCount === "number" && Number.isFinite(value.staleJobsEvictedCount) ? Math.max(0, Math.round(value.staleJobsEvictedCount)) : 0,
+    lastHistoryOrphanCount: typeof value.lastHistoryOrphanCount === "number" && Number.isFinite(value.lastHistoryOrphanCount) ? Math.max(0, Math.round(value.lastHistoryOrphanCount)) : 0,
+    lastPresetEstimatedTokens: numberOrNull(value.lastPresetEstimatedTokens),
+    lastPresetEstimatedRenderedChars: numberOrNull(value.lastPresetEstimatedRenderedChars),
+    lastPresetPackImportAt: stringOrNull(value.lastPresetPackImportAt),
+    lastPresetPackImportStatus: stringOrNull(value.lastPresetPackImportStatus),
+    lastPresetPackImportError: stringOrNull(value.lastPresetPackImportError),
+    lastPresetPackImportSizeChars: numberOrNull(value.lastPresetPackImportSizeChars),
+    lastPresetPackImportEstimatedTokens: numberOrNull(value.lastPresetPackImportEstimatedTokens),
+    lastPresetPackExportAt: stringOrNull(value.lastPresetPackExportAt),
+    lastPresetPackExportName: stringOrNull(value.lastPresetPackExportName),
+    lastPresetValidationAt: stringOrNull(value.lastPresetValidationAt),
+    lastPresetValidationStatus: stringOrNull(value.lastPresetValidationStatus),
+    lastPresetValidationErrorCount: typeof value.lastPresetValidationErrorCount === "number" && Number.isFinite(value.lastPresetValidationErrorCount) ? Math.max(0, Math.round(value.lastPresetValidationErrorCount)) : 0,
+    lastPresetValidationWarningCount: typeof value.lastPresetValidationWarningCount === "number" && Number.isFinite(value.lastPresetValidationWarningCount) ? Math.max(0, Math.round(value.lastPresetValidationWarningCount)) : 0,
+    lastPresetValidationEstimatedTokens: numberOrNull(value.lastPresetValidationEstimatedTokens),
+    lastPresetValidationEstimatedRenderedChars: numberOrNull(value.lastPresetValidationEstimatedRenderedChars),
   };
 }
 
@@ -3808,7 +3865,7 @@ async function presetOperationChatId(chatId: string | null, userId: string): Pro
 async function recordPresetDiagnostic(
   chatId: string,
   userId: string,
-  fields: Pick<LTrackerDiagnostics, "lastPresetValidationError" | "lastPresetFallbackReason">,
+  fields: Partial<LTrackerDiagnostics>,
 ): Promise<void> {
   const diagnostics = {
     ...await loadDiagnostics(chatId, userId),
@@ -3955,6 +4012,308 @@ async function validatePreset(chatId: string | null, userId: string, draftValue:
   });
   if (validationError) throw new Error(validationError);
   await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+
+async function exportPresetPackHandler(
+  chatId: string | null,
+  userId: string,
+  options: {
+    includeRecommendedSettings?: boolean;
+    includeExampleSnapshot?: boolean;
+  },
+  requestId: string,
+): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const presets = await loadPresetCatalog(userId);
+  const activeState = await loadActivePresetState(resolvedChatId, userId);
+  const activePreset = presetById(presets, activeState.selectedPresetId) ?? DEFAULT_TRACKER_PRESET;
+  const settings = await getSettings(userId);
+  const now = nowIso();
+
+  let exampleSnapshot: Record<string, unknown> | undefined;
+  if (options.includeExampleSnapshot) {
+    const latestSnapshot = await loadSnapshot(resolvedChatId, userId);
+    if (latestSnapshot && latestSnapshot.data) {
+      exampleSnapshot = latestSnapshot.data;
+    }
+  }
+
+  const exportOpts: Parameters<typeof exportPresetPack>[1] = {};
+  if (options.includeRecommendedSettings !== undefined) {
+    exportOpts.includeRecommendedSettings = options.includeRecommendedSettings;
+  }
+  if (settings !== undefined) {
+    exportOpts.settings = settings;
+  }
+  if (exampleSnapshot !== undefined) {
+    exportOpts.exampleSnapshot = exampleSnapshot;
+  }
+
+  const pack = exportPresetPack(activePreset, exportOpts);
+
+  const jsonStr = JSON.stringify(pack, null, 2);
+  const fileName = sanitizePackFileName(activePreset.name, activePreset.version);
+
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetPackExportAt: now,
+    lastPresetPackExportName: fileName,
+  });
+
+  const response: BackendMessage = {
+    type: "preset_pack_export_ready",
+    json: jsonStr,
+    fileName,
+    requestId,
+  };
+  send(response, userId);
+}
+
+async function importPresetPackHandler(
+  chatId: string | null,
+  userId: string,
+  importText: string,
+  options: {
+    presetName?: string;
+    overwritePresetId?: string;
+    trustMode?: TemplateTrustMode;
+    applyRecommendedSettings?: boolean;
+  },
+  requestId: string,
+): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const settings = await getSettings(userId);
+  const now = nowIso();
+
+  if (importText.length > settings.budget.presetImportMaxChars) {
+    const errorMsg = `Import payload size (${importText.length} characters) exceeds the size limit of ${settings.budget.presetImportMaxChars} characters.`;
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: errorMsg,
+      lastPresetFallbackReason: null,
+      lastPresetPackImportAt: now,
+      lastPresetPackImportStatus: "error",
+      lastPresetPackImportError: errorMsg,
+      lastPresetPackImportSizeChars: importText.length,
+      lastPresetPackImportEstimatedTokens: null,
+    });
+    throw new Error(errorMsg);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(importText);
+  } catch (error) {
+    const errorMsg = `Import JSON is invalid: ${error instanceof Error ? error.message : String(error)}`;
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: errorMsg,
+      lastPresetFallbackReason: null,
+      lastPresetPackImportAt: now,
+      lastPresetPackImportStatus: "error",
+      lastPresetPackImportError: errorMsg,
+      lastPresetPackImportSizeChars: importText.length,
+      lastPresetPackImportEstimatedTokens: null,
+    });
+    throw new Error(errorMsg);
+  }
+
+  const presets = await loadPresetCatalog(userId);
+  const existingIds = presets.map((p) => p.id);
+
+  const result = importPresetPack(parsed, existingIds, now);
+  if (!result.ok || !result.preset) {
+    const errorMsg = result.error ?? "Imported preset is invalid.";
+    await recordPresetDiagnostic(resolvedChatId, userId, {
+      lastPresetValidationError: errorMsg,
+      lastPresetFallbackReason: null,
+      lastPresetPackImportAt: now,
+      lastPresetPackImportStatus: "error",
+      lastPresetPackImportError: errorMsg,
+      lastPresetPackImportSizeChars: importText.length,
+      lastPresetPackImportEstimatedTokens: null,
+    });
+    throw new Error(errorMsg);
+  }
+
+  const importedPreset = result.preset;
+
+  if (options.presetName && options.presetName.trim()) {
+    importedPreset.name = options.presetName.trim();
+  }
+
+  if (options.overwritePresetId) {
+    if (options.overwritePresetId === DEFAULT_TRACKER_PRESET_ID) {
+      throw new Error("Built-in presets cannot be overwritten.");
+    }
+    const toOverwrite = presets.find((p) => p.id === options.overwritePresetId);
+    if (!toOverwrite) {
+      throw new Error(`Preset to overwrite was not found: ${options.overwritePresetId}`);
+    }
+    if (toOverwrite.origin === "built_in") {
+      throw new Error("Built-in presets cannot be overwritten.");
+    }
+    importedPreset.id = options.overwritePresetId;
+  }
+
+  if (options.trustMode === "trusted" || options.trustMode === "safe") {
+    settings.renderer.templateTrustMode = options.trustMode;
+    await saveSettings(settings, userId);
+  }
+
+  if (options.applyRecommendedSettings && result.recommendedSettings) {
+    const rec = result.recommendedSettings;
+    if (rec.connection) {
+      const conn = rec.connection;
+      if (conn.mode) settings.connection.mode = conn.mode;
+      if (typeof conn.parameters?.temperature === "number") settings.connection.parameters.temperature = conn.parameters.temperature;
+      if (typeof conn.parameters?.max_tokens === "number") settings.connection.parameters.max_tokens = conn.parameters.max_tokens;
+      if (conn.reasoning) {
+        if (conn.reasoning.source) settings.connection.reasoning.source = conn.reasoning.source;
+        if (conn.reasoning.effort) settings.connection.reasoning.effort = conn.reasoning.effort;
+      }
+    }
+    if (rec.memory) {
+      const mem = rec.memory;
+      if (typeof mem.enabled === "boolean") settings.memory.enabled = mem.enabled;
+      if (typeof mem.includeInTrackerGeneration === "boolean") settings.memory.includeInTrackerGeneration = mem.includeInTrackerGeneration;
+      if (typeof mem.retainCount === "number") settings.memory.retainCount = mem.retainCount;
+      if (typeof mem.fullSnapshotCount === "number") settings.memory.fullSnapshotCount = mem.fullSnapshotCount;
+      if (typeof mem.compactOlderSnapshots === "boolean") settings.memory.compactOlderSnapshots = mem.compactOlderSnapshots;
+      if (typeof mem.maxMemoryChars === "number") settings.memory.maxMemoryChars = mem.maxMemoryChars;
+      if (mem.source) settings.memory.source = mem.source;
+      if (mem.order) settings.memory.order = mem.order;
+    }
+    if (rec.injection) {
+      const inj = rec.injection;
+      if (typeof inj.enabled === "boolean") settings.injection.enabled = inj.enabled;
+      if (inj.format) settings.injection.format = inj.format;
+      if (typeof inj.retainCount === "number") settings.injection.retainCount = inj.retainCount;
+      if (inj.injectionPlacement) settings.injection.injectionPlacement = inj.injectionPlacement;
+      if (typeof inj.maxInjectedChars === "number") settings.injection.maxInjectedChars = inj.maxInjectedChars;
+    }
+    if (rec.renderer) {
+      const ren = rec.renderer;
+      if (typeof ren.enabled === "boolean") settings.renderer.enabled = ren.enabled;
+      if (ren.previewSource) settings.renderer.previewSource = ren.previewSource;
+      if (typeof ren.maxRenderedChars === "number") settings.renderer.maxRenderedChars = ren.maxRenderedChars;
+    }
+    if (rec.messageDisplay) {
+      const disp = rec.messageDisplay;
+      if (typeof disp.enabled === "boolean") settings.messageDisplay.enabled = disp.enabled;
+      if (typeof disp.useDomInjection === "boolean") settings.messageDisplay.useDomInjection = disp.useDomInjection;
+      if (disp.displayMode) settings.messageDisplay.displayMode = disp.displayMode;
+      if (disp.placement) settings.messageDisplay.placement = disp.placement;
+      if (disp.renderMode) settings.messageDisplay.renderMode = disp.renderMode;
+      if (typeof disp.showTimestamp === "boolean") settings.messageDisplay.showTimestamp = disp.showTimestamp;
+      if (typeof disp.showPresetName === "boolean") settings.messageDisplay.showPresetName = disp.showPresetName;
+      if (typeof disp.showGenerationDuration === "boolean") settings.messageDisplay.showGenerationDuration = disp.showGenerationDuration;
+      if (typeof disp.maxRenderedChars === "number") settings.messageDisplay.maxRenderedChars = disp.maxRenderedChars;
+    }
+    if (rec.expandedWidth) {
+      const w = rec.expandedWidth;
+      if (w.expandedWidthMode) settings.expandedWidth.expandedWidthMode = w.expandedWidthMode;
+      if (typeof w.maxExpandedWidthPx === "number") settings.expandedWidth.maxExpandedWidthPx = w.maxExpandedWidthPx;
+      if (typeof w.mobileHorizontalMarginPx === "number") settings.expandedWidth.mobileHorizontalMarginPx = w.mobileHorizontalMarginPx;
+      if (typeof w.expandedContentMaxHeightVh === "number") settings.expandedWidth.expandedContentMaxHeightVh = w.expandedContentMaxHeightVh;
+    }
+    if (rec.budget) {
+      const b = rec.budget;
+      if (b.mode) settings.budget.mode = b.mode;
+      if (typeof b.ultraModeEnabled === "boolean") settings.budget.ultraModeEnabled = b.ultraModeEnabled;
+      if (typeof b.maxTrackerOutputTokens === "number") settings.budget.maxTrackerOutputTokens = b.maxTrackerOutputTokens;
+      if (typeof b.renderedHtmlMaxChars === "number") settings.budget.renderedHtmlMaxChars = b.renderedHtmlMaxChars;
+    }
+    await saveSettings(settings, userId);
+  }
+
+  await saveUserPreset(importedPreset, userId);
+  await saveActivePresetState(resolvedChatId, importedPreset.id, userId);
+
+  const stats = estimatePresetStats(importedPreset);
+
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: null,
+    lastPresetFallbackReason: null,
+    lastPresetPackImportAt: now,
+    lastPresetPackImportStatus: "success",
+    lastPresetPackImportError: null,
+    lastPresetPackImportSizeChars: importText.length,
+    lastPresetPackImportEstimatedTokens: stats.estimatedTokens,
+  });
+
+  await sendState(resolvedChatId, userId, "idle", null, requestId);
+}
+
+async function validatePresetReportHandler(
+  chatId: string | null,
+  userId: string,
+  draftValue: TrackerPresetDraft,
+  requestId: string,
+): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const draft = normalizePresetDraft(draftValue);
+  const settings = await getSettings(userId);
+  const report = validatePresetReport(draft, {
+    allowInlineStyles: settings.renderer.allowInlineStyles,
+    maxRenderedChars: settings.renderer.maxRenderedChars,
+  });
+
+  const now = nowIso();
+  const errorMsg = report.ok ? null : "Preset validation failed.";
+
+  await recordPresetDiagnostic(resolvedChatId, userId, {
+    lastPresetValidationError: errorMsg,
+    lastPresetFallbackReason: null,
+    lastPresetValidationAt: now,
+    lastPresetValidationStatus: report.ok ? "success" : "error",
+    lastPresetValidationErrorCount: report.errorCount,
+    lastPresetValidationWarningCount: report.warningCount,
+    lastPresetValidationEstimatedTokens: report.estimatedPromptTokens,
+    lastPresetValidationEstimatedRenderedChars: report.estimatedRenderedChars,
+  });
+
+  const response: BackendMessage = {
+    type: "preset_pack_validation_report",
+    report,
+    requestId,
+  };
+  send(response, userId);
+}
+
+async function generateSampleSnapshotHandler(
+  chatId: string | null,
+  userId: string,
+  requestId: string,
+): Promise<void> {
+  const resolvedChatId = await presetOperationChatId(chatId, userId);
+  const presets = await loadPresetCatalog(userId);
+  const activeState = await loadActivePresetState(resolvedChatId, userId);
+  const activePreset = presetById(presets, activeState.selectedPresetId) ?? DEFAULT_TRACKER_PRESET;
+  const settings = await getSettings(userId);
+
+  const snapshotData = generateSampleSnapshot(activePreset.jsonSchema);
+  let renderResult: HtmlTemplateRenderResult | null = null;
+  if (activePreset.htmlTemplate?.trim()) {
+    renderResult = renderHtmlTemplate(
+      {
+        template: activePreset.htmlTemplate,
+        snapshotData,
+        presetId: activePreset.id,
+        presetName: activePreset.name,
+      },
+      {
+        allowInlineStyles: settings.renderer.allowInlineStyles,
+        maxRenderedChars: settings.renderer.maxRenderedChars,
+        deduplicateWarnings: true,
+      },
+    );
+  }
+
+  const response: BackendMessage = {
+    type: "sample_snapshot_ready",
+    snapshot: snapshotData,
+    renderResult,
+    requestId,
+  };
+  send(response, userId);
 }
 
 async function handleSettingsSave(
@@ -4741,8 +5100,45 @@ spindle.onFrontendMessage((payload, userId) => {
         await importPreset(chatId, userId, payload.importText, payload.requestId);
         return;
       }
+      if (payload.type === "import_preset_pack") {
+        const importOpts: Parameters<typeof importPresetPackHandler>[3] = {};
+        if (payload.presetName !== undefined) importOpts.presetName = payload.presetName;
+        if (payload.overwritePresetId !== undefined) importOpts.overwritePresetId = payload.overwritePresetId;
+        if (payload.trustMode !== undefined) importOpts.trustMode = payload.trustMode;
+        if (payload.applyRecommendedSettings !== undefined) importOpts.applyRecommendedSettings = payload.applyRecommendedSettings;
+
+        await importPresetPackHandler(
+          chatId,
+          userId,
+          payload.importText,
+          importOpts,
+          payload.requestId,
+        );
+        return;
+      }
+      if (payload.type === "export_preset_pack") {
+        const exportOpts: Parameters<typeof exportPresetPackHandler>[2] = {};
+        if (payload.includeRecommendedSettings !== undefined) exportOpts.includeRecommendedSettings = payload.includeRecommendedSettings;
+        if (payload.includeExampleSnapshot !== undefined) exportOpts.includeExampleSnapshot = payload.includeExampleSnapshot;
+
+        await exportPresetPackHandler(
+          chatId,
+          userId,
+          exportOpts,
+          payload.requestId,
+        );
+        return;
+      }
       if (payload.type === "validate_preset") {
         await validatePreset(chatId, userId, payload.preset, payload.requestId);
+        return;
+      }
+      if (payload.type === "validate_preset_report") {
+        await validatePresetReportHandler(chatId, userId, payload.preset, payload.requestId);
+        return;
+      }
+      if (payload.type === "generate_sample_snapshot") {
+        await generateSampleSnapshotHandler(chatId, userId, payload.requestId);
         return;
       }
       if (payload.type === "render_template") {

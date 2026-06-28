@@ -1,6 +1,6 @@
 {
   "name": "ltracker",
-  "version": "0.16",
+  "version": "0.17",
   "private": true,
   "type": "module",
   "scripts": {

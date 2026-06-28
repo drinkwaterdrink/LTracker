@@ -71,6 +71,131 @@ var DEFAULT_TRACKER_PRESET = {
     notes: "Start with active quiet mode, low temperature, and inherited reasoning. Use a selected raw tracker profile after confirming it returns strict JSON."
   }
 };
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringValue(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+function optionalString(value) {
+  return typeof value === "string" ? value : void 0;
+}
+function validOrigin(value) {
+  return value === "built_in" || value === "user_imported" || value === "user_created";
+}
+function recommendedMode(value) {
+  return value === "active_quiet" || value === "selected_connection_quiet" || value === "selected_connection_raw" ? value : void 0;
+}
+function recommendedReasoningSource(value) {
+  return value === "inherit" || value === "off" || value === "custom" ? value : void 0;
+}
+function boundedNumber(value, min, max) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return void 0;
+  return Math.min(max, Math.max(min, value));
+}
+function repairCapabilities(value) {
+  if (!isRecord(value)) return void 0;
+  const result = {};
+  if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
+  if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
+  if (typeof value.supportsSequentialGeneration === "boolean") result.supportsSequentialGeneration = value.supportsSequentialGeneration;
+  return Object.keys(result).length > 0 ? result : void 0;
+}
+function repairRecommendedConnection(value) {
+  if (!isRecord(value)) return void 0;
+  const result = {};
+  const mode = recommendedMode(value.mode);
+  if (mode) result.mode = mode;
+  const temperature = boundedNumber(value.temperature, 0, 2);
+  if (temperature !== void 0) result.temperature = temperature;
+  const maxTokens = boundedNumber(value.max_tokens, 256, 64e3);
+  if (maxTokens !== void 0) result.max_tokens = Math.round(maxTokens);
+  const reasoning = isRecord(value.reasoning) ? value.reasoning : null;
+  if (reasoning) {
+    const source = recommendedReasoningSource(reasoning.source);
+    const effort = typeof reasoning.effort === "string" ? reasoning.effort : void 0;
+    if (source || effort) {
+      result.reasoning = {};
+      if (source) result.reasoning.source = source;
+      if (effort) result.reasoning.effort = effort;
+    }
+  }
+  const notes = optionalString(value.notes);
+  if (notes !== void 0) result.notes = notes;
+  return Object.keys(result).length > 0 ? result : void 0;
+}
+function sanitizePresetId(value) {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || "preset";
+}
+function createPresetId(name, existingIds) {
+  const existing = new Set(existingIds);
+  const base = sanitizePresetId(name);
+  if (!existing.has(base) && base !== DEFAULT_TRACKER_PRESET_ID) return base;
+  for (let index = 2; index < 1e4; index += 1) {
+    const candidate = `${base}_${index}`;
+    if (!existing.has(candidate) && candidate !== DEFAULT_TRACKER_PRESET_ID) return candidate;
+  }
+  return `${base}_${Date.now()}`;
+}
+function validateJsonSchema(value) {
+  if (!isRecord(value)) {
+    return { ok: false, error: "JSON Schema must be a JSON object." };
+  }
+  return { ok: true, error: null };
+}
+function validateTrackerPreset(value) {
+  if (!isRecord(value)) return { ok: false, error: "Preset must be a JSON object." };
+  if (typeof value.id !== "string" || !sanitizePresetId(value.id)) {
+    return { ok: false, error: "Preset id is required." };
+  }
+  if (typeof value.name !== "string" || !value.name.trim()) {
+    return { ok: false, error: "Preset name is required." };
+  }
+  if (typeof value.version !== "string" || !value.version.trim()) {
+    return { ok: false, error: "Preset version is required." };
+  }
+  const schemaValidation = validateJsonSchema(value.jsonSchema);
+  if (!schemaValidation.ok) return schemaValidation;
+  if (typeof value.promptInstructions !== "string" || !value.promptInstructions.trim()) {
+    return { ok: false, error: "Prompt instructions are required." };
+  }
+  if (!validOrigin(value.origin)) {
+    return { ok: false, error: "Preset origin is invalid." };
+  }
+  if ("htmlTemplate" in value && typeof value.htmlTemplate !== "string") {
+    return { ok: false, error: "HTML template must be text." };
+  }
+  if ("recommendedConnection" in value && value.recommendedConnection !== void 0 && !isRecord(value.recommendedConnection)) {
+    return { ok: false, error: "Recommended connection must be an object." };
+  }
+  return { ok: true, error: null };
+}
+function repairTrackerPreset(value) {
+  if (!isRecord(value)) return null;
+  const origin = validOrigin(value.origin) ? value.origin : null;
+  if (!origin) return null;
+  const preset = {
+    id: sanitizePresetId(stringValue(value.id)),
+    name: stringValue(value.name).trim(),
+    description: stringValue(value.description),
+    version: stringValue(value.version, "1.0"),
+    createdAt: stringValue(value.createdAt, (/* @__PURE__ */ new Date()).toISOString()),
+    updatedAt: stringValue(value.updatedAt, (/* @__PURE__ */ new Date()).toISOString()),
+    jsonSchema: isRecord(value.jsonSchema) ? value.jsonSchema : {},
+    promptInstructions: stringValue(value.promptInstructions),
+    origin
+  };
+  const htmlTemplate = optionalString(value.htmlTemplate);
+  if (htmlTemplate !== void 0) preset.htmlTemplate = htmlTemplate;
+  const notes = optionalString(value.notes);
+  if (notes !== void 0) preset.notes = notes;
+  const capabilities = repairCapabilities(value.capabilities);
+  if (capabilities) preset.capabilities = capabilities;
+  const recommendedConnection = repairRecommendedConnection(value.recommendedConnection);
+  if (recommendedConnection) preset.recommendedConnection = recommendedConnection;
+  return validateTrackerPreset(preset).ok ? preset : null;
+}
 function exportTrackerPreset(preset) {
   return {
     kind: PRESET_EXPORT_KIND,
@@ -78,6 +203,46 @@ function exportTrackerPreset(preset) {
     preset
   };
 }
+function importTrackerPresetEnvelope(value, existingIds, now) {
+  if (!isRecord(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
+  if (value.kind !== PRESET_EXPORT_KIND) {
+    return { ok: false, preset: null, error: "Import kind must be ltracker_schema_preset." };
+  }
+  if (value.formatVersion !== PRESET_EXPORT_FORMAT_VERSION) {
+    return { ok: false, preset: null, error: "Unsupported preset format version." };
+  }
+  const repaired = repairTrackerPreset(value.preset);
+  if (!repaired) return { ok: false, preset: null, error: "Imported preset is invalid." };
+  const existing = new Set(existingIds);
+  const importedId = sanitizePresetId(repaired.id);
+  const id = existing.has(importedId) || importedId === DEFAULT_TRACKER_PRESET_ID ? createPresetId(repaired.name, existing) : importedId;
+  return {
+    ok: true,
+    error: null,
+    preset: {
+      ...repaired,
+      id,
+      origin: "user_imported",
+      createdAt: now,
+      updatedAt: now
+    }
+  };
+}
+function estimatePresetStats(preset) {
+  const schemaJson = JSON.stringify(preset.jsonSchema, null, 2);
+  const instructions = preset.promptInstructions ?? "";
+  const presetContentLength = schemaJson.length + instructions.length + preset.name.length + preset.id.length;
+  const estimatedTokens = Math.max(10, Math.ceil(presetContentLength / 4));
+  const templateLength = (preset.htmlTemplate ?? "").length;
+  const estimatedRenderedChars = templateLength > 0 ? templateLength + 4e3 : 1e4;
+  return { estimatedTokens, estimatedRenderedChars };
+}
+
+// src/shared/types.ts
+var EXTENSION_VERSION = "0.17";
+var STORAGE_SCHEMA_VERSION = 1;
+var SETTINGS_SCHEMA_VERSION = 1;
+var SPINDLE_TYPES_VERSION = "0.5.21";
 
 // src/shared/htmlTemplateRenderer.ts
 var TEMPLATE_PATH = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
@@ -185,7 +350,7 @@ var SAFE_STYLE_PROPERTIES = /* @__PURE__ */ new Set([
   "white-space",
   "opacity"
 ]);
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function escapeHtml(value) {
@@ -208,7 +373,7 @@ function valueAtPath(source, path) {
   for (const segment of path.split(".")) {
     if (Array.isArray(current) && /^\d+$/.test(segment)) {
       current = current[Number(segment)];
-    } else if (isRecord(current)) {
+    } else if (isRecord2(current)) {
       current = current[segment];
     } else {
       return void 0;
@@ -265,10 +430,10 @@ function listFromUnknown(value) {
     return value.map((item) => {
       const rendered = primitiveToString(item);
       if (rendered) return rendered;
-      return isRecord(item) ? recordSummary(item) : null;
+      return isRecord2(item) ? recordSummary(item) : null;
     }).filter((item) => Boolean(item));
   }
-  if (isRecord(value)) {
+  if (isRecord2(value)) {
     const summary = recordSummary(value);
     return summary ? [summary] : [];
   }
@@ -277,7 +442,7 @@ function listFromUnknown(value) {
 function stringAt(data, path) {
   let current = data;
   for (const key of path) {
-    if (!isRecord(current)) return null;
+    if (!isRecord2(current)) return null;
     current = current[key];
   }
   return primitiveToString(current);
@@ -496,12 +661,259 @@ function renderHtmlTemplate(input, options = {}) {
   }
 }
 
+// src/shared/presetPack.ts
+var PRESET_PACK_KIND = "ltracker_preset_pack";
+var PRESET_PACK_FORMAT_VERSION = 1;
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringValue2(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+var SECRET_PATTERNS = [
+  /api[_-]?key/i,
+  /secret/i,
+  /password/i,
+  /token(?!s$)/i,
+  /auth[_-]?bearer/i,
+  /private[_-]?key/i,
+  /access[_-]?key/i,
+  /credential/i
+];
+function containsSecretKeys(obj, depth = 0) {
+  if (depth > 10 || !isRecord3(obj)) return false;
+  for (const key of Object.keys(obj)) {
+    if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) return true;
+    if (isRecord3(obj[key]) && containsSecretKeys(obj[key], depth + 1)) return true;
+  }
+  return false;
+}
+function stripSecretKeys(obj, depth = 0) {
+  if (depth > 10) return {};
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) continue;
+    if (isRecord3(value)) {
+      result[key] = stripSecretKeys(value, depth + 1);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+function exportPresetPack(preset, options) {
+  const presetStats = estimatePresetStats(preset);
+  const schemaKeys = isRecord3(preset.jsonSchema) ? Object.keys(preset.jsonSchema) : [];
+  const pack = {
+    kind: PRESET_PACK_KIND,
+    formatVersion: PRESET_PACK_FORMAT_VERSION,
+    exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    appCompatibility: {
+      extension: "LTracker",
+      minVersion: "0.17",
+      recommendedVersion: EXTENSION_VERSION
+    },
+    preset: {
+      id: preset.id,
+      name: preset.name,
+      description: preset.description || "",
+      version: preset.version,
+      jsonSchema: preset.jsonSchema,
+      htmlTemplate: preset.htmlTemplate ?? "",
+      promptInstructions: preset.promptInstructions,
+      notes: preset.notes || "",
+      origin: preset.origin
+    },
+    validation: {
+      expectedRootFields: schemaKeys,
+      estimatedTokens: presetStats.estimatedTokens,
+      estimatedRenderedChars: presetStats.estimatedRenderedChars
+    }
+  };
+  if (options?.author) {
+    pack.exportedBy = options.author;
+    pack.preset.author = options.author;
+  }
+  if (options?.includeRecommendedSettings && options.settings) {
+    const settings = options.settings;
+    const recommended = {};
+    const connRec = {
+      mode: settings.connection.mode,
+      parameters: { ...settings.connection.parameters },
+      reasoning: { ...settings.connection.reasoning }
+    };
+    recommended.connection = connRec;
+    recommended.memory = {
+      enabled: settings.memory.enabled,
+      includeInTrackerGeneration: settings.memory.includeInTrackerGeneration,
+      retainCount: settings.memory.retainCount,
+      fullSnapshotCount: settings.memory.fullSnapshotCount,
+      compactOlderSnapshots: settings.memory.compactOlderSnapshots,
+      maxMemoryChars: settings.memory.maxMemoryChars,
+      source: settings.memory.source,
+      order: settings.memory.order
+    };
+    recommended.injection = {
+      enabled: settings.injection.enabled,
+      format: settings.injection.format,
+      retainCount: settings.injection.retainCount,
+      injectionPlacement: settings.injection.injectionPlacement,
+      maxInjectedChars: settings.injection.maxInjectedChars
+    };
+    recommended.renderer = {
+      enabled: settings.renderer.enabled,
+      previewSource: settings.renderer.previewSource,
+      maxRenderedChars: settings.renderer.maxRenderedChars,
+      allowInlineStyles: settings.renderer.allowInlineStyles,
+      templateTrustMode: settings.renderer.templateTrustMode
+    };
+    recommended.messageDisplay = {
+      enabled: settings.messageDisplay.enabled,
+      useDomInjection: settings.messageDisplay.useDomInjection,
+      displayMode: settings.messageDisplay.displayMode,
+      placement: settings.messageDisplay.placement,
+      renderMode: settings.messageDisplay.renderMode,
+      allowInlineStyles: settings.messageDisplay.allowInlineStyles,
+      showTimestamp: settings.messageDisplay.showTimestamp,
+      showPresetName: settings.messageDisplay.showPresetName,
+      showGenerationDuration: settings.messageDisplay.showGenerationDuration,
+      maxRenderedChars: settings.messageDisplay.maxRenderedChars
+    };
+    recommended.expandedWidth = {
+      expandedWidthMode: settings.expandedWidth.expandedWidthMode,
+      maxExpandedWidthPx: settings.expandedWidth.maxExpandedWidthPx,
+      mobileHorizontalMarginPx: settings.expandedWidth.mobileHorizontalMarginPx,
+      expandedContentMaxHeightVh: settings.expandedWidth.expandedContentMaxHeightVh
+    };
+    recommended.budget = {
+      mode: settings.budget.mode,
+      ultraModeEnabled: settings.budget.ultraModeEnabled,
+      maxTrackerOutputTokens: settings.budget.maxTrackerOutputTokens,
+      renderedHtmlMaxChars: settings.budget.renderedHtmlMaxChars
+    };
+    pack.recommendedSettings = recommended;
+  }
+  if (options?.exampleSnapshot && isRecord3(options.exampleSnapshot)) {
+    pack.exampleSnapshot = options.exampleSnapshot;
+  }
+  return pack;
+}
+function validatePackRecommendedSettings(value) {
+  if (!isRecord3(value)) return null;
+  const result = {};
+  if (isRecord3(value.connection)) result.connection = stripSecretKeys(value.connection);
+  if (isRecord3(value.memory)) result.memory = value.memory;
+  if (isRecord3(value.injection)) result.injection = value.injection;
+  if (isRecord3(value.renderer)) result.renderer = value.renderer;
+  if (isRecord3(value.messageDisplay)) result.messageDisplay = value.messageDisplay;
+  if (isRecord3(value.expandedWidth)) result.expandedWidth = value.expandedWidth;
+  if (isRecord3(value.budget)) result.budget = stripSecretKeys(value.budget);
+  return Object.keys(result).length > 0 ? result : null;
+}
+function importPresetPack(value, existingIds, now) {
+  if (!isRecord3(value)) {
+    return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import must be a JSON object.", warnings: [], packMeta: null };
+  }
+  if (value.kind === PRESET_PACK_KIND) {
+    if (value.formatVersion !== PRESET_PACK_FORMAT_VERSION) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: `Unsupported preset pack format version: ${value.formatVersion}. Expected ${PRESET_PACK_FORMAT_VERSION}.`, warnings: [], packMeta: null };
+    }
+    if (containsSecretKeys(value)) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import rejected: pack contains potential secret/API key fields.", warnings: [], packMeta: null };
+    }
+    const presetData = isRecord3(value.preset) ? value.preset : null;
+    if (!presetData) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import preset data is missing or invalid.", warnings: [], packMeta: null };
+    }
+    const compat = isRecord3(value.appCompatibility) ? value.appCompatibility : null;
+    const warnings = [];
+    const existing = new Set(existingIds);
+    const rawId = sanitizePresetId(stringValue2(presetData.id, stringValue2(presetData.name, "imported")));
+    const id = existing.has(rawId) || rawId === DEFAULT_TRACKER_PRESET_ID ? createPresetId(stringValue2(presetData.name, "Imported Preset"), existing) : rawId;
+    const preset = {
+      id,
+      name: stringValue2(presetData.name, "Imported Preset").trim() || "Imported Preset",
+      description: stringValue2(presetData.description),
+      version: stringValue2(presetData.version, "1.0"),
+      createdAt: now,
+      updatedAt: now,
+      jsonSchema: isRecord3(presetData.jsonSchema) ? presetData.jsonSchema : {},
+      promptInstructions: stringValue2(presetData.promptInstructions),
+      htmlTemplate: typeof presetData.htmlTemplate === "string" ? presetData.htmlTemplate : "",
+      notes: typeof presetData.notes === "string" ? presetData.notes : "",
+      origin: "user_imported",
+      capabilities: {
+        supportsHtmlTemplate: typeof presetData.htmlTemplate === "string" && presetData.htmlTemplate.trim().length > 0
+      }
+    };
+    if (!preset.name.trim()) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Imported preset name is empty.", warnings, packMeta: null };
+    }
+    if (Object.keys(preset.jsonSchema).length === 0) {
+      warnings.push("Imported preset has an empty JSON schema.");
+    }
+    if (!preset.promptInstructions.trim()) {
+      warnings.push("Imported preset has empty prompt instructions.");
+    }
+    const recommendedSettings = validatePackRecommendedSettings(value.recommendedSettings);
+    const exampleSnapshot = isRecord3(value.exampleSnapshot) ? value.exampleSnapshot : null;
+    const tags = Array.isArray(presetData.tags) ? presetData.tags.filter((t) => typeof t === "string") : [];
+    const packMeta = {
+      kind: PRESET_PACK_KIND,
+      formatVersion: PRESET_PACK_FORMAT_VERSION,
+      exportedAt: stringValue2(value.exportedAt, ""),
+      minVersion: compat ? stringValue2(compat.minVersion) : null,
+      recommendedVersion: compat ? stringValue2(compat.recommendedVersion) : null,
+      tags,
+      author: stringValue2(value.exportedBy) || stringValue2(presetData.author) || null
+    };
+    return { ok: true, preset, recommendedSettings, exampleSnapshot, error: null, warnings, packMeta };
+  }
+  if (value.kind === PRESET_EXPORT_KIND) {
+    const oldResult = importTrackerPresetEnvelope(value, existingIds, now);
+    if (!oldResult.ok || !oldResult.preset) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: oldResult.error ?? "Invalid legacy preset import.", warnings: [], packMeta: null };
+    }
+    return {
+      ok: true,
+      preset: oldResult.preset,
+      recommendedSettings: null,
+      exampleSnapshot: null,
+      error: null,
+      warnings: ["Imported using legacy ltracker_schema_preset format."],
+      packMeta: { kind: PRESET_EXPORT_KIND, formatVersion: PRESET_EXPORT_FORMAT_VERSION, exportedAt: null, minVersion: null, recommendedVersion: null, tags: [], author: null }
+    };
+  }
+  if (isRecord3(value) && isRecord3(value.jsonSchema) && typeof value.promptInstructions === "string") {
+    const repaired = repairTrackerPreset({
+      ...value,
+      origin: value.origin ?? "user_imported",
+      id: value.id ?? sanitizePresetId(stringValue2(value.name, "imported"))
+    });
+    if (!repaired) {
+      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Raw preset object could not be repaired.", warnings: [], packMeta: null };
+    }
+    const existing = new Set(existingIds);
+    const id = existing.has(repaired.id) || repaired.id === DEFAULT_TRACKER_PRESET_ID ? createPresetId(repaired.name, existing) : repaired.id;
+    return {
+      ok: true,
+      preset: { ...repaired, id, origin: "user_imported", createdAt: now, updatedAt: now },
+      recommendedSettings: null,
+      exampleSnapshot: null,
+      error: null,
+      warnings: ["Imported as raw preset object (no pack envelope)."],
+      packMeta: null
+    };
+  }
+  return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Unrecognized import format. Expected ltracker_preset_pack, ltracker_schema_preset, or a raw preset object with jsonSchema and promptInstructions.", warnings: [], packMeta: null };
+}
+
 // src/shared/snapshotFormat.ts
-function isRecord2(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isMessageAttachedSnapshot(value) {
-  return "snapshot" in value && isRecord2(value.snapshot);
+  return "snapshot" in value && isRecord4(value.snapshot);
 }
 function normalizeSnapshot(value) {
   if (isMessageAttachedSnapshot(value)) {
@@ -548,10 +960,10 @@ function listFromUnknown2(value) {
     return value.map((item) => {
       const rendered = primitiveToString2(item);
       if (rendered) return rendered;
-      return isRecord2(item) ? recordSummary2(item) : null;
+      return isRecord4(item) ? recordSummary2(item) : null;
     }).filter((item) => Boolean(item));
   }
-  if (isRecord2(value)) {
+  if (isRecord4(value)) {
     const summary = recordSummary2(value);
     return summary ? [summary] : [];
   }
@@ -560,7 +972,7 @@ function listFromUnknown2(value) {
 function stringAt2(data, path) {
   let current = data;
   for (const key of path) {
-    if (!isRecord2(current)) return null;
+    if (!isRecord4(current)) return null;
     current = current[key];
   }
   return primitiveToString2(current);
@@ -588,7 +1000,7 @@ function openThreads(data) {
 }
 function fallbackSummary(data) {
   const fragments = Object.entries(data).map(([key, value]) => {
-    if (isRecord2(value)) return `${key}: ${recordSummary2(value) ?? "set"}`;
+    if (isRecord4(value)) return `${key}: ${recordSummary2(value) ?? "set"}`;
     const list = listFromUnknown2(value);
     if (list.length > 0) return `${key}: ${list.slice(0, 2).join("; ")}`;
     return null;
@@ -1145,12 +1557,6 @@ function groupMessageTrackerHistory(entries, showDuplicates = false) {
     duplicateCount
   };
 }
-
-// src/shared/types.ts
-var EXTENSION_VERSION = "0.16";
-var STORAGE_SCHEMA_VERSION = 1;
-var SETTINGS_SCHEMA_VERSION = 1;
-var SPINDLE_TYPES_VERSION = "0.5.21";
 
 // src/shared/embeddedTrackerTag.ts
 var LTRACKER_TAG_NAME = "ltracker";
@@ -1929,7 +2335,20 @@ function emptyState() {
       staleJobsEvictedCount: 0,
       lastHistoryOrphanCount: 0,
       lastPresetEstimatedTokens: null,
-      lastPresetEstimatedRenderedChars: null
+      lastPresetEstimatedRenderedChars: null,
+      lastPresetPackImportAt: null,
+      lastPresetPackImportStatus: null,
+      lastPresetPackImportError: null,
+      lastPresetPackImportSizeChars: null,
+      lastPresetPackImportEstimatedTokens: null,
+      lastPresetPackExportAt: null,
+      lastPresetPackExportName: null,
+      lastPresetValidationAt: null,
+      lastPresetValidationStatus: null,
+      lastPresetValidationErrorCount: 0,
+      lastPresetValidationWarningCount: 0,
+      lastPresetValidationEstimatedTokens: null,
+      lastPresetValidationEstimatedRenderedChars: null
     },
     memoryPreview: null,
     injectionPreview: null,
@@ -1945,11 +2364,11 @@ function emptyState() {
     connectionProfiles: []
   };
 }
-function isRecord3(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null;
 }
 function isBackendMessage(payload) {
-  return isRecord3(payload) && typeof payload.type === "string";
+  return isRecord5(payload) && typeof payload.type === "string";
 }
 function escapeHtml2(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -2030,6 +2449,11 @@ function setup(ctx) {
   let historySelectedSwipeOnly = false;
   let currentHistoryLimit = 25;
   let recentlyDeletedBanner = null;
+  let stagedImportPack = null;
+  let stagedImportRawText = "";
+  let stagedValidationReport = null;
+  let stagedSampleSnapshot = null;
+  let stagedSampleRenderResult = null;
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
   if (!document.getElementById("ltracker-dom-style")) {
@@ -2258,7 +2682,7 @@ function setup(ctx) {
     });
   }
   function handleWidgetPayload(expectedMessageId, expectedSwipeKey, payload) {
-    if (!isRecord3(payload) || payload.type !== "ltracker_widget_action" || payload.action !== "toggle_regenerate" && payload.action !== "generate" || payload.messageId !== expectedMessageId) return;
+    if (!isRecord5(payload) || payload.type !== "ltracker_widget_action" || payload.action !== "toggle_regenerate" && payload.action !== "generate" || payload.messageId !== expectedMessageId) return;
     if ("swipeKey" in payload && payload.swipeKey !== expectedSwipeKey) return;
     const jobId = typeof payload.jobId === "string" && payload.jobId ? payload.jobId : null;
     if (payload.action === "generate") generateMessageTracker(expectedMessageId, expectedSwipeKey);
@@ -2522,7 +2946,7 @@ function setup(ctx) {
     const swipeKey = payload.attrs.swipe || DEFAULT_SWIPE_KEY;
     const version = payload.attrs.version || EXTENSION_VERSION;
     const parsed = JSON.parse(payload.content);
-    if (!isRecord3(parsed) || Array.isArray(parsed)) {
+    if (!isRecord5(parsed) || Array.isArray(parsed)) {
       throw new Error("Embedded LTracker tag content must be a JSON object.");
     }
     const attachedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -3136,6 +3560,109 @@ function setup(ctx) {
       requestId: requestId("preset-validate")
     });
   }
+  function validatePresetReportFrontend() {
+    const preset = readPresetDraft();
+    if (!preset) return;
+    send({
+      type: "validate_preset_report",
+      chatId: activeChatId(),
+      preset,
+      requestId: requestId("preset-validate-report")
+    });
+  }
+  function generateSampleSnapshotFrontend() {
+    send({
+      type: "generate_sample_snapshot",
+      chatId: activeChatId(),
+      requestId: requestId("preset-sample-snapshot")
+    });
+  }
+  function exportPresetPackFrontend(includeSettings) {
+    const msg = {
+      type: "export_preset_pack",
+      chatId: activeChatId(),
+      requestId: requestId("preset-export-pack")
+    };
+    if (includeSettings) {
+      msg.includeRecommendedSettings = true;
+    }
+    msg.includeExampleSnapshot = true;
+    send(msg);
+  }
+  function triggerFileImport() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,.ltracker.json";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result;
+        if (typeof text === "string") {
+          stageImportText(text);
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  }
+  function stageImportText(text) {
+    const maxChars = state.settings.budget.presetImportMaxChars;
+    if (text.length > maxChars) {
+      setLocalError(`Import size (${text.length} chars) exceeds limit of ${maxChars} chars.`);
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      setLocalError(`Invalid JSON: ${errorMessage(e)}`);
+      return;
+    }
+    const result = importPresetPack(parsed, state.presets.map((p) => p.id), (/* @__PURE__ */ new Date()).toISOString());
+    if (!result.ok || !result.preset) {
+      setLocalError(result.error ?? "Failed to parse import preset pack.");
+      return;
+    }
+    stagedImportPack = result;
+    stagedImportRawText = text;
+    state = {
+      ...state,
+      error: null
+    };
+    render();
+  }
+  function executeImportPresetPack() {
+    if (!stagedImportPack || !stagedImportRawText) return;
+    const nameInput = tab.root.querySelector("[data-import-review-name]");
+    const presetName = nameInput?.value.trim() || stagedImportPack.preset?.name || "Imported Preset";
+    const installModeSelect = tab.root.querySelector("[data-import-review-install-mode]");
+    const installMode = installModeSelect?.value || "new";
+    const trustModeSelect = tab.root.querySelector("[data-import-review-trust-mode]");
+    const trustMode = trustModeSelect?.value || "safe";
+    const applyRecToggle = tab.root.querySelector("[data-import-review-apply-settings]");
+    const applyRecommendedSettings = applyRecToggle ? applyRecToggle.checked : false;
+    const msg = {
+      type: "import_preset_pack",
+      chatId: activeChatId(),
+      importText: stagedImportRawText,
+      requestId: requestId("preset-import-pack")
+    };
+    if (presetName) msg.presetName = presetName;
+    if (installMode === "overwrite") {
+      const overwriteSelect = tab.root.querySelector("[data-import-review-overwrite-target]");
+      if (overwriteSelect?.value) {
+        msg.overwritePresetId = overwriteSelect.value;
+      }
+    }
+    if (trustMode) msg.trustMode = trustMode;
+    if (applyRecommendedSettings) msg.applyRecommendedSettings = applyRecommendedSettings;
+    send(msg);
+    stagedImportPack = null;
+    stagedImportRawText = "";
+    render();
+  }
   function selectedRenderSource() {
     const input = tab.root.querySelector('[data-renderer-setting="previewSource"]');
     return input?.value === "latest_message_snapshot" ? "latest_message_snapshot" : "latest_chat_snapshot";
@@ -3300,7 +3827,7 @@ function setup(ctx) {
         const jsonText = jsonInput?.value ?? "";
         try {
           const parsed = JSON.parse(jsonText);
-          const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "data" in parsed && isRecord3(parsed.data) ? parsed.data : parsed;
+          const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "data" in parsed && isRecord5(parsed.data) ? parsed.data : parsed;
           if (!data || typeof data !== "object" || Array.isArray(data)) {
             setError("Tracker JSON must be a JSON object.");
             return;
@@ -3518,6 +4045,179 @@ function setup(ctx) {
       recommendedConnection.max_tokens !== void 0 ? `max_tokens ${recommendedConnection.max_tokens}` : null,
       recommendedConnection.reasoning?.source ? `reasoning ${recommendedConnection.reasoning.source}` : null
     ].filter((item) => Boolean(item)).join(" / ") : null;
+    let importReviewHtml = "";
+    if (stagedImportPack) {
+      const pack = stagedImportPack;
+      const preset = pack.preset;
+      const meta = pack.packMeta;
+      const hasRec = Boolean(pack.recommendedSettings);
+      const overwriteOptions = state.presets.filter((p) => p.origin !== "built_in" && p.id !== DEFAULT_TRACKER_PRESET_ID).map((p) => `<option value="${escapeHtml2(p.id)}">${escapeHtml2(p.name)}</option>`).join("");
+      const recDetailsList = [];
+      if (pack.recommendedSettings) {
+        const rec = pack.recommendedSettings;
+        if (rec.connection) {
+          recDetailsList.push(`Connection settings (mode: ${rec.connection.mode || "inherit"})`);
+        }
+        if (rec.memory) {
+          recDetailsList.push(`Memory settings (retain: ${rec.memory.retainCount ?? "inherit"})`);
+        }
+        if (rec.injection) {
+          recDetailsList.push(`Injection settings (format: ${rec.injection.format ?? "inherit"})`);
+        }
+        if (rec.messageDisplay) {
+          recDetailsList.push(`Display settings (mode: ${rec.messageDisplay.displayMode ?? "inherit"})`);
+        }
+        if (rec.expandedWidth) {
+          recDetailsList.push(`Expanded width settings (mode: ${rec.expandedWidth.expandedWidthMode ?? "inherit"})`);
+        }
+        if (rec.budget) {
+          recDetailsList.push(`Budget settings (ultra mode: ${rec.budget.ultraModeEnabled ? "enabled" : "disabled"})`);
+        }
+      }
+      const recDetailsHtml = recDetailsList.length > 0 ? `<div class="ltracker-rec-details" style="font-size: 10px; color: #aaa; margin-top: 4px; padding-left: 10px;">Applying recommendations will update:<ul>${recDetailsList.map((item) => `<li>${escapeHtml2(item)}</li>`).join("")}</ul></div>` : "";
+      importReviewHtml = `
+        <div class="ltracker-import-review" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.02); margin-bottom: 15px;">
+          <h3 style="margin-top: 0; color: #9b5cff; font-size: 14px; font-weight: bold; margin-bottom: 8px;">Preset Pack Import Review</h3>
+          <div class="ltracker-grid ltracker-details" style="margin-bottom: 12px;">
+            ${renderRow("Pack name", preset?.name ?? "Unknown")}
+            ${renderRow("Version", preset?.version ?? "1.0")}
+            ${renderRow("Author/Exported by", meta?.author ?? "Unknown")}
+            ${renderRow("Exported at", meta?.exportedAt ?? "Unknown")}
+            ${renderRow("Description", preset?.description ?? "None")}
+            ${renderRow("Min. LTracker version", meta?.minVersion ?? "None")}
+          </div>
+
+          <div class="ltracker-settings" style="margin-bottom: 12px;">
+            <label class="ltracker-field">
+              Preset name (editable)
+              <input type="text" data-import-review-name value="${escapeHtml2(preset?.name ?? "Imported Preset")}">
+            </label>
+            <label class="ltracker-field">
+              Install mode
+              <select data-import-review-install-mode>
+                <option value="new">Save as new preset</option>
+                ${overwriteOptions ? `<option value="overwrite">Overwrite existing preset</option>` : ""}
+              </select>
+            </label>
+            ${overwriteOptions ? `
+              <label class="ltracker-field" data-import-review-overwrite-container style="display: none;">
+                Preset to overwrite
+                <select data-import-review-overwrite-target>
+                  ${overwriteOptions}
+                </select>
+              </label>
+            ` : ""}
+            <label class="ltracker-field">
+              Template trust mode
+              <select data-import-review-trust-mode>
+                <option value="safe">Safe (Sanitizes inline styles and links)</option>
+                <option value="trusted">Trusted (Allows inline styles and custom rendering)</option>
+              </select>
+            </label>
+            ${hasRec ? `
+              <label class="ltracker-check">
+                <input type="checkbox" data-import-review-apply-settings checked>
+                Apply recommended settings
+              </label>
+              ${recDetailsHtml}
+            ` : ""}
+          </div>
+
+          <div class="ltracker-actions">
+            <button class="ltracker-button" type="button" data-action="import-preset-pack" style="background: #9b5cff; color: #fff;">
+              Install Preset
+            </button>
+            <button class="ltracker-button" type="button" data-action="cancel-import">
+              Cancel Import
+            </button>
+          </div>
+        </div>
+      `;
+    }
+    let validationReportHtml = "";
+    if (stagedValidationReport) {
+      const rep = stagedValidationReport;
+      const entriesHtml = rep.entries.map((entry) => {
+        let badgeColor = "#444";
+        if (entry.severity === "error") badgeColor = "#ea4335";
+        if (entry.severity === "warning") badgeColor = "#fbbc05";
+        if (entry.severity === "pass") badgeColor = "#34a853";
+        if (entry.severity === "info") badgeColor = "#4285f4";
+        return `
+          <div class="ltracker-validation-entry" style="display: flex; gap: 8px; margin-bottom: 4px; font-size: 11px; align-items: flex-start;">
+            <span style="background: ${badgeColor}; color: #fff; padding: 1px 4px; border-radius: 3px; font-size: 9px; text-transform: uppercase; font-weight: bold; min-width: 50px; text-align: center; margin-top: 2px;">
+              ${escapeHtml2(entry.severity)}
+            </span>
+            <div>
+              <span style="font-weight: bold; color: #ccc;">[${escapeHtml2(entry.category)}]</span>
+              <span>${escapeHtml2(entry.message)}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+      const placeholdersHtml = rep.missingPlaceholders.length > 0 ? `<p class="ltracker-note" style="color: #fbbc05; margin-top: 5px;">Missing Schema Fields: ${rep.missingPlaceholders.map((p) => `<code>${escapeHtml2(p)}</code>`).join(", ")}</p>` : "";
+      const unusedHtml = rep.unusedSchemaFields.length > 0 ? `<p class="ltracker-note" style="color: #4285f4; margin-top: 5px;">Unused Schema Fields: ${rep.unusedSchemaFields.map((f) => `<code>${escapeHtml2(f)}</code>`).join(", ")}</p>` : "";
+      const warningGroupsHtml = rep.sanitizerWarningGroups.length > 0 ? `
+          <details style="margin-top: 5px;">
+            <summary style="font-size: 11px; color: #fbbc05; cursor: pointer;">Sanitizer Warnings (${rep.sanitizerWarningGroups.length})</summary>
+            <ul style="font-size: 10px; margin: 4px 0 0 15px; padding: 0; color: #aaa;">
+              ${rep.sanitizerWarningGroups.map((g) => `<li>${escapeHtml2(g)}</li>`).join("")}
+            </ul>
+          </details>
+        ` : "";
+      validationReportHtml = `
+        <div class="ltracker-validation-report" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.01); margin-top: 15px;">
+          <h3 style="margin-top: 0; color: ${rep.ok ? "#34a853" : "#ea4335"}; font-size: 14px; font-weight: bold; margin-bottom: 8px;">
+            Preset Validation: ${rep.ok ? "Passed" : "Failed with Errors"}
+          </h3>
+          <div class="ltracker-chip-row" style="margin-bottom: 8px;">
+            <span class="ltracker-chip" style="background: rgba(234,67,53,0.1); color: #ea4335;">Errors: ${rep.errorCount}</span>
+            <span class="ltracker-chip" style="background: rgba(251,188,5,0.1); color: #fbbc05;">Warnings: ${rep.warningCount}</span>
+            <span class="ltracker-chip" style="background: rgba(52,168,83,0.1); color: #34a853;">Passes: ${rep.passCount}</span>
+          </div>
+
+          <div style="max-height: 200px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.05); padding: 6px; border-radius: 4px; background: rgba(0,0,0,0.1); margin-bottom: 8px;">
+            ${entriesHtml}
+          </div>
+
+          ${placeholdersHtml}
+          ${unusedHtml}
+          ${warningGroupsHtml}
+
+          <div class="ltracker-grid ltracker-details" style="margin-top: 8px; font-size: 11px;">
+            ${renderRow("Est. Pack Size", `${rep.estimatedPackSizeChars.toLocaleString()} chars`)}
+            ${renderRow("Est. Prompt Tokens", `~${rep.estimatedPromptTokens.toLocaleString()}`)}
+            ${renderRow("Est. Rendered HTML Size", `${rep.estimatedRenderedChars.toLocaleString()} chars`)}
+            ${renderRow("Ultra Mode recommended", rep.estimatedPromptTokens > 8e3 || rep.estimatedRenderedChars > 1e5 ? "Yes" : "No")}
+          </div>
+        </div>
+      `;
+    }
+    let sampleSnapshotHtml = "";
+    if (stagedSampleSnapshot) {
+      const renderPreview2 = stagedSampleRenderResult;
+      const sampleHtmlPreview = renderPreview2?.html ? `<div class="ltracker-render-preview">${renderPreview2.html}</div>` : `<div class="ltracker-render-preview ltracker-render-placeholder">${escapeHtml2("No HTML preview rendered.")}</div>`;
+      sampleSnapshotHtml = `
+        <div class="ltracker-sample-snapshot-preview" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.01); margin-top: 15px;">
+          <h3 style="margin-top: 0; color: #4285f4; font-size: 14px; font-weight: bold; margin-bottom: 8px;">Sample Snapshot & Render Preview</h3>
+          <details style="margin-bottom: 8px;">
+            <summary style="font-size: 11px; cursor: pointer; color: #aaa;">View Sample Snapshot Data</summary>
+            <pre class="ltracker-json" style="max-height: 150px; font-size: 10px;">${escapeHtml2(JSON.stringify(stagedSampleSnapshot, null, 2))}</pre>
+          </details>
+
+          ${sampleHtmlPreview}
+
+          <div class="ltracker-actions" style="margin-top: 8px;">
+            <button class="ltracker-button" type="button" data-action="copy-sample-snapshot">
+              Copy Sample Snapshot JSON
+            </button>
+            <button class="ltracker-button" type="button" data-action="copy-render-html-sample" ${disabled(!renderPreview2?.html)}>
+              Copy Rendered HTML
+            </button>
+          </div>
+        </div>
+      `;
+    }
     tab.root.innerHTML = `
       <section class="ltracker-shell">
         <header class="ltracker-header">
@@ -4206,67 +4906,125 @@ function setup(ctx) {
 
         <section class="ltracker-panel ltracker-section" id="ltracker-section-presets">
           <span class="ltracker-label">Presets</span>
-          <div class="ltracker-settings">
-            <label class="ltracker-field">
-              Selected preset
-              <select data-preset-select>
-                ${presetOptions}
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Preset name
-              <input type="text" data-preset-field="name" value="${escapeHtml2(activePreset.name)}"${disabled(activePresetIsBuiltIn)}>
-            </label>
-            <label class="ltracker-field">
-              Preset version
-              <input type="text" data-preset-field="version" value="${escapeHtml2(activePreset.version)}"${disabled(activePresetIsBuiltIn)}>
-            </label>
-            <label class="ltracker-field">
-              Origin
-              <input type="text" value="${escapeHtml2(activePreset.origin)}" disabled>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Preset description
-              <textarea data-preset-field="description"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.description)}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Schema Box 1 - JSON Schema
-              <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(presetSchemaText)}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Schema Box 2 - HTML Template (Sanitized preview/message display)
-              <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.htmlTemplate ?? "")}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Prompt Box - AI Instructions
-              <textarea data-preset-field="promptInstructions"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.promptInstructions)}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Notes
-              <textarea data-preset-field="notes"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.notes ?? "")}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Import Preset JSON
-              <textarea data-preset-import placeholder="Paste exported ltracker_schema_preset JSON here"></textarea>
-            </label>
+          
+          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Current Preset</span>
+            <div class="ltracker-settings">
+              <label class="ltracker-field">
+                Selected preset
+                <select data-preset-select>
+                  ${presetOptions}
+                </select>
+              </label>
+              <label class="ltracker-field">
+                Preset name
+                <input type="text" data-preset-field="name" value="${escapeHtml2(activePreset.name)}"${disabled(activePresetIsBuiltIn)}>
+              </label>
+              <label class="ltracker-field">
+                Preset version
+                <input type="text" data-preset-field="version" value="${escapeHtml2(activePreset.version)}"${disabled(activePresetIsBuiltIn)}>
+              </label>
+              <label class="ltracker-field">
+                Origin
+                <input type="text" value="${escapeHtml2(activePreset.origin)}" disabled>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Preset description
+                <textarea data-preset-field="description"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.description)}</textarea>
+              </label>
+            </div>
           </div>
-          ${presetHtmlWarning ? `<p class="ltracker-note">${escapeHtml2(presetHtmlWarning)}</p>` : ""}
-          ${recommendedConnectionText ? `<p class="ltracker-note">${escapeHtml2(recommendedConnectionText)}</p>` : ""}
-          <div class="ltracker-actions" style="margin-top: 10px;">
-            <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
-              Render With Latest Snapshot
-            </button>
-            <button class="ltracker-button" type="button" data-action="apply-preset-connection" ${disabled(!recommendedConnection)}>
-              Apply Preset Recommended Tracker Settings
-            </button>
-            <button class="ltracker-button" type="button" data-action="save-preset-new">Save As New Preset</button>
-            <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate Preset</button>
-            <button class="ltracker-button" type="button" data-action="update-preset" ${disabled(activePresetIsBuiltIn)}>Update Current Preset</button>
-            <button class="ltracker-button" type="button" data-action="delete-preset" ${disabled(activePresetIsBuiltIn)}>Delete Preset</button>
-            <button class="ltracker-button" type="button" data-action="reset-preset">Reset To Default Preset</button>
-            <button class="ltracker-button" type="button" data-action="export-preset">Export Selected Preset</button>
-            <button class="ltracker-button" type="button" data-action="import-preset">Import Preset JSON</button>
-            <button class="ltracker-button" type="button" data-action="validate-preset">Validate Preset</button>
+
+          ${importReviewHtml}
+
+          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Preset Configuration</span>
+            <div class="ltracker-settings">
+              <label class="ltracker-field ltracker-field-wide">
+                Schema Box 1 - JSON Schema
+                <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(presetSchemaText)}</textarea>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Schema Box 2 - HTML Template (Sanitized preview/message display)
+                <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.htmlTemplate ?? "")}</textarea>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Prompt Box - AI Instructions
+                <textarea data-preset-field="promptInstructions"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.promptInstructions)}</textarea>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Notes
+                <textarea data-preset-field="notes"${disabled(activePresetIsBuiltIn)}>${escapeHtml2(activePreset.notes ?? "")}</textarea>
+              </label>
+            </div>
+          </div>
+
+          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Validate & Preview</span>
+            <div class="ltracker-actions">
+              <button class="ltracker-button" type="button" data-action="validate-preset-report">
+                Validate Preset (Full Report)
+              </button>
+              <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
+                Render With Latest Snapshot
+              </button>
+              <button class="ltracker-button" type="button" data-action="generate-sample-snapshot">
+                Render With Sample Snapshot
+              </button>
+            </div>
+            ${validationReportHtml}
+            ${sampleSnapshotHtml}
+          </div>
+
+          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Import & Export Preset Packs</span>
+            <div style="font-size: 11px; color: #aaa; margin-bottom: 8px;">
+              Manage presets as single <code>.ltracker.json</code> files containing schemas, templates, instructions, notes, and settings recommendations.
+            </div>
+            <div class="ltracker-actions" style="margin-bottom: 10px;">
+              <button class="ltracker-button" type="button" data-action="import-file-pack">
+                Import Preset Pack File (.ltracker.json)
+              </button>
+              <button class="ltracker-button" type="button" data-action="export-preset-pack">
+                Export Selected Preset Pack
+              </button>
+              <button class="ltracker-button" type="button" data-action="export-preset-pack-settings">
+                Export Preset Pack + Current Settings
+              </button>
+            </div>
+            <div class="ltracker-actions" style="margin-bottom: 10px;">
+              <button class="ltracker-button" type="button" data-action="copy-preset-pack-json">
+                Copy Preset Pack JSON
+              </button>
+              <button class="ltracker-button" type="button" data-action="copy-legacy-preset-json">
+                Copy Current Preset Legacy JSON
+              </button>
+            </div>
+            <label class="ltracker-field ltracker-field-wide">
+              Or paste Preset / Pack JSON below and click preview:
+              <textarea data-preset-import placeholder="Paste JSON here..."></textarea>
+            </label>
+            <div class="ltracker-actions" style="margin-top: 5px;">
+              <button class="ltracker-button" type="button" data-action="import-preset-pack-preview">
+                Preview Pasted JSON
+              </button>
+            </div>
+          </div>
+
+          <div class="ltracker-presets-subsection">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Preset Storage Management</span>
+            <div class="ltracker-actions">
+              <button class="ltracker-button" type="button" data-action="save-preset-new">Save As New Preset</button>
+              <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate Preset</button>
+              <button class="ltracker-button" type="button" data-action="update-preset" ${disabled(activePresetIsBuiltIn)}>Update Current Preset</button>
+              <button class="ltracker-button" type="button" data-action="delete-preset" ${disabled(activePresetIsBuiltIn)}>Delete Preset</button>
+              <button class="ltracker-button" type="button" data-action="reset-preset">Reset To Default Preset</button>
+              <button class="ltracker-button" type="button" data-action="apply-preset-connection" ${disabled(!recommendedConnection)}>
+                Apply Preset Recommended Tracker Settings
+              </button>
+            </div>
+            ${presetHtmlWarning ? `<p class="ltracker-note">${escapeHtml2(presetHtmlWarning)}</p>` : ""}
+            ${recommendedConnectionText ? `<p class="ltracker-note">${escapeHtml2(recommendedConnectionText)}</p>` : ""}
           </div>
         </section>
 
@@ -4660,8 +5418,45 @@ function setup(ctx) {
     if (action === "reset-preset") resetPreset();
     if (action === "import-preset") importPreset();
     if (action === "validate-preset") validatePreset();
+    if (action === "validate-preset-report") validatePresetReportFrontend();
+    if (action === "generate-sample-snapshot") generateSampleSnapshotFrontend();
     if (action === "export-preset") {
       void copyText(JSON.stringify(exportTrackerPreset(state.activePreset), null, 2), "selected preset export");
+    }
+    if (action === "export-preset-pack") exportPresetPackFrontend(false);
+    if (action === "export-preset-pack-settings") exportPresetPackFrontend(true);
+    if (action === "copy-preset-pack-json") {
+      const exportOpts = {
+        includeRecommendedSettings: true,
+        settings: state.settings
+      };
+      if (state.snapshot?.data) {
+        exportOpts.exampleSnapshot = state.snapshot.data;
+      }
+      const pack = exportPresetPack(state.activePreset, exportOpts);
+      void copyText(JSON.stringify(pack, null, 2), "preset pack JSON");
+    }
+    if (action === "copy-legacy-preset-json") {
+      void copyText(JSON.stringify(exportTrackerPreset(state.activePreset), null, 2), "legacy preset JSON");
+    }
+    if (action === "import-file-pack") triggerFileImport();
+    if (action === "import-preset-pack-preview") {
+      const input = tab.root.querySelector("[data-preset-import]");
+      const text = input?.value.trim() ?? "";
+      if (!text) {
+        setLocalError("Paste preset pack JSON before previewing.");
+      } else {
+        stageImportText(text);
+      }
+    }
+    if (action === "import-preset-pack") executeImportPresetPack();
+    if (action === "cancel-import") {
+      stagedImportPack = null;
+      stagedImportRawText = "";
+      render();
+    }
+    if (action === "copy-sample-snapshot") {
+      void copyText(stagedSampleSnapshot ? JSON.stringify(stagedSampleSnapshot, null, 2) : null, "sample snapshot JSON");
     }
     if (action === "undo-delete" && recentlyDeletedBanner) {
       send({
@@ -4735,6 +5530,13 @@ Detail: ${err.detail}` : ""}` : "No error recorded.";
     if (isSettingsControl(event.target)) scheduleSettingsAutosave();
     const target = event.target instanceof HTMLSelectElement ? event.target.closest("[data-preset-select]") : null;
     if (target) selectPreset(target.value);
+    const installModeSelect = event.target instanceof HTMLSelectElement ? event.target.closest("[data-import-review-install-mode]") : null;
+    if (installModeSelect) {
+      const overwriteContainer = tab.root.querySelector("[data-import-review-overwrite-container]");
+      if (overwriteContainer) {
+        overwriteContainer.style.display = installModeSelect.value === "overwrite" ? "block" : "none";
+      }
+    }
   };
   tab.root.addEventListener("change", onChange);
   cleanups.push(() => tab.root.removeEventListener("change", onChange));
@@ -4763,6 +5565,33 @@ Detail: ${err.detail}` : ""}` : "No error recorded.";
         error: emptyError(payload.message)
       };
       if (settingsResponse) settingsSaveStatus = "failed";
+      render();
+    }
+    if (payload.type === "preset_pack_export_ready") {
+      let methodUsed = "file download";
+      try {
+        const blob = new Blob([payload.json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = payload.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        methodUsed = "copy fallback";
+        void copyText(payload.json, "preset pack JSON");
+      }
+      console.log(`LTracker export method used: ${methodUsed}`);
+    }
+    if (payload.type === "preset_pack_validation_report") {
+      stagedValidationReport = payload.report;
+      render();
+    }
+    if (payload.type === "sample_snapshot_ready") {
+      stagedSampleSnapshot = payload.snapshot;
+      stagedSampleRenderResult = payload.renderResult;
       render();
     }
   }));

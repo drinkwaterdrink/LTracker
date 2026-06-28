@@ -4,8 +4,18 @@ import type {
 } from "lumiverse-spindle-types";
 import {
   DEFAULT_TRACKER_PRESET,
+  DEFAULT_TRACKER_PRESET_ID,
   exportTrackerPreset,
 } from "./shared/presets";
+import {
+  importPresetPack,
+  validatePresetReport,
+  sanitizePackFileName,
+  exportPresetPack,
+  PRESET_PACK_KIND,
+  type PresetValidationReport,
+  type PresetPackImportResult,
+} from "./shared/presetPack";
 import {
   groupMessageTrackerHistory,
   MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
@@ -646,6 +656,19 @@ function emptyState(): FrontendState {
       lastHistoryOrphanCount: 0,
       lastPresetEstimatedTokens: null,
       lastPresetEstimatedRenderedChars: null,
+      lastPresetPackImportAt: null,
+      lastPresetPackImportStatus: null,
+      lastPresetPackImportError: null,
+      lastPresetPackImportSizeChars: null,
+      lastPresetPackImportEstimatedTokens: null,
+      lastPresetPackExportAt: null,
+      lastPresetPackExportName: null,
+      lastPresetValidationAt: null,
+      lastPresetValidationStatus: null,
+      lastPresetValidationErrorCount: 0,
+      lastPresetValidationWarningCount: 0,
+      lastPresetValidationEstimatedTokens: null,
+      lastPresetValidationEstimatedRenderedChars: null,
     },
     memoryPreview: null,
     injectionPreview: null,
@@ -767,6 +790,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let historySelectedSwipeOnly = false;
   let currentHistoryLimit = 25;
   let recentlyDeletedBanner: { messageId: string; swipeKey: string; timer: ReturnType<typeof setTimeout> } | null = null;
+
+  let stagedImportPack: PresetPackImportResult | null = null;
+  let stagedImportRawText = "";
+  let stagedValidationReport: PresetValidationReport | null = null;
+  let stagedSampleSnapshot: Record<string, unknown> | null = null;
+  let stagedSampleRenderResult: import("./shared/htmlTemplateRenderer").HtmlTemplateRenderResult | null = null;
 
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
@@ -2019,6 +2048,125 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     });
   }
 
+  function validatePresetReportFrontend(): void {
+    const preset = readPresetDraft();
+    if (!preset) return;
+    send({
+      type: "validate_preset_report",
+      chatId: activeChatId(),
+      preset,
+      requestId: requestId("preset-validate-report"),
+    });
+  }
+
+  function generateSampleSnapshotFrontend(): void {
+    send({
+      type: "generate_sample_snapshot",
+      chatId: activeChatId(),
+      requestId: requestId("preset-sample-snapshot"),
+    });
+  }
+
+  function exportPresetPackFrontend(includeSettings: boolean): void {
+    const msg: FrontendMessage = {
+      type: "export_preset_pack",
+      chatId: activeChatId(),
+      requestId: requestId("preset-export-pack"),
+    };
+    if (includeSettings) {
+      msg.includeRecommendedSettings = true;
+    }
+    msg.includeExampleSnapshot = true;
+    send(msg);
+  }
+
+  function triggerFileImport(): void {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,.ltracker.json";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result;
+        if (typeof text === "string") {
+          stageImportText(text);
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  }
+
+  function stageImportText(text: string): void {
+    const maxChars = state.settings.budget.presetImportMaxChars;
+    if (text.length > maxChars) {
+      setLocalError(`Import size (${text.length} chars) exceeds limit of ${maxChars} chars.`);
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      setLocalError(`Invalid JSON: ${errorMessage(e)}`);
+      return;
+    }
+
+    const result = importPresetPack(parsed, state.presets.map((p) => p.id), new Date().toISOString());
+    if (!result.ok || !result.preset) {
+      setLocalError(result.error ?? "Failed to parse import preset pack.");
+      return;
+    }
+
+    stagedImportPack = result;
+    stagedImportRawText = text;
+    state = {
+      ...state,
+      error: null,
+    };
+    render();
+  }
+
+  function executeImportPresetPack(): void {
+    if (!stagedImportPack || !stagedImportRawText) return;
+
+    const nameInput = tab.root.querySelector<HTMLInputElement>("[data-import-review-name]");
+    const presetName = nameInput?.value.trim() || stagedImportPack.preset?.name || "Imported Preset";
+
+    const installModeSelect = tab.root.querySelector<HTMLSelectElement>("[data-import-review-install-mode]");
+    const installMode = installModeSelect?.value || "new";
+
+    const trustModeSelect = tab.root.querySelector<HTMLSelectElement>("[data-import-review-trust-mode]");
+    const trustMode = trustModeSelect?.value as TemplateTrustMode || "safe";
+
+    const applyRecToggle = tab.root.querySelector<HTMLInputElement>("[data-import-review-apply-settings]");
+    const applyRecommendedSettings = applyRecToggle ? applyRecToggle.checked : false;
+
+    const msg: FrontendMessage = {
+      type: "import_preset_pack",
+      chatId: activeChatId(),
+      importText: stagedImportRawText,
+      requestId: requestId("preset-import-pack"),
+    };
+
+    if (presetName) msg.presetName = presetName;
+    if (installMode === "overwrite") {
+      const overwriteSelect = tab.root.querySelector<HTMLSelectElement>("[data-import-review-overwrite-target]");
+      if (overwriteSelect?.value) {
+        msg.overwritePresetId = overwriteSelect.value;
+      }
+    }
+    if (trustMode) msg.trustMode = trustMode;
+    if (applyRecommendedSettings) msg.applyRecommendedSettings = applyRecommendedSettings;
+
+    send(msg);
+
+    stagedImportPack = null;
+    stagedImportRawText = "";
+    render();
+  }
+
   function selectedRenderSource(): LTrackerRenderSource {
     const input = tab.root.querySelector<HTMLSelectElement>("[data-renderer-setting=\"previewSource\"]");
     return input?.value === "latest_message_snapshot" ? "latest_message_snapshot" : "latest_chat_snapshot";
@@ -2472,6 +2620,205 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           recommendedConnection.reasoning?.source ? `reasoning ${recommendedConnection.reasoning.source}` : null,
         ].filter((item): item is string => Boolean(item)).join(" / ")
       : null;
+
+    let importReviewHtml = "";
+    if (stagedImportPack) {
+      const pack = stagedImportPack;
+      const preset = pack.preset;
+      const meta = pack.packMeta;
+      const hasRec = Boolean(pack.recommendedSettings);
+
+      const overwriteOptions = state.presets
+        .filter((p) => p.origin !== "built_in" && p.id !== DEFAULT_TRACKER_PRESET_ID)
+        .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`)
+        .join("");
+
+      const recDetailsList: string[] = [];
+      if (pack.recommendedSettings) {
+        const rec = pack.recommendedSettings;
+        if (rec.connection) {
+          recDetailsList.push(`Connection settings (mode: ${rec.connection.mode || "inherit"})`);
+        }
+        if (rec.memory) {
+          recDetailsList.push(`Memory settings (retain: ${rec.memory.retainCount ?? "inherit"})`);
+        }
+        if (rec.injection) {
+          recDetailsList.push(`Injection settings (format: ${rec.injection.format ?? "inherit"})`);
+        }
+        if (rec.messageDisplay) {
+          recDetailsList.push(`Display settings (mode: ${rec.messageDisplay.displayMode ?? "inherit"})`);
+        }
+        if (rec.expandedWidth) {
+          recDetailsList.push(`Expanded width settings (mode: ${rec.expandedWidth.expandedWidthMode ?? "inherit"})`);
+        }
+        if (rec.budget) {
+          recDetailsList.push(`Budget settings (ultra mode: ${rec.budget.ultraModeEnabled ? "enabled" : "disabled"})`);
+        }
+      }
+
+      const recDetailsHtml = recDetailsList.length > 0
+        ? `<div class="ltracker-rec-details" style="font-size: 10px; color: #aaa; margin-top: 4px; padding-left: 10px;">Applying recommendations will update:<ul>${recDetailsList.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
+        : "";
+
+      importReviewHtml = `
+        <div class="ltracker-import-review" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.02); margin-bottom: 15px;">
+          <h3 style="margin-top: 0; color: #9b5cff; font-size: 14px; font-weight: bold; margin-bottom: 8px;">Preset Pack Import Review</h3>
+          <div class="ltracker-grid ltracker-details" style="margin-bottom: 12px;">
+            ${renderRow("Pack name", preset?.name ?? "Unknown")}
+            ${renderRow("Version", preset?.version ?? "1.0")}
+            ${renderRow("Author/Exported by", meta?.author ?? "Unknown")}
+            ${renderRow("Exported at", meta?.exportedAt ?? "Unknown")}
+            ${renderRow("Description", preset?.description ?? "None")}
+            ${renderRow("Min. LTracker version", meta?.minVersion ?? "None")}
+          </div>
+
+          <div class="ltracker-settings" style="margin-bottom: 12px;">
+            <label class="ltracker-field">
+              Preset name (editable)
+              <input type="text" data-import-review-name value="${escapeHtml(preset?.name ?? "Imported Preset")}">
+            </label>
+            <label class="ltracker-field">
+              Install mode
+              <select data-import-review-install-mode>
+                <option value="new">Save as new preset</option>
+                ${overwriteOptions ? `<option value="overwrite">Overwrite existing preset</option>` : ""}
+              </select>
+            </label>
+            ${overwriteOptions ? `
+              <label class="ltracker-field" data-import-review-overwrite-container style="display: none;">
+                Preset to overwrite
+                <select data-import-review-overwrite-target>
+                  ${overwriteOptions}
+                </select>
+              </label>
+            ` : ""}
+            <label class="ltracker-field">
+              Template trust mode
+              <select data-import-review-trust-mode>
+                <option value="safe">Safe (Sanitizes inline styles and links)</option>
+                <option value="trusted">Trusted (Allows inline styles and custom rendering)</option>
+              </select>
+            </label>
+            ${hasRec ? `
+              <label class="ltracker-check">
+                <input type="checkbox" data-import-review-apply-settings checked>
+                Apply recommended settings
+              </label>
+              ${recDetailsHtml}
+            ` : ""}
+          </div>
+
+          <div class="ltracker-actions">
+            <button class="ltracker-button" type="button" data-action="import-preset-pack" style="background: #9b5cff; color: #fff;">
+              Install Preset
+            </button>
+            <button class="ltracker-button" type="button" data-action="cancel-import">
+              Cancel Import
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    let validationReportHtml = "";
+    if (stagedValidationReport) {
+      const rep = stagedValidationReport;
+      const entriesHtml = rep.entries.map((entry) => {
+        let badgeColor = "#444";
+        if (entry.severity === "error") badgeColor = "#ea4335";
+        if (entry.severity === "warning") badgeColor = "#fbbc05";
+        if (entry.severity === "pass") badgeColor = "#34a853";
+        if (entry.severity === "info") badgeColor = "#4285f4";
+
+        return `
+          <div class="ltracker-validation-entry" style="display: flex; gap: 8px; margin-bottom: 4px; font-size: 11px; align-items: flex-start;">
+            <span style="background: ${badgeColor}; color: #fff; padding: 1px 4px; border-radius: 3px; font-size: 9px; text-transform: uppercase; font-weight: bold; min-width: 50px; text-align: center; margin-top: 2px;">
+              ${escapeHtml(entry.severity)}
+            </span>
+            <div>
+              <span style="font-weight: bold; color: #ccc;">[${escapeHtml(entry.category)}]</span>
+              <span>${escapeHtml(entry.message)}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      const placeholdersHtml = rep.missingPlaceholders.length > 0
+        ? `<p class="ltracker-note" style="color: #fbbc05; margin-top: 5px;">Missing Schema Fields: ${rep.missingPlaceholders.map(p => `<code>${escapeHtml(p)}</code>`).join(", ")}</p>`
+        : "";
+
+      const unusedHtml = rep.unusedSchemaFields.length > 0
+        ? `<p class="ltracker-note" style="color: #4285f4; margin-top: 5px;">Unused Schema Fields: ${rep.unusedSchemaFields.map(f => `<code>${escapeHtml(f)}</code>`).join(", ")}</p>`
+        : "";
+
+      const warningGroupsHtml = rep.sanitizerWarningGroups.length > 0
+        ? `
+          <details style="margin-top: 5px;">
+            <summary style="font-size: 11px; color: #fbbc05; cursor: pointer;">Sanitizer Warnings (${rep.sanitizerWarningGroups.length})</summary>
+            <ul style="font-size: 10px; margin: 4px 0 0 15px; padding: 0; color: #aaa;">
+              ${rep.sanitizerWarningGroups.map(g => `<li>${escapeHtml(g)}</li>`).join("")}
+            </ul>
+          </details>
+        `
+        : "";
+
+      validationReportHtml = `
+        <div class="ltracker-validation-report" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.01); margin-top: 15px;">
+          <h3 style="margin-top: 0; color: ${rep.ok ? "#34a853" : "#ea4335"}; font-size: 14px; font-weight: bold; margin-bottom: 8px;">
+            Preset Validation: ${rep.ok ? "Passed" : "Failed with Errors"}
+          </h3>
+          <div class="ltracker-chip-row" style="margin-bottom: 8px;">
+            <span class="ltracker-chip" style="background: rgba(234,67,53,0.1); color: #ea4335;">Errors: ${rep.errorCount}</span>
+            <span class="ltracker-chip" style="background: rgba(251,188,5,0.1); color: #fbbc05;">Warnings: ${rep.warningCount}</span>
+            <span class="ltracker-chip" style="background: rgba(52,168,83,0.1); color: #34a853;">Passes: ${rep.passCount}</span>
+          </div>
+
+          <div style="max-height: 200px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.05); padding: 6px; border-radius: 4px; background: rgba(0,0,0,0.1); margin-bottom: 8px;">
+            ${entriesHtml}
+          </div>
+
+          ${placeholdersHtml}
+          ${unusedHtml}
+          ${warningGroupsHtml}
+
+          <div class="ltracker-grid ltracker-details" style="margin-top: 8px; font-size: 11px;">
+            ${renderRow("Est. Pack Size", `${rep.estimatedPackSizeChars.toLocaleString()} chars`)}
+            ${renderRow("Est. Prompt Tokens", `~${rep.estimatedPromptTokens.toLocaleString()}`)}
+            ${renderRow("Est. Rendered HTML Size", `${rep.estimatedRenderedChars.toLocaleString()} chars`)}
+            ${renderRow("Ultra Mode recommended", rep.estimatedPromptTokens > 8000 || rep.estimatedRenderedChars > 100000 ? "Yes" : "No")}
+          </div>
+        </div>
+      `;
+    }
+
+    let sampleSnapshotHtml = "";
+    if (stagedSampleSnapshot) {
+      const renderPreview = stagedSampleRenderResult;
+      const sampleHtmlPreview = renderPreview?.html
+        ? `<div class="ltracker-render-preview">${renderPreview.html}</div>`
+        : `<div class="ltracker-render-preview ltracker-render-placeholder">${escapeHtml("No HTML preview rendered.")}</div>`;
+
+      sampleSnapshotHtml = `
+        <div class="ltracker-sample-snapshot-preview" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.01); margin-top: 15px;">
+          <h3 style="margin-top: 0; color: #4285f4; font-size: 14px; font-weight: bold; margin-bottom: 8px;">Sample Snapshot & Render Preview</h3>
+          <details style="margin-bottom: 8px;">
+            <summary style="font-size: 11px; cursor: pointer; color: #aaa;">View Sample Snapshot Data</summary>
+            <pre class="ltracker-json" style="max-height: 150px; font-size: 10px;">${escapeHtml(JSON.stringify(stagedSampleSnapshot, null, 2))}</pre>
+          </details>
+
+          ${sampleHtmlPreview}
+
+          <div class="ltracker-actions" style="margin-top: 8px;">
+            <button class="ltracker-button" type="button" data-action="copy-sample-snapshot">
+              Copy Sample Snapshot JSON
+            </button>
+            <button class="ltracker-button" type="button" data-action="copy-render-html-sample" ${disabled(!renderPreview?.html)}>
+              Copy Rendered HTML
+            </button>
+          </div>
+        </div>
+      `;
+    }
 
     tab.root.innerHTML = `
       <section class="ltracker-shell">
@@ -3161,67 +3508,125 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
         <section class="ltracker-panel ltracker-section" id="ltracker-section-presets">
           <span class="ltracker-label">Presets</span>
-          <div class="ltracker-settings">
-            <label class="ltracker-field">
-              Selected preset
-              <select data-preset-select>
-                ${presetOptions}
-              </select>
-            </label>
-            <label class="ltracker-field">
-              Preset name
-              <input type="text" data-preset-field="name" value="${escapeHtml(activePreset.name)}"${disabled(activePresetIsBuiltIn)}>
-            </label>
-            <label class="ltracker-field">
-              Preset version
-              <input type="text" data-preset-field="version" value="${escapeHtml(activePreset.version)}"${disabled(activePresetIsBuiltIn)}>
-            </label>
-            <label class="ltracker-field">
-              Origin
-              <input type="text" value="${escapeHtml(activePreset.origin)}" disabled>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Preset description
-              <textarea data-preset-field="description"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.description)}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Schema Box 1 - JSON Schema
-              <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml(presetSchemaText)}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Schema Box 2 - HTML Template (Sanitized preview/message display)
-              <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.htmlTemplate ?? "")}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Prompt Box - AI Instructions
-              <textarea data-preset-field="promptInstructions"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.promptInstructions)}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Notes
-              <textarea data-preset-field="notes"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.notes ?? "")}</textarea>
-            </label>
-            <label class="ltracker-field ltracker-field-wide">
-              Import Preset JSON
-              <textarea data-preset-import placeholder="Paste exported ltracker_schema_preset JSON here"></textarea>
-            </label>
+          
+          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Current Preset</span>
+            <div class="ltracker-settings">
+              <label class="ltracker-field">
+                Selected preset
+                <select data-preset-select>
+                  ${presetOptions}
+                </select>
+              </label>
+              <label class="ltracker-field">
+                Preset name
+                <input type="text" data-preset-field="name" value="${escapeHtml(activePreset.name)}"${disabled(activePresetIsBuiltIn)}>
+              </label>
+              <label class="ltracker-field">
+                Preset version
+                <input type="text" data-preset-field="version" value="${escapeHtml(activePreset.version)}"${disabled(activePresetIsBuiltIn)}>
+              </label>
+              <label class="ltracker-field">
+                Origin
+                <input type="text" value="${escapeHtml(activePreset.origin)}" disabled>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Preset description
+                <textarea data-preset-field="description"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.description)}</textarea>
+              </label>
+            </div>
           </div>
-          ${presetHtmlWarning ? `<p class="ltracker-note">${escapeHtml(presetHtmlWarning)}</p>` : ""}
-          ${recommendedConnectionText ? `<p class="ltracker-note">${escapeHtml(recommendedConnectionText)}</p>` : ""}
-          <div class="ltracker-actions" style="margin-top: 10px;">
-            <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
-              Render With Latest Snapshot
-            </button>
-            <button class="ltracker-button" type="button" data-action="apply-preset-connection" ${disabled(!recommendedConnection)}>
-              Apply Preset Recommended Tracker Settings
-            </button>
-            <button class="ltracker-button" type="button" data-action="save-preset-new">Save As New Preset</button>
-            <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate Preset</button>
-            <button class="ltracker-button" type="button" data-action="update-preset" ${disabled(activePresetIsBuiltIn)}>Update Current Preset</button>
-            <button class="ltracker-button" type="button" data-action="delete-preset" ${disabled(activePresetIsBuiltIn)}>Delete Preset</button>
-            <button class="ltracker-button" type="button" data-action="reset-preset">Reset To Default Preset</button>
-            <button class="ltracker-button" type="button" data-action="export-preset">Export Selected Preset</button>
-            <button class="ltracker-button" type="button" data-action="import-preset">Import Preset JSON</button>
-            <button class="ltracker-button" type="button" data-action="validate-preset">Validate Preset</button>
+
+          ${importReviewHtml}
+
+          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Preset Configuration</span>
+            <div class="ltracker-settings">
+              <label class="ltracker-field ltracker-field-wide">
+                Schema Box 1 - JSON Schema
+                <textarea data-preset-field="jsonSchema"${disabled(activePresetIsBuiltIn)}>${escapeHtml(presetSchemaText)}</textarea>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Schema Box 2 - HTML Template (Sanitized preview/message display)
+                <textarea data-preset-field="htmlTemplate"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.htmlTemplate ?? "")}</textarea>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Prompt Box - AI Instructions
+                <textarea data-preset-field="promptInstructions"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.promptInstructions)}</textarea>
+              </label>
+              <label class="ltracker-field ltracker-field-wide">
+                Notes
+                <textarea data-preset-field="notes"${disabled(activePresetIsBuiltIn)}>${escapeHtml(activePreset.notes ?? "")}</textarea>
+              </label>
+            </div>
+          </div>
+
+          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Validate & Preview</span>
+            <div class="ltracker-actions">
+              <button class="ltracker-button" type="button" data-action="validate-preset-report">
+                Validate Preset (Full Report)
+              </button>
+              <button class="ltracker-button" type="button" data-action="render-template" ${disabled(!state.chatId)}>
+                Render With Latest Snapshot
+              </button>
+              <button class="ltracker-button" type="button" data-action="generate-sample-snapshot">
+                Render With Sample Snapshot
+              </button>
+            </div>
+            ${validationReportHtml}
+            ${sampleSnapshotHtml}
+          </div>
+
+          <div class="ltracker-presets-subsection" style="margin-bottom: 15px;">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Import & Export Preset Packs</span>
+            <div style="font-size: 11px; color: #aaa; margin-bottom: 8px;">
+              Manage presets as single <code>.ltracker.json</code> files containing schemas, templates, instructions, notes, and settings recommendations.
+            </div>
+            <div class="ltracker-actions" style="margin-bottom: 10px;">
+              <button class="ltracker-button" type="button" data-action="import-file-pack">
+                Import Preset Pack File (.ltracker.json)
+              </button>
+              <button class="ltracker-button" type="button" data-action="export-preset-pack">
+                Export Selected Preset Pack
+              </button>
+              <button class="ltracker-button" type="button" data-action="export-preset-pack-settings">
+                Export Preset Pack + Current Settings
+              </button>
+            </div>
+            <div class="ltracker-actions" style="margin-bottom: 10px;">
+              <button class="ltracker-button" type="button" data-action="copy-preset-pack-json">
+                Copy Preset Pack JSON
+              </button>
+              <button class="ltracker-button" type="button" data-action="copy-legacy-preset-json">
+                Copy Current Preset Legacy JSON
+              </button>
+            </div>
+            <label class="ltracker-field ltracker-field-wide">
+              Or paste Preset / Pack JSON below and click preview:
+              <textarea data-preset-import placeholder="Paste JSON here..."></textarea>
+            </label>
+            <div class="ltracker-actions" style="margin-top: 5px;">
+              <button class="ltracker-button" type="button" data-action="import-preset-pack-preview">
+                Preview Pasted JSON
+              </button>
+            </div>
+          </div>
+
+          <div class="ltracker-presets-subsection">
+            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold; display: block; margin-bottom: 8px;">Preset Storage Management</span>
+            <div class="ltracker-actions">
+              <button class="ltracker-button" type="button" data-action="save-preset-new">Save As New Preset</button>
+              <button class="ltracker-button" type="button" data-action="duplicate-preset">Duplicate Preset</button>
+              <button class="ltracker-button" type="button" data-action="update-preset" ${disabled(activePresetIsBuiltIn)}>Update Current Preset</button>
+              <button class="ltracker-button" type="button" data-action="delete-preset" ${disabled(activePresetIsBuiltIn)}>Delete Preset</button>
+              <button class="ltracker-button" type="button" data-action="reset-preset">Reset To Default Preset</button>
+              <button class="ltracker-button" type="button" data-action="apply-preset-connection" ${disabled(!recommendedConnection)}>
+                Apply Preset Recommended Tracker Settings
+              </button>
+            </div>
+            ${presetHtmlWarning ? `<p class="ltracker-note">${escapeHtml(presetHtmlWarning)}</p>` : ""}
+            ${recommendedConnectionText ? `<p class="ltracker-note">${escapeHtml(recommendedConnectionText)}</p>` : ""}
           </div>
         </section>
 
@@ -3622,8 +4027,45 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (action === "reset-preset") resetPreset();
     if (action === "import-preset") importPreset();
     if (action === "validate-preset") validatePreset();
+    if (action === "validate-preset-report") validatePresetReportFrontend();
+    if (action === "generate-sample-snapshot") generateSampleSnapshotFrontend();
     if (action === "export-preset") {
       void copyText(JSON.stringify(exportTrackerPreset(state.activePreset), null, 2), "selected preset export");
+    }
+    if (action === "export-preset-pack") exportPresetPackFrontend(false);
+    if (action === "export-preset-pack-settings") exportPresetPackFrontend(true);
+    if (action === "copy-preset-pack-json") {
+      const exportOpts: Parameters<typeof exportPresetPack>[1] = {
+        includeRecommendedSettings: true,
+        settings: state.settings,
+      };
+      if (state.snapshot?.data) {
+        exportOpts.exampleSnapshot = state.snapshot.data;
+      }
+      const pack = exportPresetPack(state.activePreset, exportOpts);
+      void copyText(JSON.stringify(pack, null, 2), "preset pack JSON");
+    }
+    if (action === "copy-legacy-preset-json") {
+      void copyText(JSON.stringify(exportTrackerPreset(state.activePreset), null, 2), "legacy preset JSON");
+    }
+    if (action === "import-file-pack") triggerFileImport();
+    if (action === "import-preset-pack-preview") {
+      const input = tab.root.querySelector<HTMLTextAreaElement>("[data-preset-import]");
+      const text = input?.value.trim() ?? "";
+      if (!text) {
+        setLocalError("Paste preset pack JSON before previewing.");
+      } else {
+        stageImportText(text);
+      }
+    }
+    if (action === "import-preset-pack") executeImportPresetPack();
+    if (action === "cancel-import") {
+      stagedImportPack = null;
+      stagedImportRawText = "";
+      render();
+    }
+    if (action === "copy-sample-snapshot") {
+      void copyText(stagedSampleSnapshot ? JSON.stringify(stagedSampleSnapshot, null, 2) : null, "sample snapshot JSON");
     }
     if (action === "undo-delete" && recentlyDeletedBanner) {
       send({
@@ -3708,6 +4150,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ? event.target.closest<HTMLSelectElement>("[data-preset-select]")
       : null;
     if (target) selectPreset(target.value);
+
+    const installModeSelect = event.target instanceof HTMLSelectElement
+      ? event.target.closest<HTMLSelectElement>("[data-import-review-install-mode]")
+      : null;
+    if (installModeSelect) {
+      const overwriteContainer = tab.root.querySelector<HTMLElement>("[data-import-review-overwrite-container]");
+      if (overwriteContainer) {
+        overwriteContainer.style.display = installModeSelect.value === "overwrite" ? "block" : "none";
+      }
+    }
   };
 
   tab.root.addEventListener("change", onChange);
@@ -3740,6 +4192,33 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         error: emptyError(payload.message),
       };
       if (settingsResponse) settingsSaveStatus = "failed";
+      render();
+    }
+    if (payload.type === "preset_pack_export_ready") {
+      let methodUsed = "file download";
+      try {
+        const blob = new Blob([payload.json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = payload.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        methodUsed = "copy fallback";
+        void copyText(payload.json, "preset pack JSON");
+      }
+      console.log(`LTracker export method used: ${methodUsed}`);
+    }
+    if (payload.type === "preset_pack_validation_report") {
+      stagedValidationReport = payload.report;
+      render();
+    }
+    if (payload.type === "sample_snapshot_ready") {
+      stagedSampleSnapshot = payload.snapshot;
+      stagedSampleRenderResult = payload.renderResult;
       render();
     }
   }));

@@ -104,7 +104,15 @@ import {
   EXTENSION_VERSION,
   type MessageAttachedSnapshot,
   type TrackerSnapshot,
+  type TrackerSchemaPreset,
 } from "../src/shared/types";
+import {
+  exportPresetPack,
+  importPresetPack,
+  validatePresetReport,
+  generateSampleSnapshot,
+  PRESET_PACK_KIND,
+} from "../src/shared/presetPack";
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
@@ -2307,13 +2315,13 @@ test("README settings reference covers the major setting groups", () => {
     "Default: Trusted Preset Mode",
     "Safe Mode",
     "Dev Mode",
-    "0.16 Production Readiness + Performance & Hardening Overhaul",
-    "0.17 Power Template Engine",
-    "0.18 Dev Mode Templates",
-    "0.19 Sequential + Partial Regeneration",
-    "0.20 Cleanup / Repair / Pending Fields",
-    "0.21 World Books, Character Exclusions, Import/Export Polish",
-    "0.22 YAML / Macro Support / Advanced Compatibility",
+    "0.17 Preset Pack Import/Export + Better Validation",
+    "0.18 Power Template Engine",
+    "0.19 Dev Mode Templates",
+    "0.20 Sequential + Partial Regeneration",
+    "0.21 Cleanup / Repair / Pending Fields",
+    "0.22 World Books, Character Exclusions, Import/Export Polish",
+    "0.23 YAML / Macro Support / Advanced Compatibility",
   ]) {
     assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
@@ -2431,21 +2439,105 @@ test("0.16 performance, sanitation, nesting, and memory selection features", () 
   assert.equal(candidates.length, 40);
 });
 
-test("v0.16 Release Completion Verification", () => {
+test("v0.17 Preset Pack Import/Export + Validation + Snapshot tests", () => {
+  // 1. Export preset pack
+  const mockPreset: TrackerSchemaPreset = {
+    id: "test-preset",
+    name: "Test Preset",
+    description: "A test preset description",
+    version: "1.2",
+    createdAt: "2026-06-28",
+    updatedAt: "2026-06-28",
+    jsonSchema: {
+      type: "object",
+      properties: {
+        fieldA: { type: "string" },
+        fieldB: { type: "number" }
+      }
+    },
+    htmlTemplate: "<div>{{fieldA}}</div>",
+    promptInstructions: "Write fieldA",
+    origin: "user_created"
+  };
+
+  const pack = exportPresetPack(mockPreset, {
+    includeRecommendedSettings: true,
+    settings: {
+      ...DEFAULT_SETTINGS,
+      memory: {
+        ...DEFAULT_SETTINGS.memory,
+        retainCount: 12
+      }
+    }
+  });
+
+  assert.equal(pack.kind, PRESET_PACK_KIND);
+  assert.equal(pack.preset.id, "test-preset");
+  assert.equal(pack.recommendedSettings?.memory?.retainCount, 12);
+
+  // 2. Import preset pack (with overwrite)
+  const importResult = importPresetPack(pack, ["test-preset"], "2026-06-28");
+  assert.equal(importResult.ok, true);
+  assert.ok(importResult.preset);
+  assert.notEqual(importResult.preset?.id, "test-preset"); // auto-resolved id collision
+  assert.equal(importResult.preset?.name, "Test Preset");
+  assert.equal(importResult.recommendedSettings?.memory?.retainCount, 12);
+
+  // 3. Validation report
+  const validation = validatePresetReport(mockPreset);
+  assert.equal(validation.ok, true);
+  assert.equal(validation.errorCount, 0);
+  assert.equal(validation.missingPlaceholders.length, 0);
+  assert.ok(validation.estimatedPromptTokens > 0);
+
+  // 4. Sample snapshot constraints
+  const complexSchema = {
+    type: "object",
+    properties: {
+      nested: {
+        type: "object",
+        properties: {
+          deep: {
+            type: "object",
+            properties: {
+              veryDeep: {
+                type: "object",
+                properties: {
+                  limit: { type: "string" }
+                }
+              }
+            }
+          }
+        }
+      },
+      list: {
+        type: "array",
+        items: { type: "string" }
+      }
+    }
+  };
+
+  const snapshot = generateSampleSnapshot(complexSchema);
+  assert.ok(snapshot.nested);
+  assert.ok(Array.isArray(snapshot.list));
+  assert.equal((snapshot.list as unknown[]).length, 2); // array size constraint
+});
+
+test("v0.17 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.16");
-  assert.equal(spindleJson.version, "0.16");
+  assert.equal(packageJson.version, "0.17");
+  assert.equal(spindleJson.version, "0.17");
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
-  assert.match(changelog, /## 0\.16 - Stabilization, performance, and safety hardening/);
+  assert.match(changelog, /## 0\.17 - Preset Pack Import\/Export \+ Better Validation/);
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.16`/);
-  assert.match(readme, /Current release: `0\.16/);
+  assert.match(readme, /Version: `0\.17`/);
+  assert.match(readme, /Current release: `0\.17/);
 
   // 4. Global stylesheet element presence check in frontend
   const frontendSource = readFileSync("src/frontend.ts", "utf8");
