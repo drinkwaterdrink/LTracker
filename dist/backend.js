@@ -225,10 +225,10 @@ function stringAtPath(value, path) {
 
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
-var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.14; safe normal prompt injection uses the Lumiverse interceptor path instead.";
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.15; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.14";
+var EXTENSION_VERSION = "0.15";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1120,7 +1120,7 @@ function buildDomHtml(rendered, settings) {
     .ltd-icon-button svg { width: 14px; height: 14px; }
     .ltd-icon-button:hover, .ltd-icon-button:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); outline: 2px solid color-mix(in srgb, currentColor 30%, transparent); }
     .ltd-spinning svg { animation: ltd-spin .9s linear infinite; }
-    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; max-height: min(56vh, 540px); overflow: auto; }
+    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; max-height: min(var(--ltracker-expanded-max-height, 56vh), 900px); overflow: auto; }
     .ltd-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .ltracker-dom-tracker details:not([open]) { min-height: 0; }
     .ltracker-dom-tracker details:not([open]) .ltd-body { display: none; }
@@ -1276,6 +1276,167 @@ function buildMessageTrackerHistory(input) {
       })
     };
   });
+}
+function historyEntryTime(entry) {
+  const value = entry.snapshot?.attachedAt ?? entry.snapshot?.snapshot.createdAt ?? entry.indexEntry.createdAt;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+function groupMessageTrackerHistory(entries, showDuplicates = false) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const key = swipeIdentityKey(entry.indexEntry);
+    const group = groups.get(key) ?? [];
+    group.push(entry);
+    groups.set(key, group);
+  }
+  let duplicateCount = 0;
+  const grouped = [];
+  for (const group of groups.values()) {
+    const sorted = group.sort((left, right) => historyEntryTime(right) - historyEntryTime(left));
+    duplicateCount += Math.max(0, sorted.length - 1);
+    if (showDuplicates) {
+      grouped.push(...sorted);
+    } else if (sorted[0]) {
+      grouped.push(sorted[0]);
+    }
+  }
+  grouped.sort((left, right) => {
+    if (left.indexEntry.messageIndex !== null && right.indexEntry.messageIndex !== null && left.indexEntry.messageIndex !== right.indexEntry.messageIndex) {
+      return left.indexEntry.messageIndex - right.indexEntry.messageIndex;
+    }
+    return historyEntryTime(right) - historyEntryTime(left);
+  });
+  return {
+    entries: grouped,
+    groupedCount: groups.size,
+    duplicateCount
+  };
+}
+
+// src/shared/budget.ts
+var CHARS_PER_ESTIMATED_TOKEN = 4;
+var NORMAL_BUDGET_DEFAULTS = {
+  recentMessageBudgetTokens: 16e3,
+  perMessageBudgetTokens: 12e3,
+  trackerMemoryBudgetTokens: 12e3,
+  promptInjectionBudgetTokens: 12e3,
+  maxTrackerOutputTokens: 8e3,
+  promptPreviewBudgetTokens: 16e3,
+  renderedHtmlMaxChars: 25e4,
+  rawOutputMaxChars: 25e4,
+  presetImportMaxChars: 1e6
+};
+var ULTRA_BUDGET_DEFAULTS = {
+  recentMessageBudgetTokens: 128e3,
+  perMessageBudgetTokens: 4e4,
+  trackerMemoryBudgetTokens: 64e3,
+  promptInjectionBudgetTokens: 64e3,
+  maxTrackerOutputTokens: 64e3,
+  promptPreviewBudgetTokens: 128e3,
+  renderedHtmlMaxChars: 2e6,
+  rawOutputMaxChars: 2e6,
+  presetImportMaxChars: 1e7
+};
+function estimateTokensFromChars(chars) {
+  if (!Number.isFinite(chars) || chars <= 0) return 0;
+  return Math.ceil(chars / CHARS_PER_ESTIMATED_TOKEN);
+}
+function estimateCharsFromTokens(tokens) {
+  if (!Number.isFinite(tokens) || tokens <= 0) return 0;
+  return Math.round(tokens * CHARS_PER_ESTIMATED_TOKEN);
+}
+function tokenBudgetToChars(tokens, fallbackChars) {
+  const chars = estimateCharsFromTokens(tokens);
+  return chars > 0 ? chars : fallbackChars;
+}
+function budgetDefaults(ultraModeEnabled) {
+  return ultraModeEnabled ? ULTRA_BUDGET_DEFAULTS : NORMAL_BUDGET_DEFAULTS;
+}
+function effectivePerMessageChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.perMessageBudgetTokens, settings.maxMessageChars);
+  }
+  return settings.maxMessageChars;
+}
+function effectiveRecentTranscriptChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.recentMessageBudgetTokens, settings.maxMessageChars * settings.recentMessageLimit);
+  }
+  return Math.max(settings.maxMessageChars, settings.maxMessageChars * settings.recentMessageLimit);
+}
+function effectiveTrackerMemoryChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.trackerMemoryBudgetTokens, settings.memory.maxMemoryChars);
+  }
+  return settings.memory.maxMemoryChars;
+}
+function effectivePromptInjectionChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.promptInjectionBudgetTokens, settings.injection.maxInjectedChars);
+  }
+  return settings.injection.maxInjectedChars;
+}
+function effectivePromptPreviewChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.promptPreviewBudgetTokens, 64e3);
+  }
+  return 64e3;
+}
+function effectiveTrackerOutputTokens(settings) {
+  return Math.max(256, Math.round(settings.budget.maxTrackerOutputTokens));
+}
+
+// src/shared/autoTiming.ts
+function stableContentHash(content) {
+  let hash = 2166136261;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function shouldCancelPendingSwipe(pending, next, settings) {
+  return settings.cancelPendingOnSwipeChange && pending.messageId === next.messageId && pending.swipeKey !== next.swipeKey;
+}
+function evaluateStableSwipeContent(first, second, settings) {
+  if (!first || !second) {
+    return {
+      passed: false,
+      contentHash: null,
+      skippedReason: "Assistant message was not found during finalization."
+    };
+  }
+  const firstContent = first.content.trim();
+  const secondContent = second.content.trim();
+  if (!secondContent) {
+    return {
+      passed: false,
+      contentHash: null,
+      skippedReason: "Final assistant swipe content is empty."
+    };
+  }
+  if (first.messageId !== second.messageId || first.swipeKey !== second.swipeKey) {
+    return {
+      passed: false,
+      contentHash: stableContentHash(secondContent),
+      skippedReason: "Selected swipe changed before tracker generation."
+    };
+  }
+  const firstHash = stableContentHash(firstContent);
+  const secondHash = stableContentHash(secondContent);
+  if (settings.requireStableSwipeContent && firstHash !== secondHash) {
+    return {
+      passed: false,
+      contentHash: secondHash,
+      skippedReason: "Assistant swipe content changed during stable-content check."
+    };
+  }
+  return {
+    passed: true,
+    contentHash: secondHash,
+    skippedReason: null
+  };
 }
 
 // src/shared/messageSnapshotIndex.ts
@@ -1515,7 +1676,7 @@ var DEFAULT_TRACKER_PRESET = {
   recommendedConnection: {
     mode: "active_quiet",
     temperature: 0.2,
-    max_tokens: 2e3,
+    max_tokens: 8e3,
     reasoning: {
       source: "inherit",
       effort: "auto"
@@ -1560,7 +1721,7 @@ function repairRecommendedConnection(value) {
   if (mode) result.mode = mode;
   const temperature = boundedNumber(value.temperature, 0, 2);
   if (temperature !== void 0) result.temperature = temperature;
-  const maxTokens = boundedNumber(value.max_tokens, 256, 32e3);
+  const maxTokens = boundedNumber(value.max_tokens, 256, 64e3);
   if (maxTokens !== void 0) result.max_tokens = Math.round(maxTokens);
   const reasoning = isRecord5(value.reasoning) ? value.reasoning : null;
   if (reasoning) {
@@ -1707,7 +1868,7 @@ function resolveSelectedPreset(presets, selectedPresetId) {
 var TRACKER_CONNECTION_DEFAULT_TEST_PROMPT = "Return a compact JSON object with ok true and a short status.";
 var TRACKER_CONNECTION_PARAMETER_LIMITS = {
   temperature: { min: 0, max: 2, default: 0.2 },
-  max_tokens: { min: 256, max: 32e3, default: 2e3 },
+  max_tokens: { min: 256, max: 64e3, default: 8e3 },
   top_p: { min: 0, max: 1, default: null },
   frequency_penalty: { min: -2, max: 2, default: null },
   presence_penalty: { min: -2, max: 2, default: null }
@@ -1794,7 +1955,10 @@ function activeQuietResult(messages, signal, parametersUsed, reasoningOverrideUs
 function buildTrackerGenerationRequest(input) {
   const connectionSettings = input.settings.connection;
   const quietSupportsConnectionId = input.quietSupportsConnectionId !== false;
-  const parametersUsed = cleanTrackerGenerationParameters(connectionSettings.parameters);
+  const parametersUsed = cleanTrackerGenerationParameters({
+    ...connectionSettings.parameters,
+    max_tokens: effectiveTrackerOutputTokens(input.settings)
+  });
   const reasoningOverrideUsed = buildTrackerReasoningOverride(connectionSettings.reasoning);
   if (connectionSettings.mode === "active_quiet") {
     return activeQuietResult(input.messages, input.signal, parametersUsed, reasoningOverrideUsed, null);
@@ -1839,18 +2003,28 @@ function buildTrackerGenerationRequest(input) {
 // src/shared/settings.ts
 var SETTINGS_LIMITS = {
   recentMessageLimit: { min: 1, max: 200, default: 24 },
-  maxMessageChars: { min: 500, max: 5e4, default: 8e3 },
+  maxMessageChars: { min: 500, max: 512e3, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.perMessageBudgetTokens) },
   generationTimeoutMs: { min: 1e4, max: 18e4, default: 45e3 },
   autoDebounceMs: { min: 250, max: 3e4, default: 1500 },
   skipFirstMessages: { min: 0, max: 100, default: 2 },
+  postCompletionSettleMs: { min: 0, max: 1e4, default: 750 },
+  stableContentCheckMs: { min: 0, max: 5e3, default: 400 },
   memoryRetainCount: { min: 0, max: 10, default: 3 },
   memoryFullSnapshotCount: { min: 0, max: 10, default: 3 },
-  maxMemoryChars: { min: 1e3, max: 5e4, default: 12e3 },
+  maxMemoryChars: { min: 1e3, max: 512e3, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.trackerMemoryBudgetTokens) },
   injectionRetainCount: { min: 0, max: 10, default: 3 },
-  maxInjectedChars: { min: 1e3, max: 5e4, default: 12e3 },
-  maxRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
-  maxMessageDisplayRenderedChars: { min: 1e3, max: 2e5, default: 5e4 },
-  minimizedMaxHeightPx: { min: 0, max: 400, default: 0 }
+  maxInjectedChars: { min: 1e3, max: 512e3, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.promptInjectionBudgetTokens) },
+  maxRenderedChars: { min: 1e3, max: 2e6, default: NORMAL_BUDGET_DEFAULTS.renderedHtmlMaxChars },
+  maxMessageDisplayRenderedChars: { min: 1e3, max: 2e6, default: NORMAL_BUDGET_DEFAULTS.renderedHtmlMaxChars },
+  minimizedMaxHeightPx: { min: 0, max: 400, default: 0 },
+  budgetTokens: { min: 256, max: 128e3 },
+  trackerOutputTokens: { min: 256, max: 64e3 },
+  renderedHtmlMaxChars: { min: 1e3, max: 2e6 },
+  rawOutputMaxChars: { min: 1e3, max: 2e6 },
+  presetImportMaxChars: { min: 1e4, max: 1e7 },
+  maxExpandedWidthPx: { min: 320, max: 1800, default: 900 },
+  mobileHorizontalMarginPx: { min: 0, max: 32, default: 6 },
+  expandedContentMaxHeightVh: { min: 30, max: 95, default: 75 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -1867,6 +2041,18 @@ var DEFAULT_SETTINGS = {
     triggerAfterUserMessages: false,
     attachSnapshotToMessage: true,
     onlyWhenChatActive: true
+  },
+  autoTiming: {
+    waitForAssistantFinalization: true,
+    postCompletionSettleMs: SETTINGS_LIMITS.postCompletionSettleMs.default,
+    stableContentCheckMs: SETTINGS_LIMITS.stableContentCheckMs.default,
+    requireStableSwipeContent: true,
+    cancelPendingOnSwipeChange: true
+  },
+  budget: {
+    mode: "estimated_tokens",
+    ultraModeEnabled: false,
+    ...NORMAL_BUDGET_DEFAULTS
   },
   memory: {
     enabled: true,
@@ -1898,12 +2084,13 @@ var DEFAULT_SETTINGS = {
     previewSource: "latest_chat_snapshot",
     missingValuePlaceholder: "",
     maxRenderedChars: SETTINGS_LIMITS.maxRenderedChars.default,
-    allowInlineStyles: false
+    allowInlineStyles: true,
+    templateTrustMode: "trusted"
   },
   messageDisplay: {
     enabled: true,
     useDomInjection: true,
-    fallbackToIframeWidget: true,
+    fallbackToIframeWidget: false,
     attachmentMode: "sidecar_snapshot",
     displayMode: "inline_full",
     placement: "top",
@@ -1930,6 +2117,12 @@ var DEFAULT_SETTINGS = {
     showGenerationDuration: true,
     minimizedMaxHeightPx: SETTINGS_LIMITS.minimizedMaxHeightPx.default,
     maxRenderedChars: SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default
+  },
+  expandedWidth: {
+    expandedWidthMode: "wide",
+    maxExpandedWidthPx: SETTINGS_LIMITS.maxExpandedWidthPx.default,
+    mobileHorizontalMarginPx: SETTINGS_LIMITS.mobileHorizontalMarginPx.default,
+    expandedContentMaxHeightVh: SETTINGS_LIMITS.expandedContentMaxHeightVh.default
   },
   connection: {
     mode: "active_quiet",
@@ -1963,6 +2156,15 @@ function memorySource(value) {
 function memoryOrder(value) {
   return value === "oldest_to_newest" || value === "newest_to_oldest" ? value : DEFAULT_SETTINGS.memory.order;
 }
+function budgetMode(value) {
+  return value === "characters" || value === "estimated_tokens" ? value : DEFAULT_SETTINGS.budget.mode;
+}
+function templateTrustMode(value) {
+  return value === "safe" || value === "trusted" || value === "dev" ? value : null;
+}
+function expandedWidthMode(value) {
+  return value === "contained" || value === "wide" || value === "full_mobile" || value === "popover" ? value : DEFAULT_SETTINGS.expandedWidth.expandedWidthMode;
+}
 function injectionFormat(value) {
   if (value === "compact") return "compact_text";
   return value === "embedded_tag" || value === "compact_text" || value === "pretty_json" || value === "minimal" ? value : DEFAULT_SETTINGS.injection.format;
@@ -1985,6 +2187,12 @@ function clampNullableNumber(source, key, fallback, min, max, integer = false) {
   const clamped = Math.min(max, Math.max(min, numeric));
   return integer ? Math.round(clamped) : clamped;
 }
+function clampTokenBudget(value, fallback, max = SETTINGS_LIMITS.budgetTokens.max) {
+  return clampNumber(value, fallback, SETTINGS_LIMITS.budgetTokens.min, max);
+}
+function clampCharBudget(value, fallback, limit) {
+  return clampNumber(value, fallback, limit.min, limit.max);
+}
 function connectionMode(value) {
   return value === "active_quiet" || value === "selected_connection_quiet" || value === "selected_connection_raw" ? value : DEFAULT_SETTINGS.connection.mode;
 }
@@ -2000,10 +2208,13 @@ function thinkingDisplay(value) {
 function repairSettings(value) {
   const source = isRecord6(value) ? value : {};
   const autoSource = isRecord6(source.auto) ? source.auto : {};
+  const autoTimingSource = isRecord6(source.autoTiming) ? source.autoTiming : {};
+  const budgetSource = isRecord6(source.budget) ? source.budget : {};
   const memorySourceObject = isRecord6(source.memory) ? source.memory : {};
   const injectionSource = isRecord6(source.injection) ? source.injection : {};
   const rendererSource = isRecord6(source.renderer) ? source.renderer : {};
   const messageDisplaySource = isRecord6(source.messageDisplay) ? source.messageDisplay : {};
+  const expandedWidthSource = isRecord6(source.expandedWidth) ? source.expandedWidth : {};
   const connectionSource = isRecord6(source.connection) ? source.connection : {};
   const connectionParameterSource = isRecord6(connectionSource.parameters) ? connectionSource.parameters : {};
   const connectionReasoningSource = isRecord6(connectionSource.reasoning) ? connectionSource.reasoning : {};
@@ -2015,6 +2226,15 @@ function repairSettings(value) {
   const messageDisplayDisplayMode = messageDisplaySource.displayMode === "inline_button_popover" || messageDisplaySource.displayMode === "drawer_history_only" || messageDisplaySource.displayMode === "inline_full" ? messageDisplaySource.displayMode : DEFAULT_SETTINGS.messageDisplay.displayMode;
   const messageDisplayControlDensity = messageDisplaySource.controlDensity === "comfortable" || messageDisplaySource.controlDensity === "compact" ? messageDisplaySource.controlDensity : DEFAULT_SETTINGS.messageDisplay.controlDensity;
   const messageDisplayControlPlacement = messageDisplaySource.controlPlacement === "inside_tracker_header" || messageDisplaySource.controlPlacement === "message_header" ? messageDisplaySource.controlPlacement : DEFAULT_SETTINGS.messageDisplay.controlPlacement;
+  const repairedBudgetUltra = typeof budgetSource.ultraModeEnabled === "boolean" ? budgetSource.ultraModeEnabled : DEFAULT_SETTINGS.budget.ultraModeEnabled;
+  const budgetDefaultSet = budgetDefaults(repairedBudgetUltra);
+  const ultraDefaultValue = (key) => {
+    const value2 = budgetSource[key];
+    return repairedBudgetUltra && (value2 === void 0 || value2 === NORMAL_BUDGET_DEFAULTS[key]) ? budgetDefaultSet[key] : value2;
+  };
+  const explicitTrustMode = templateTrustMode(rendererSource.templateTrustMode);
+  const migratedTrustMode = explicitTrustMode ?? (rendererSource.allowInlineStyles === false && messageDisplaySource.allowInlineStyles === false ? "safe" : "trusted");
+  const trustAllowsInlineStyles = migratedTrustMode !== "safe";
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     recentMessageLimit: clampNumber(
@@ -2055,6 +2275,67 @@ function repairSettings(value) {
       triggerAfterUserMessages: typeof autoSource.triggerAfterUserMessages === "boolean" ? autoSource.triggerAfterUserMessages : DEFAULT_SETTINGS.auto.triggerAfterUserMessages,
       attachSnapshotToMessage: typeof autoSource.attachSnapshotToMessage === "boolean" ? autoSource.attachSnapshotToMessage : DEFAULT_SETTINGS.auto.attachSnapshotToMessage,
       onlyWhenChatActive: typeof autoSource.onlyWhenChatActive === "boolean" ? autoSource.onlyWhenChatActive : DEFAULT_SETTINGS.auto.onlyWhenChatActive
+    },
+    autoTiming: {
+      waitForAssistantFinalization: typeof autoTimingSource.waitForAssistantFinalization === "boolean" ? autoTimingSource.waitForAssistantFinalization : DEFAULT_SETTINGS.autoTiming.waitForAssistantFinalization,
+      postCompletionSettleMs: clampNumber(
+        autoTimingSource.postCompletionSettleMs,
+        SETTINGS_LIMITS.postCompletionSettleMs.default,
+        SETTINGS_LIMITS.postCompletionSettleMs.min,
+        SETTINGS_LIMITS.postCompletionSettleMs.max
+      ),
+      stableContentCheckMs: clampNumber(
+        autoTimingSource.stableContentCheckMs,
+        SETTINGS_LIMITS.stableContentCheckMs.default,
+        SETTINGS_LIMITS.stableContentCheckMs.min,
+        SETTINGS_LIMITS.stableContentCheckMs.max
+      ),
+      requireStableSwipeContent: typeof autoTimingSource.requireStableSwipeContent === "boolean" ? autoTimingSource.requireStableSwipeContent : DEFAULT_SETTINGS.autoTiming.requireStableSwipeContent,
+      cancelPendingOnSwipeChange: typeof autoTimingSource.cancelPendingOnSwipeChange === "boolean" ? autoTimingSource.cancelPendingOnSwipeChange : DEFAULT_SETTINGS.autoTiming.cancelPendingOnSwipeChange
+    },
+    budget: {
+      mode: budgetMode(budgetSource.mode),
+      ultraModeEnabled: repairedBudgetUltra,
+      recentMessageBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("recentMessageBudgetTokens"),
+        budgetDefaultSet.recentMessageBudgetTokens
+      ),
+      perMessageBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("perMessageBudgetTokens"),
+        budgetDefaultSet.perMessageBudgetTokens
+      ),
+      trackerMemoryBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("trackerMemoryBudgetTokens"),
+        budgetDefaultSet.trackerMemoryBudgetTokens
+      ),
+      promptInjectionBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("promptInjectionBudgetTokens"),
+        budgetDefaultSet.promptInjectionBudgetTokens
+      ),
+      maxTrackerOutputTokens: clampTokenBudget(
+        ultraDefaultValue("maxTrackerOutputTokens") ?? connectionParameterSource.max_tokens,
+        budgetDefaultSet.maxTrackerOutputTokens,
+        SETTINGS_LIMITS.trackerOutputTokens.max
+      ),
+      promptPreviewBudgetTokens: clampTokenBudget(
+        ultraDefaultValue("promptPreviewBudgetTokens"),
+        budgetDefaultSet.promptPreviewBudgetTokens
+      ),
+      renderedHtmlMaxChars: clampCharBudget(
+        ultraDefaultValue("renderedHtmlMaxChars") ?? rendererSource.maxRenderedChars ?? messageDisplaySource.maxRenderedChars,
+        budgetDefaultSet.renderedHtmlMaxChars,
+        SETTINGS_LIMITS.renderedHtmlMaxChars
+      ),
+      rawOutputMaxChars: clampCharBudget(
+        ultraDefaultValue("rawOutputMaxChars"),
+        budgetDefaultSet.rawOutputMaxChars,
+        SETTINGS_LIMITS.rawOutputMaxChars
+      ),
+      presetImportMaxChars: clampCharBudget(
+        ultraDefaultValue("presetImportMaxChars"),
+        budgetDefaultSet.presetImportMaxChars,
+        SETTINGS_LIMITS.presetImportMaxChars
+      )
     },
     memory: {
       enabled: typeof memorySourceObject.enabled === "boolean" ? memorySourceObject.enabled : DEFAULT_SETTINGS.memory.enabled,
@@ -2111,12 +2392,13 @@ function repairSettings(value) {
       previewSource,
       missingValuePlaceholder: typeof rendererSource.missingValuePlaceholder === "string" ? rendererSource.missingValuePlaceholder : DEFAULT_SETTINGS.renderer.missingValuePlaceholder,
       maxRenderedChars: clampNumber(
-        rendererSource.maxRenderedChars,
-        SETTINGS_LIMITS.maxRenderedChars.default,
+        rendererSource.maxRenderedChars ?? budgetSource.renderedHtmlMaxChars,
+        repairedBudgetUltra ? ULTRA_BUDGET_DEFAULTS.renderedHtmlMaxChars : SETTINGS_LIMITS.maxRenderedChars.default,
         SETTINGS_LIMITS.maxRenderedChars.min,
         SETTINGS_LIMITS.maxRenderedChars.max
       ),
-      allowInlineStyles: typeof rendererSource.allowInlineStyles === "boolean" ? rendererSource.allowInlineStyles : DEFAULT_SETTINGS.renderer.allowInlineStyles
+      allowInlineStyles: trustAllowsInlineStyles,
+      templateTrustMode: migratedTrustMode
     },
     messageDisplay: {
       enabled: typeof messageDisplaySource.enabled === "boolean" ? messageDisplaySource.enabled : DEFAULT_SETTINGS.messageDisplay.enabled,
@@ -2127,7 +2409,7 @@ function repairSettings(value) {
       placement: messageDisplayPlacement,
       source: messageDisplaySourceSetting,
       renderMode: messageDisplayRenderMode,
-      allowInlineStyles: typeof messageDisplaySource.allowInlineStyles === "boolean" ? messageDisplaySource.allowInlineStyles : DEFAULT_SETTINGS.messageDisplay.allowInlineStyles,
+      allowInlineStyles: trustAllowsInlineStyles,
       deduplicateRenderWarnings: typeof messageDisplaySource.deduplicateRenderWarnings === "boolean" ? messageDisplaySource.deduplicateRenderWarnings : DEFAULT_SETTINGS.messageDisplay.deduplicateRenderWarnings,
       showRenderWarningsInDiagnosticsOnly: typeof messageDisplaySource.showRenderWarningsInDiagnosticsOnly === "boolean" ? messageDisplaySource.showRenderWarningsInDiagnosticsOnly : DEFAULT_SETTINGS.messageDisplay.showRenderWarningsInDiagnosticsOnly,
       showDebugSwipeKey: typeof messageDisplaySource.showDebugSwipeKey === "boolean" ? messageDisplaySource.showDebugSwipeKey : DEFAULT_SETTINGS.messageDisplay.showDebugSwipeKey,
@@ -2153,10 +2435,31 @@ function repairSettings(value) {
         SETTINGS_LIMITS.minimizedMaxHeightPx.max
       ),
       maxRenderedChars: clampNumber(
-        messageDisplaySource.maxRenderedChars,
-        SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
+        messageDisplaySource.maxRenderedChars ?? budgetSource.renderedHtmlMaxChars,
+        repairedBudgetUltra ? ULTRA_BUDGET_DEFAULTS.renderedHtmlMaxChars : SETTINGS_LIMITS.maxMessageDisplayRenderedChars.default,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.min,
         SETTINGS_LIMITS.maxMessageDisplayRenderedChars.max
+      )
+    },
+    expandedWidth: {
+      expandedWidthMode: expandedWidthMode(expandedWidthSource.expandedWidthMode),
+      maxExpandedWidthPx: clampNumber(
+        expandedWidthSource.maxExpandedWidthPx,
+        SETTINGS_LIMITS.maxExpandedWidthPx.default,
+        SETTINGS_LIMITS.maxExpandedWidthPx.min,
+        SETTINGS_LIMITS.maxExpandedWidthPx.max
+      ),
+      mobileHorizontalMarginPx: clampNumber(
+        expandedWidthSource.mobileHorizontalMarginPx,
+        SETTINGS_LIMITS.mobileHorizontalMarginPx.default,
+        SETTINGS_LIMITS.mobileHorizontalMarginPx.min,
+        SETTINGS_LIMITS.mobileHorizontalMarginPx.max
+      ),
+      expandedContentMaxHeightVh: clampNumber(
+        expandedWidthSource.expandedContentMaxHeightVh,
+        SETTINGS_LIMITS.expandedContentMaxHeightVh.default,
+        SETTINGS_LIMITS.expandedContentMaxHeightVh.min,
+        SETTINGS_LIMITS.expandedContentMaxHeightVh.max
       )
     },
     connection: {
@@ -2495,14 +2798,24 @@ var SETTINGS_PATH = "settings.json";
 
 // src/shared/trackerPrompt.ts
 var DEFAULT_MAX_MESSAGE_CHARS = 8e3;
-function buildCompactTranscript(messages, maxMessageChars = DEFAULT_MAX_MESSAGE_CHARS) {
-  return messages.map((message) => {
+function buildCompactTranscript(messages, maxMessageChars = DEFAULT_MAX_MESSAGE_CHARS, maxTranscriptChars = Number.POSITIVE_INFINITY) {
+  const blocks = [];
+  let remaining = Number.isFinite(maxTranscriptChars) ? Math.max(0, maxTranscriptChars) : Number.POSITIVE_INFINITY;
+  for (const message of messages) {
+    if (remaining <= 0) break;
     const role = message.role === "user" ? "USER" : "ASSISTANT";
     const name = message.name ? ` ${message.name}` : "";
-    const content = message.content.trim().slice(0, maxMessageChars);
-    return `[${message.index} ${role}${name}]
+    const limit = Math.min(maxMessageChars, remaining);
+    const content = message.content.trim().slice(0, limit);
+    const block = `[${message.index} ${role}${name}]
 ${content}`;
-  }).join("\n\n");
+    blocks.push(block);
+    remaining -= block.length + 2;
+  }
+  if (blocks.length < messages.length) {
+    blocks.unshift(`[LTracker omitted ${messages.length - blocks.length} earlier message${messages.length - blocks.length === 1 ? "" : "s"} because the prompt budget was reached.]`);
+  }
+  return blocks.join("\n\n");
 }
 function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET, memory = null) {
   const hasMemory = Boolean(memory?.renderedText.trim());
@@ -2744,6 +3057,7 @@ var BUILD_INFO = {
 };
 var activeJobs = /* @__PURE__ */ new Map();
 var pendingAutoJobs = /* @__PURE__ */ new Map();
+var pendingAutoFinalizations = /* @__PURE__ */ new Map();
 var connectionProfilesByUser = /* @__PURE__ */ new Map();
 var connectionTestJobs = /* @__PURE__ */ new Map();
 var activeChatByUser = /* @__PURE__ */ new Map();
@@ -2808,6 +3122,7 @@ function isFrontendMessage(payload) {
     "cancel_tracker_generation",
     "delete_message_tracker",
     "save_edited_message_tracker",
+    "cleanup_duplicate_history",
     "embedded_tracker_tag_intercepted"
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
@@ -2833,6 +3148,7 @@ function isFrontendMessage(payload) {
     "cancel_tracker_generation",
     "delete_message_tracker",
     "save_edited_message_tracker",
+    "cleanup_duplicate_history",
     "embedded_tracker_tag_intercepted"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
   if (payload.type === "save_settings" && !isRecord8(payload.settings)) return false;
@@ -2894,6 +3210,16 @@ function defaultDiagnostics(chatId) {
     lastAutoSourceMessageId: null,
     lastAutoSourceMessageIndex: null,
     lastAutoGenerationId: null,
+    lastAutoFinalizationState: null,
+    lastAutoWaitingMessageId: null,
+    lastAutoWaitingSwipeKey: null,
+    lastAutoFinalizedAt: null,
+    lastAutoStableCheckAt: null,
+    lastAutoStableCheckPassed: null,
+    lastAutoContentStableHash: null,
+    lastAutoFinalizationSkippedReason: null,
+    pendingAutoFinalizationCount: 0,
+    lastSwipeChangeCancelledPendingJob: false,
     latestAttachedMessageId: null,
     latestAttachedMessageIndex: null,
     latestAttachedSnapshotAt: null,
@@ -3015,7 +3341,19 @@ function defaultDiagnostics(chatId) {
     lastConnectionTestError: null,
     lastConnectionTestOutputPreview: null,
     lastConnectionTestFinishReason: null,
-    lastConnectionTestUsage: null
+    lastConnectionTestUsage: null,
+    drawerActiveSection: null,
+    lastDrawerRefreshAt: null,
+    lastHistoryGroupedCount: 0,
+    lastHistoryDuplicateCount: 0,
+    lastHistoryCleanupAt: null,
+    expandedWidthModeResolved: null,
+    lastExpandedTrackerWidthPx: null,
+    templateTrustMode: DEFAULT_SETTINGS.renderer.templateTrustMode,
+    ultraModeEnabled: DEFAULT_SETTINGS.budget.ultraModeEnabled,
+    estimatedPromptTokensLastRun: null,
+    estimatedMemoryTokensLastRun: null,
+    iframeFallbackVisibleInMainUi: false
   };
 }
 function stringOrNull3(value) {
@@ -3126,6 +3464,16 @@ function repairDiagnostics(value, chatId) {
     lastAutoSourceMessageId: stringOrNull3(value.lastAutoSourceMessageId),
     lastAutoSourceMessageIndex: nonNegativeInteger(value.lastAutoSourceMessageIndex),
     lastAutoGenerationId: stringOrNull3(value.lastAutoGenerationId),
+    lastAutoFinalizationState: stringOrNull3(value.lastAutoFinalizationState),
+    lastAutoWaitingMessageId: stringOrNull3(value.lastAutoWaitingMessageId),
+    lastAutoWaitingSwipeKey: stringOrNull3(value.lastAutoWaitingSwipeKey),
+    lastAutoFinalizedAt: stringOrNull3(value.lastAutoFinalizedAt),
+    lastAutoStableCheckAt: stringOrNull3(value.lastAutoStableCheckAt),
+    lastAutoStableCheckPassed: typeof value.lastAutoStableCheckPassed === "boolean" ? value.lastAutoStableCheckPassed : null,
+    lastAutoContentStableHash: stringOrNull3(value.lastAutoContentStableHash),
+    lastAutoFinalizationSkippedReason: stringOrNull3(value.lastAutoFinalizationSkippedReason),
+    pendingAutoFinalizationCount: typeof value.pendingAutoFinalizationCount === "number" && Number.isFinite(value.pendingAutoFinalizationCount) ? Math.max(0, Math.round(value.pendingAutoFinalizationCount)) : 0,
+    lastSwipeChangeCancelledPendingJob: typeof value.lastSwipeChangeCancelledPendingJob === "boolean" ? value.lastSwipeChangeCancelledPendingJob : false,
     latestAttachedMessageId: stringOrNull3(value.latestAttachedMessageId),
     latestAttachedMessageIndex: nonNegativeInteger(value.latestAttachedMessageIndex),
     latestAttachedSnapshotAt: stringOrNull3(value.latestAttachedSnapshotAt),
@@ -3247,7 +3595,19 @@ function repairDiagnostics(value, chatId) {
     lastConnectionTestError: stringOrNull3(value.lastConnectionTestError),
     lastConnectionTestOutputPreview: stringOrNull3(value.lastConnectionTestOutputPreview),
     lastConnectionTestFinishReason: stringOrNull3(value.lastConnectionTestFinishReason),
-    lastConnectionTestUsage: recordOrNull(value.lastConnectionTestUsage)
+    lastConnectionTestUsage: recordOrNull(value.lastConnectionTestUsage),
+    drawerActiveSection: stringOrNull3(value.drawerActiveSection),
+    lastDrawerRefreshAt: stringOrNull3(value.lastDrawerRefreshAt),
+    lastHistoryGroupedCount: typeof value.lastHistoryGroupedCount === "number" && Number.isFinite(value.lastHistoryGroupedCount) ? Math.max(0, Math.round(value.lastHistoryGroupedCount)) : 0,
+    lastHistoryDuplicateCount: typeof value.lastHistoryDuplicateCount === "number" && Number.isFinite(value.lastHistoryDuplicateCount) ? Math.max(0, Math.round(value.lastHistoryDuplicateCount)) : 0,
+    lastHistoryCleanupAt: stringOrNull3(value.lastHistoryCleanupAt),
+    expandedWidthModeResolved: stringOrNull3(value.expandedWidthModeResolved),
+    lastExpandedTrackerWidthPx: numberOrNull2(value.lastExpandedTrackerWidthPx),
+    templateTrustMode: value.templateTrustMode === "safe" || value.templateTrustMode === "trusted" || value.templateTrustMode === "dev" ? value.templateTrustMode : base.templateTrustMode,
+    ultraModeEnabled: typeof value.ultraModeEnabled === "boolean" ? value.ultraModeEnabled : base.ultraModeEnabled,
+    estimatedPromptTokensLastRun: numberOrNull2(value.estimatedPromptTokensLastRun),
+    estimatedMemoryTokensLastRun: numberOrNull2(value.estimatedMemoryTokensLastRun),
+    iframeFallbackVisibleInMainUi: typeof value.iframeFallbackVisibleInMainUi === "boolean" ? value.iframeFallbackVisibleInMainUi : false
   };
 }
 async function getSettings(userId) {
@@ -3484,8 +3844,12 @@ async function sidecarMemoryEntriesFromIndex(chatId, userId, index) {
   return entries;
 }
 async function collectTrackerMemory(chatId, userId, settings, activePreset, trigger) {
+  const memorySettings = {
+    ...settings.memory,
+    maxMemoryChars: effectiveTrackerMemoryChars(settings)
+  };
   if (!settings.memory.enabled || settings.memory.retainCount <= 0) {
-    return buildTrackerMemoryResult([], settings.memory, trigger ? memoryOptionsFromTrigger(trigger, activePreset) : { activePreset });
+    return buildTrackerMemoryResult([], memorySettings, trigger ? memoryOptionsFromTrigger(trigger, activePreset) : { activePreset });
   }
   const entries = [];
   const index = await loadMessageSnapshotIndex(chatId, userId);
@@ -3499,7 +3863,7 @@ async function collectTrackerMemory(chatId, userId, settings, activePreset, trig
     const latestSnapshot = await loadSnapshot(chatId, userId);
     if (latestSnapshot) entries.push(memoryEntryFromChatSnapshot(latestSnapshot));
   }
-  return buildTrackerMemoryResult(entries, settings.memory, trigger ? memoryOptionsFromTrigger(trigger, activePreset) : { activePreset });
+  return buildTrackerMemoryResult(entries, memorySettings, trigger ? memoryOptionsFromTrigger(trigger, activePreset) : { activePreset });
 }
 function chatJobKey(chatId) {
   return `chat:${chatId}`;
@@ -3718,7 +4082,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
   const historySnapshots = await Promise.all(
     messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId, entry.swipeKey))
   );
-  const messageSnapshotHistory = buildMessageTrackerHistory({
+  const rawMessageSnapshotHistory = buildMessageTrackerHistory({
     index: messageSnapshotIndex,
     snapshots: historySnapshots,
     latestChatSnapshot: snapshot,
@@ -3727,6 +4091,9 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     activeWidgetJobs,
     selectedSwipeIdentities
   });
+  const historyGrouping = groupMessageTrackerHistory(rawMessageSnapshotHistory, false);
+  const messageSnapshotHistory = rawMessageSnapshotHistory;
+  const latestMessageSnapshotHistory = historyGrouping.entries;
   const messageControlCandidates = await buildMessageControlCandidates(
     chatId,
     settings,
@@ -3747,7 +4114,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
   );
   const messageDisplayMode = !settings.messageDisplay.enabled ? "disabled" : settings.messageDisplay.useDomInjection ? "dom_injection" : settings.messageDisplay.fallbackToIframeWidget && MESSAGE_LOCAL_UI_SUPPORTED ? "message_widget" : "drawer_history";
   const messageDisplayRenderer2 = !settings.messageDisplay.enabled ? "drawer_history" : settings.messageDisplay.useDomInjection ? "dom_injection" : settings.messageDisplay.fallbackToIframeWidget && MESSAGE_LOCAL_UI_SUPPORTED ? "iframe_widget" : "drawer_history";
-  const messageDisplayHydratedCount = settings.messageDisplay.enabled ? messageSnapshotHistory.filter((entry) => entry.snapshot !== null).length : 0;
+  const messageDisplayHydratedCount = settings.messageDisplay.enabled ? latestMessageSnapshotHistory.filter((entry) => entry.snapshot !== null).length : 0;
   const placement = resolveMessageWidgetPlacement(settings.messageDisplay.placement, settings);
   const activeWidgetRegenerationCount = Object.keys(activeWidgetJobs).length;
   const memoryPreviewResult = chatId ? await collectTrackerMemory(chatId, userId, settings, presetState.activePreset).catch((error2) => {
@@ -3755,7 +4122,11 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     return null;
   }) : null;
   const memoryPreview = memoryPreviewResult?.renderedText.trim() ? memoryPreviewResult.renderedText : null;
-  const injectionPreview = memoryPreviewResult?.entries.length ? formatTrackerInjectionBlock(memoryPreviewResult.entries, settings.injection) : null;
+  const injectionSettings2 = {
+    ...settings.injection,
+    maxInjectedChars: effectivePromptInjectionChars(settings)
+  };
+  const injectionPreview = memoryPreviewResult?.entries.length ? formatTrackerInjectionBlock(memoryPreviewResult.entries, injectionSettings2) : null;
   const stateError = error ?? diagnostics.lastError;
   return {
     version: EXTENSION_VERSION,
@@ -3785,6 +4156,9 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       connectionListCount: connectionCache.profiles.length,
       lastConnectionRefreshAt: connectionCache.refreshedAt ?? diagnostics.lastConnectionRefreshAt,
       lastConnectionRefreshError: connectionCache.error ?? diagnostics.lastConnectionRefreshError,
+      drawerActiveSection: diagnostics.drawerActiveSection ?? "dashboard",
+      lastDrawerRefreshAt: nowIso(),
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size,
       autoSubscriptionActive: autoSubscriptionsActive,
       injectionEnabled: settings.injection.enabled && interceptorRegistered,
       lastMemoryEntryCount: memoryPreviewResult?.entries.length ?? diagnostics.lastMemoryEntryCount,
@@ -3806,6 +4180,8 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       messageLocalUiSupported: MESSAGE_LOCAL_UI_SUPPORTED,
       messageLocalUiFallbackReason: MESSAGE_LOCAL_UI_FALLBACK_REASON,
       messageSnapshotIndexCount: messageSnapshotIndex.length,
+      lastHistoryGroupedCount: historyGrouping.groupedCount,
+      lastHistoryDuplicateCount: historyGrouping.duplicateCount,
       swipeTrackerIndexCount: messageSnapshotIndex.length,
       activeWidgetRegenerationCount,
       activeTrackerJobs: activeTrackerJobDiagnostics(chatId),
@@ -3813,7 +4189,11 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       messageWidgetPlacementReason: placement.reason,
       messageDisplayRenderer: messageDisplayRenderer2,
       nativeToolbarSupported: MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
-      nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON
+      nativeToolbarFallbackReason: MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
+      templateTrustMode: settings.renderer.templateTrustMode,
+      ultraModeEnabled: settings.budget.ultraModeEnabled,
+      iframeFallbackVisibleInMainUi: false,
+      expandedWidthModeResolved: settings.expandedWidth.expandedWidthMode
     },
     connectionProfiles: connectionCache.profiles
   };
@@ -4081,12 +4461,14 @@ async function removeEmbeddedTrackerTag(chatId, messageId, swipeKey, userId) {
   };
   await tryPersistDiagnostics(diagnostics, userId);
 }
-function promptPreview(messages) {
-  return messages.map((message) => {
+function promptPreview(messages, maxChars = 64e3) {
+  const rendered = messages.map((message) => {
     const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content, null, 2);
     return `## ${message.role}
 ${content}`;
   }).join("\n\n");
+  return rendered.length > maxChars ? `${rendered.slice(0, Math.max(0, maxChars - 12))}
+[truncated]` : rendered;
 }
 function sourceRange(ids) {
   if (ids.length === 0) return null;
@@ -4101,6 +4483,12 @@ function isCurrentJob(jobKey, jobId) {
 }
 function userChatKey(userId, chatId) {
   return `${userId}:${chatId}`;
+}
+function autoFinalizationKey(userId, chatId, messageId, swipeKey) {
+  return `${userId}:${chatId}:${messageId}:${swipeKey}`;
+}
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 function messageRole(message) {
   return message.is_user ? "user" : "assistant";
@@ -4153,7 +4541,9 @@ async function markAutoSkipped(chatId, userId, trigger, reason, eventAt = null) 
     lastAutoTriggeredAt: null,
     lastAutoSourceMessageId: trigger.sourceMessageId,
     lastAutoSourceMessageIndex: trigger.sourceMessageIndex,
-    lastAutoGenerationId: trigger.generationId
+    lastAutoGenerationId: trigger.generationId,
+    lastAutoFinalizationSkippedReason: reason,
+    pendingAutoFinalizationCount: pendingAutoFinalizations.size
   };
   await tryPersistDiagnostics(diagnostics, userId);
   await sendState(chatId, userId, diagnostics.status, null, trigger.requestId);
@@ -4166,6 +4556,40 @@ function cancelPendingAutoForChat(chatId, userId, reason) {
     pendingAutoJobs.delete(key);
     void markAutoSkipped(pending.chatId, pending.userId, pending.trigger, reason, pending.scheduledAt).catch((error) => spindle.log.warn(`LTracker could not record auto cancellation: ${errorMessage2(error)}`));
   }
+}
+function cancelPendingAutoFinalizationForChat(chatId, userId, reason) {
+  for (const [key, pending] of pendingAutoFinalizations) {
+    if (pending.chatId !== chatId) continue;
+    if (userId && pending.userId !== userId) continue;
+    clearTimeout(pending.timer);
+    pendingAutoFinalizations.delete(key);
+    void markAutoSkipped(pending.chatId, pending.userId, pending.trigger, reason, pending.scheduledAt).catch((error) => spindle.log.warn(`LTracker could not record auto finalization cancellation: ${errorMessage2(error)}`));
+  }
+}
+async function cancelPendingAutoFinalizationForSwipeChange(input) {
+  let cancelled = false;
+  for (const [key, pending] of pendingAutoFinalizations) {
+    if (pending.chatId !== input.chatId || pending.userId !== input.userId) continue;
+    if (!shouldCancelPendingSwipe(
+      { messageId: pending.messageId, swipeKey: pending.swipeKey },
+      { messageId: input.messageId, swipeKey: input.nextSwipeKey },
+      input.settings.autoTiming
+    )) continue;
+    clearTimeout(pending.timer);
+    pendingAutoFinalizations.delete(key);
+    cancelled = true;
+  }
+  if (cancelled) {
+    const diagnostics = {
+      ...await loadDiagnostics(input.chatId, input.userId),
+      lastAutoFinalizationState: "cancelled_on_swipe_change",
+      lastAutoFinalizationSkippedReason: "Selected swipe changed before tracker generation.",
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size,
+      lastSwipeChangeCancelledPendingJob: true
+    };
+    await tryPersistDiagnostics(diagnostics, input.userId);
+  }
+  return cancelled;
 }
 function abortAutoJobForChat(chatId, reason) {
   for (const job of jobsForChat(chatId)) {
@@ -4182,6 +4606,7 @@ function rememberActiveChat(userId, chatId) {
     users?.delete(userId);
     if (users?.size === 0) usersByChat.delete(previous);
     cancelPendingAutoForChat(previous, userId, "Chat changed before the auto timer fired.");
+    cancelPendingAutoFinalizationForChat(previous, userId, "Chat changed before the auto tracker finalized.");
     abortAutoJobForChat(previous, "Chat changed before the auto tracker result was saved.");
   }
   if (chatId) {
@@ -4204,6 +4629,169 @@ function messageFromEventPayload(payload) {
   if (isChatMessage(payload)) return payload;
   if (isRecord8(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
+}
+async function queueAutoDebounce(input) {
+  const key = userChatKey(input.userId, input.chatId);
+  const existing = pendingAutoJobs.get(key);
+  if (existing) clearTimeout(existing.timer);
+  const scheduledAt = nowIso();
+  const timer = setTimeout(() => {
+    void runPendingAuto(key).catch((error) => {
+      spindle.log.warn(`LTracker auto job failed: ${errorMessage2(error)}`);
+    });
+  }, input.settings.auto.autoDebounceMs);
+  pendingAutoJobs.set(key, {
+    timer,
+    chatId: input.chatId,
+    userId: input.userId,
+    requestId: input.trigger.requestId,
+    trigger: input.trigger,
+    scheduledAt
+  });
+  const diagnostics = {
+    ...await loadDiagnostics(input.chatId, input.userId),
+    lastAutoEventAt: input.eventAt,
+    lastAutoEventType: input.trigger.eventType,
+    lastAutoSkippedReason: null,
+    lastAutoScheduledAt: scheduledAt,
+    lastAutoTriggeredAt: null,
+    lastAutoSourceMessageId: input.trigger.sourceMessageId,
+    lastAutoSourceMessageIndex: input.trigger.sourceMessageIndex,
+    lastAutoGenerationId: input.trigger.generationId,
+    lastAutoFinalizationState: input.finalizationState ?? "scheduled_after_finalization",
+    lastAutoFinalizedAt: input.finalizationState ? nowIso() : null,
+    lastAutoStableCheckAt: input.stablePassed === null || input.stablePassed === void 0 ? null : nowIso(),
+    lastAutoStableCheckPassed: input.stablePassed ?? null,
+    lastAutoContentStableHash: input.stableHash ?? null,
+    lastAutoFinalizationSkippedReason: null,
+    pendingAutoFinalizationCount: pendingAutoFinalizations.size
+  };
+  await tryPersistDiagnostics(diagnostics, input.userId);
+  await sendState(input.chatId, input.userId, diagnostics.status, null, input.trigger.requestId);
+}
+async function readFinalizationTarget(chatId, messageId) {
+  const messages = await readChatMessages(chatId);
+  const message = messages.find((item) => item.id === messageId);
+  if (!message) return null;
+  const identity = deriveSwipeTrackerIdentity(chatId, message);
+  const swipes = Array.isArray(message.swipes) ? message.swipes : [];
+  const activeIndex = typeof message.swipe_id === "number" && Number.isFinite(message.swipe_id) ? Math.max(0, Math.round(message.swipe_id)) : 0;
+  const content = swipes[activeIndex] ?? message.content ?? "";
+  return {
+    message,
+    snapshot: {
+      messageId: message.id,
+      swipeKey: identity.swipeKey,
+      content
+    }
+  };
+}
+async function runAutoFinalization(key) {
+  const pending = pendingAutoFinalizations.get(key);
+  if (!pending) return;
+  const settings = await getSettings(pending.userId);
+  const markState = async (state, extra = {}) => {
+    const diagnostics = {
+      ...await loadDiagnostics(pending.chatId, pending.userId),
+      lastAutoFinalizationState: state,
+      lastAutoWaitingMessageId: pending.messageId,
+      lastAutoWaitingSwipeKey: pending.swipeKey,
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size,
+      ...extra
+    };
+    await tryPersistDiagnostics(diagnostics, pending.userId);
+    await sendState(pending.chatId, pending.userId, diagnostics.status, null, pending.requestId);
+  };
+  await markState("settling_after_finalization");
+  await delay(settings.autoTiming.postCompletionSettleMs);
+  if (pendingAutoFinalizations.get(key) !== pending) return;
+  const first = await readFinalizationTarget(pending.chatId, pending.messageId);
+  await markState("stable_check");
+  await delay(settings.autoTiming.stableContentCheckMs);
+  if (pendingAutoFinalizations.get(key) !== pending) return;
+  const second = await readFinalizationTarget(pending.chatId, pending.messageId);
+  const decision = evaluateStableSwipeContent(first?.snapshot ?? null, second?.snapshot ?? null, settings.autoTiming);
+  pendingAutoFinalizations.delete(key);
+  if (!decision.passed || !second) {
+    const diagnostics = {
+      ...await loadDiagnostics(pending.chatId, pending.userId),
+      lastAutoFinalizationState: "skipped",
+      lastAutoStableCheckAt: nowIso(),
+      lastAutoStableCheckPassed: false,
+      lastAutoContentStableHash: decision.contentHash,
+      lastAutoFinalizationSkippedReason: decision.skippedReason,
+      lastAutoSkippedReason: decision.skippedReason,
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size
+    };
+    await tryPersistDiagnostics(diagnostics, pending.userId);
+    await sendState(pending.chatId, pending.userId, diagnostics.status, null, pending.requestId);
+    return;
+  }
+  const finalizedTrigger = createAutoTrigger({
+    eventType: pending.trigger.eventType,
+    requestId: pending.trigger.requestId,
+    message: second.message,
+    generationId: pending.trigger.generationId,
+    generationType: pending.trigger.generationType
+  });
+  await queueAutoDebounce({
+    chatId: pending.chatId,
+    userId: pending.userId,
+    eventAt: pending.eventAt,
+    settings,
+    trigger: finalizedTrigger,
+    finalizationState: "finalized",
+    stableHash: decision.contentHash,
+    stablePassed: true
+  });
+}
+async function queueAutoFinalization(input) {
+  const key = autoFinalizationKey(input.userId, input.chatId, input.trigger.sourceMessageId, input.trigger.swipeKey);
+  const existing = pendingAutoFinalizations.get(key);
+  if (existing) clearTimeout(existing.timer);
+  const scheduledAt = nowIso();
+  const initialContent = input.message.content ?? "";
+  const timer = setTimeout(() => {
+    void runAutoFinalization(key).catch((error) => {
+      spindle.log.warn(`LTracker auto finalization failed: ${errorMessage2(error)}`);
+    });
+  }, 0);
+  pendingAutoFinalizations.set(key, {
+    timer,
+    chatId: input.chatId,
+    userId: input.userId,
+    requestId: input.trigger.requestId,
+    trigger: input.trigger,
+    scheduledAt,
+    eventAt: input.eventAt,
+    state: "waiting_for_message_finalization",
+    messageId: input.trigger.sourceMessageId,
+    swipeKey: input.trigger.swipeKey,
+    initialContentHash: initialContent.trim() ? stableContentHash(initialContent) : null
+  });
+  const diagnostics = {
+    ...await loadDiagnostics(input.chatId, input.userId),
+    lastAutoEventAt: input.eventAt,
+    lastAutoEventType: input.trigger.eventType,
+    lastAutoSkippedReason: null,
+    lastAutoScheduledAt: null,
+    lastAutoTriggeredAt: null,
+    lastAutoSourceMessageId: input.trigger.sourceMessageId,
+    lastAutoSourceMessageIndex: input.trigger.sourceMessageIndex,
+    lastAutoGenerationId: input.trigger.generationId,
+    lastAutoFinalizationState: "waiting_for_message_finalization",
+    lastAutoWaitingMessageId: input.trigger.sourceMessageId,
+    lastAutoWaitingSwipeKey: input.trigger.swipeKey,
+    lastAutoFinalizedAt: null,
+    lastAutoStableCheckAt: null,
+    lastAutoStableCheckPassed: null,
+    lastAutoContentStableHash: stableContentHash(initialContent),
+    lastAutoFinalizationSkippedReason: null,
+    pendingAutoFinalizationCount: pendingAutoFinalizations.size,
+    lastSwipeChangeCancelledPendingJob: false
+  };
+  await tryPersistDiagnostics(diagnostics, input.userId);
+  await sendState(input.chatId, input.userId, diagnostics.status, null, input.trigger.requestId);
 }
 async function scheduleAutoForMessage(input) {
   if (isQuietGenerationType(input.generationType)) return;
@@ -4231,38 +4819,27 @@ async function scheduleAutoForMessage(input) {
     await markAutoSkipped(input.chatId, input.userId, trigger, decision.reason, input.eventAt);
     return;
   }
-  const key = userChatKey(input.userId, input.chatId);
-  const existing = pendingAutoJobs.get(key);
-  if (existing) {
-    clearTimeout(existing.timer);
-  }
-  const scheduledAt = nowIso();
-  const timer = setTimeout(() => {
-    void runPendingAuto(key).catch((error) => {
-      spindle.log.warn(`LTracker auto job failed: ${errorMessage2(error)}`);
+  if (settings.autoTiming.waitForAssistantFinalization && !sourceMessage.is_user) {
+    await queueAutoFinalization({
+      chatId: input.chatId,
+      userId: input.userId,
+      eventAt: input.eventAt,
+      settings,
+      trigger,
+      message: sourceMessage
     });
-  }, settings.auto.autoDebounceMs);
-  pendingAutoJobs.set(key, {
-    timer,
+    return;
+  }
+  await queueAutoDebounce({
     chatId: input.chatId,
     userId: input.userId,
-    requestId,
+    eventAt: input.eventAt,
+    settings,
     trigger,
-    scheduledAt
+    finalizationState: null,
+    stableHash: null,
+    stablePassed: null
   });
-  const diagnostics = {
-    ...await loadDiagnostics(input.chatId, input.userId),
-    lastAutoEventAt: input.eventAt,
-    lastAutoEventType: input.eventType,
-    lastAutoSkippedReason: null,
-    lastAutoScheduledAt: scheduledAt,
-    lastAutoTriggeredAt: null,
-    lastAutoSourceMessageId: sourceMessage.id,
-    lastAutoSourceMessageIndex: sourceMessage.index_in_chat,
-    lastAutoGenerationId: input.generationId
-  };
-  await tryPersistDiagnostics(diagnostics, input.userId);
-  await sendState(input.chatId, input.userId, diagnostics.status, null, requestId);
 }
 async function runPendingAuto(key) {
   const pending = pendingAutoJobs.get(key);
@@ -4290,6 +4867,28 @@ async function runPendingAuto(key) {
     return;
   }
   await generateTracker(pending.chatId, pending.userId, pending.trigger);
+}
+async function handleGenerationStarted(payload, userId) {
+  if (isQuietGenerationType(payload.generationType)) return;
+  const users = targetUsersForChat(payload.chatId, userId);
+  const eventAt = nowIso();
+  for (const targetUserId of users) {
+    const settings = await getSettings(targetUserId);
+    if (!settings.auto.autoModeEnabled || !settings.autoTiming.waitForAssistantFinalization) continue;
+    const targetMessageId = typeof payload.targetMessageId === "string" ? payload.targetMessageId : null;
+    const diagnostics = {
+      ...await loadDiagnostics(payload.chatId, targetUserId),
+      lastAutoEventAt: eventAt,
+      lastAutoGenerationId: payload.generationId,
+      lastAutoFinalizationState: "waiting_for_message_finalization",
+      lastAutoWaitingMessageId: targetMessageId,
+      lastAutoWaitingSwipeKey: null,
+      lastAutoFinalizationSkippedReason: null,
+      pendingAutoFinalizationCount: pendingAutoFinalizations.size
+    };
+    await tryPersistDiagnostics(diagnostics, targetUserId);
+    await sendState(payload.chatId, targetUserId, diagnostics.status, null);
+  }
 }
 async function handleGenerationEnded(payload, userId) {
   if (payload.error || !payload.messageId || isQuietGenerationType(payload.generationType)) return;
@@ -4370,11 +4969,20 @@ async function handleMessageSwiped(payload, userId) {
   const users = targetUsersForChat(payload.chatId, userId);
   const eventAt = nowIso();
   for (const targetUserId of users) {
+    const settings = await getSettings(targetUserId);
+    const cancelledPending = await cancelPendingAutoFinalizationForSwipeChange({
+      chatId: payload.chatId,
+      userId: targetUserId,
+      messageId: message.id,
+      nextSwipeKey: identity.swipeKey,
+      settings
+    });
     const diagnostics = {
       ...await loadDiagnostics(payload.chatId, targetUserId),
       lastSwipeDetectedMessageId: message.id,
       lastSwipeKey: identity.swipeKey,
-      lastSwipeKeySource: identity.swipeKeySource
+      lastSwipeKeySource: identity.swipeKeySource,
+      lastSwipeChangeCancelledPendingJob: cancelledPending
     };
     await tryPersistDiagnostics(diagnostics, targetUserId);
     const action = typeof payload.action === "string" ? payload.action : null;
@@ -4528,9 +5136,12 @@ function injectionMemorySettings(settings) {
       retainCount: settings.injection.retainCount,
       fullSnapshotCount: settings.injection.retainCount,
       compactOlderSnapshots: false,
-      maxMemoryChars: settings.injection.maxInjectedChars,
+      maxMemoryChars: effectivePromptInjectionChars(settings),
       source: settings.memory.source,
-      order: "oldest_to_newest"
+      excludeTargetMessage: settings.memory.excludeTargetMessage,
+      order: "oldest_to_newest",
+      requireSamePreset: settings.memory.requireSamePreset,
+      requireSameSwipeWhenAvailable: settings.memory.requireSameSwipeWhenAvailable
     }
   };
 }
@@ -4552,11 +5163,15 @@ async function handlePromptInterceptor(messages, context) {
   try {
     const settings = await getSettings(userId);
     const presetState = await resolveActivePreset(chatId, userId);
+    const injectionSettings2 = {
+      ...settings.injection,
+      maxInjectedChars: effectivePromptInjectionChars(settings)
+    };
     if (!settings.injection.enabled) {
       const result2 = applyPromptInjection({
         messages: promptMessagesForInjection(messages),
         entries: [],
-        settings: settings.injection
+        settings: injectionSettings2
       });
       await recordInterceptorDiagnostics(chatId, userId, settings, result2);
       return messages;
@@ -4566,7 +5181,7 @@ async function handlePromptInterceptor(messages, context) {
     const result = applyPromptInjection({
       messages: promptMessagesForInjection(messages),
       entries: memory.entries,
-      settings: settings.injection
+      settings: injectionSettings2
     });
     await recordInterceptorDiagnostics(chatId, userId, settings, result);
     if (result.error) return messages;
@@ -4730,7 +5345,11 @@ async function generateTracker(chatId, userId, trigger) {
       lastSourceMessageRange: sourceRange(sourceMessageIds)
     };
     stage = "prompt";
-    const transcript = buildCompactTranscript(transcriptMessages, settings.maxMessageChars);
+    const transcript = buildCompactTranscript(
+      transcriptMessages,
+      effectivePerMessageChars(settings),
+      effectiveRecentTranscriptChars(settings)
+    );
     const memory = settings.memory.enabled && settings.memory.includeInTrackerGeneration ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger) : {
       entries: [],
       renderedText: "",
@@ -4753,7 +5372,12 @@ async function generateTracker(chatId, userId, trigger) {
       lastMemorySourceSummary: trackerMemorySourceSummary(memory.entries),
       lastMemorySkippedReason: memory.skippedReason,
       lastPromptIncludedMemory: Boolean(memory.renderedText),
-      lastPromptPreview: settings.savePromptPreview ? promptPreview(promptMessages) : "[Prompt preview saving disabled]"
+      estimatedMemoryTokensLastRun: estimateTokensFromChars(memory.totalChars),
+      lastPromptPreview: settings.savePromptPreview ? promptPreview(promptMessages, effectivePromptPreviewChars(settings)) : "[Prompt preview saving disabled]"
+    };
+    diagnostics = {
+      ...diagnostics,
+      estimatedPromptTokensLastRun: settings.savePromptPreview ? estimateTokensFromChars((diagnostics.lastPromptPreview ?? "").length) : null
     };
     await tryPersistDiagnostics(diagnostics, userId);
     stage = "generation";
@@ -4762,7 +5386,7 @@ async function generateTracker(chatId, userId, trigger) {
     if (!isCurrentJob(jobKey, job.jobId)) return;
     diagnostics = {
       ...diagnostics,
-      lastRawOutput: settings.saveRawOutput ? rawOutput : "[Raw output saving disabled]",
+      lastRawOutput: settings.saveRawOutput ? rawOutput.slice(0, settings.budget.rawOutputMaxChars) : "[Raw output saving disabled]",
       lastGenerationConnectionModeUsed: generation.requestDiagnostics.modeUsed,
       lastGenerationConnectionIdUsed: generation.requestDiagnostics.connectionIdUsed,
       lastGenerationConnectionNameUsed: generation.requestDiagnostics.connectionNameUsed,
@@ -5433,6 +6057,26 @@ async function deleteMessageTracker(payload, userId) {
   await tryPersistDiagnostics(diagnostics, userId);
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
+async function cleanupDuplicateHistory(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  const repaired = repairMessageSnapshotIndex(index);
+  await saveMessageSnapshotIndex(resolvedChatId, repaired, userId);
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastHistoryCleanupAt: nowIso(),
+    lastHistoryGroupedCount: repaired.length,
+    lastHistoryDuplicateCount: Math.max(0, index.length - repaired.length),
+    messageSnapshotIndexCount: repaired.length,
+    swipeTrackerIndexCount: repaired.length,
+    lastError: null
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
 async function saveEditedMessageTracker(payload, userId) {
   const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
     stageError("active_chat", error);
@@ -5584,6 +6228,8 @@ function disposeBackend() {
   disposed = true;
   for (const pending of pendingAutoJobs.values()) clearTimeout(pending.timer);
   pendingAutoJobs.clear();
+  for (const pending of pendingAutoFinalizations.values()) clearTimeout(pending.timer);
+  pendingAutoFinalizations.clear();
   for (const job of activeJobs.values()) job.controller.abort();
   activeJobs.clear();
   for (const job of connectionTestJobs.values()) job.controller.abort();
@@ -5594,6 +6240,11 @@ function disposeBackend() {
   interceptorRegistered = false;
 }
 function registerEventListeners() {
+  eventCleanups.push(spindle.on("GENERATION_STARTED", (payload, userId) => {
+    void handleGenerationStarted(payload, userId).catch((error) => {
+      spindle.log.warn(`LTracker generation-started handler failed: ${errorMessage2(error)}`);
+    });
+  }));
   eventCleanups.push(spindle.on("GENERATION_ENDED", (payload, userId) => {
     void handleGenerationEnded(payload, userId).catch((error) => {
       spindle.log.warn(`LTracker generation-ended handler failed: ${errorMessage2(error)}`);
@@ -5746,6 +6397,10 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "delete_message_tracker") {
         await deleteMessageTracker(payload, userId);
+        return;
+      }
+      if (payload.type === "cleanup_duplicate_history") {
+        await cleanupDuplicateHistory(payload, userId);
         return;
       }
       if (payload.type === "save_edited_message_tracker") {
