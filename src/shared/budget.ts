@@ -11,7 +11,7 @@ export const NORMAL_BUDGET_DEFAULTS = {
   promptPreviewBudgetTokens: 16_000,
   renderedHtmlMaxChars: 250_000,
   rawOutputMaxChars: 250_000,
-  presetImportMaxChars: 1_000_000,
+  presetImportMaxChars: 10_000_000,
 } as const;
 
 export const ULTRA_BUDGET_DEFAULTS = {
@@ -23,7 +23,7 @@ export const ULTRA_BUDGET_DEFAULTS = {
   promptPreviewBudgetTokens: 128_000,
   renderedHtmlMaxChars: 2_000_000,
   rawOutputMaxChars: 2_000_000,
-  presetImportMaxChars: 10_000_000,
+  presetImportMaxChars: 50_000_000,
 } as const;
 
 export function estimateTokensFromChars(chars: number): number {

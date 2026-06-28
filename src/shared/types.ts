@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.15";
+export const EXTENSION_VERSION = "0.16";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -356,6 +356,17 @@ export interface LTrackerConnectionProfileSummary {
   updated_at: string | null;
 }
 
+export interface LTrackerHistorySettings {
+  pageSize: number;
+  showDuplicates: boolean;
+}
+
+export interface LTrackerStorageMaintenanceSettings {
+  enabled: boolean;
+  maxSnapshotsPerChat: number;
+  cleanupDuplicatesOnly: boolean;
+}
+
 export interface LTrackerSettings {
   schemaVersion: typeof SETTINGS_SCHEMA_VERSION;
   recentMessageLimit: number;
@@ -372,6 +383,8 @@ export interface LTrackerSettings {
   messageDisplay: LTrackerMessageDisplaySettings;
   expandedWidth: LTrackerExpandedWidthSettings;
   connection: LTrackerConnectionSettings;
+  history: LTrackerHistorySettings;
+  storageMaintenance: LTrackerStorageMaintenanceSettings;
 }
 
 export interface LTrackerError {
@@ -570,6 +583,19 @@ export interface LTrackerDiagnostics {
   estimatedPromptTokensLastRun: number | null;
   estimatedMemoryTokensLastRun: number | null;
   iframeFallbackVisibleInMainUi: boolean;
+  lastMemoryIndexCount: number;
+  lastMemoryCandidateCount: number;
+  lastMemoryLoadedSnapshotCount: number;
+  lastMemoryLoadDurationMs: number;
+  lastMemoryLoadSkippedCount: number;
+  lastJobTimeoutAt: string | null;
+  lastJobTimeoutJobId: string | null;
+  lastJobTimeoutMessageId: string | null;
+  lastJobTimeoutSwipeKey: string | null;
+  staleJobsEvictedCount: number;
+  lastHistoryOrphanCount: number;
+  lastPresetEstimatedTokens: number | null;
+  lastPresetEstimatedRenderedChars: number | null;
 }
 
 export interface PermissionState {
@@ -664,8 +690,8 @@ export interface MessageTrackerHistoryEntry {
 }
 
 export type FrontendMessage =
-  | { type: "ready"; chatId: string | null }
-  | { type: "refresh_state"; chatId: string | null }
+  | { type: "ready"; chatId: string | null; historyLimit?: number }
+  | { type: "refresh_state"; chatId: string | null; historyLimit?: number }
   | { type: "generate_tracker"; chatId: string | null; requestId: string }
   | { type: "refresh_connections"; chatId: string | null; requestId: string }
   | { type: "test_tracker_connection"; chatId: string | null; settings?: LTrackerSettings; requestId: string }
@@ -688,7 +714,10 @@ export type FrontendMessage =
   | { type: "delete_message_tracker"; chatId: string | null; messageId: string; swipeKey: string; requestId: string }
   | { type: "save_edited_message_tracker"; chatId: string | null; messageId: string; swipeKey: string; jsonText: string; requestId: string }
   | { type: "cleanup_duplicate_history"; chatId: string | null; requestId: string }
-  | { type: "embedded_tracker_tag_intercepted"; chatId: string | null; messageId: string | null; swipeKey: string | null; jsonText: string; isStreaming?: boolean; requestId: string };
+  | { type: "embedded_tracker_tag_intercepted"; chatId: string | null; messageId: string | null; swipeKey: string | null; jsonText: string; isStreaming?: boolean; requestId: string }
+  | { type: "restore_deleted_tracker"; chatId: string | null; messageId: string; swipeKey: string; requestId: string }
+  | { type: "run_storage_maintenance_scan"; chatId: string | null; requestId: string }
+  | { type: "cleanup_missing_index_entries"; chatId: string | null; requestId: string };
 
 export type BackendMessage =
   | { type: "state"; state: FrontendState; requestId?: string }

@@ -46,7 +46,7 @@ export const SETTINGS_LIMITS = {
   trackerOutputTokens: { min: 256, max: 64_000 },
   renderedHtmlMaxChars: { min: 1_000, max: 2_000_000 },
   rawOutputMaxChars: { min: 1_000, max: 2_000_000 },
-  presetImportMaxChars: { min: 10_000, max: 10_000_000 },
+  presetImportMaxChars: { min: 10_000, max: 100_000_000 },
   maxExpandedWidthPx: { min: 320, max: 1_800, default: 900 },
   mobileHorizontalMarginPx: { min: 0, max: 32, default: 6 },
   expandedContentMaxHeightVh: { min: 30, max: 95, default: 75 },
@@ -163,6 +163,15 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
       thinkingDisplay: "auto",
     },
     testPrompt: TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
+  },
+  history: {
+    pageSize: 25,
+    showDuplicates: false,
+  },
+  storageMaintenance: {
+    enabled: false,
+    maxSnapshotsPerChat: 500,
+    cleanupDuplicatesOnly: true,
   },
 };
 
@@ -309,6 +318,8 @@ function thinkingDisplay(value: unknown): LTrackerThinkingDisplay {
 export function repairSettings(value: unknown): LTrackerSettings {
   const source = isRecord(value) ? value : {};
   const autoSource = isRecord(source.auto) ? source.auto : {};
+  const historySource = isRecord(source.history) ? source.history : {};
+  const storageMaintenanceSource = isRecord(source.storageMaintenance) ? source.storageMaintenance : {};
   const autoTimingSource = isRecord(source.autoTiming) ? source.autoTiming : {};
   const budgetSource = isRecord(source.budget) ? source.budget : {};
   const memorySourceObject = isRecord(source.memory) ? source.memory : {};
@@ -734,6 +745,31 @@ export function repairSettings(value: unknown): LTrackerSettings {
       testPrompt: typeof connectionSource.testPrompt === "string" && connectionSource.testPrompt.trim()
         ? connectionSource.testPrompt
         : TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
+    },
+    history: {
+      pageSize: clampNumber(
+        historySource.pageSize,
+        25,
+        10,
+        200,
+      ),
+      showDuplicates: typeof historySource.showDuplicates === "boolean"
+        ? historySource.showDuplicates
+        : DEFAULT_SETTINGS.history.showDuplicates,
+    },
+    storageMaintenance: {
+      enabled: typeof storageMaintenanceSource.enabled === "boolean"
+        ? storageMaintenanceSource.enabled
+        : DEFAULT_SETTINGS.storageMaintenance.enabled,
+      maxSnapshotsPerChat: clampNumber(
+        storageMaintenanceSource.maxSnapshotsPerChat,
+        500,
+        50,
+        10000,
+      ),
+      cleanupDuplicatesOnly: typeof storageMaintenanceSource.cleanupDuplicatesOnly === "boolean"
+        ? storageMaintenanceSource.cleanupDuplicatesOnly
+        : DEFAULT_SETTINGS.storageMaintenance.cleanupDuplicatesOnly,
     },
   };
 }

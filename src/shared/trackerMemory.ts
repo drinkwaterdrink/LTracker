@@ -3,6 +3,7 @@ import type {
   LTrackerMemorySettings,
   TrackerSchemaPreset,
   TrackerTriggerSource,
+  MessageSnapshotIndexEntry,
 } from "./types";
 
 export interface TrackerMemoryEntry {
@@ -240,4 +241,73 @@ export function memoryOptionsFromTrigger(
     targetMessageIndex: trigger.sourceMessageIndex,
     targetSwipeKey: trigger.swipeKey,
   };
+}
+
+export function selectTrackerMemoryCandidates(
+  index: MessageSnapshotIndexEntry[],
+  settings: LTrackerMemorySettings,
+  options: TrackerMemoryBuildOptions = {},
+): MessageSnapshotIndexEntry[] {
+  if (!settings.enabled || settings.retainCount <= 0) return [];
+
+  // 1. Cheap filters from index metadata before loading where possible
+  let filtered = index.filter((entry) => {
+    // Exclude target message/swipe
+    if (settings.excludeTargetMessage && options.targetMessageId) {
+      if (entry.messageId === options.targetMessageId) {
+        if (!options.targetSwipeKey || entry.swipeKey === options.targetSwipeKey) {
+          return false;
+        }
+      }
+    }
+    // Same preset filter if index has presetId
+    if (settings.requireSamePreset && options.activePreset && entry.presetId) {
+      if (entry.presetId !== options.activePreset.id) return false;
+    }
+    // Same swipe filter if index has swipeKey
+    if (settings.requireSameSwipeWhenAvailable && options.targetSwipeKey && entry.swipeKey) {
+      if (entry.swipeKey !== options.targetSwipeKey) return false;
+    }
+    return true;
+  });
+
+  // 2. Deduplicate index entries by messageId + swipeKey, keeping the latest entry (by createdAt)
+  const dedupedMap = new Map<string, MessageSnapshotIndexEntry>();
+  for (const entry of filtered) {
+    const key = `${entry.messageId}:${entry.swipeKey}`;
+    const existing = dedupedMap.get(key);
+    if (!existing || entry.createdAt.localeCompare(existing.createdAt) > 0) {
+      dedupedMap.set(key, entry);
+    }
+  }
+  const deduped = Array.from(dedupedMap.values());
+
+  // 3. Sort candidates by recency first (newest to oldest)
+  const sortedNewestToOldest = deduped.sort((left, right) => {
+    if (left.messageIndex !== null && right.messageIndex !== null && left.messageIndex !== right.messageIndex) {
+      return right.messageIndex - left.messageIndex;
+    }
+    if (left.messageIndex !== null && right.messageIndex === null) return 1;
+    if (left.messageIndex === null && right.messageIndex !== null) return -1;
+    return right.createdAt.localeCompare(left.createdAt);
+  });
+
+  // 4. Select the candidate load window
+  const targetRetain = Math.max(settings.retainCount, settings.fullSnapshotCount ?? 3, 1);
+  const candidateWindowSize = Math.min(
+    sortedNewestToOldest.length,
+    Math.max(targetRetain * 6 + 10, targetRetain + 20)
+  );
+  
+  const selectedCandidates = sortedNewestToOldest.slice(0, candidateWindowSize);
+
+  // 5. Sort selected candidates back to oldest-to-newest for loading order
+  return selectedCandidates.sort((left, right) => {
+    if (left.messageIndex !== null && right.messageIndex !== null && left.messageIndex !== right.messageIndex) {
+      return left.messageIndex - right.messageIndex;
+    }
+    if (left.messageIndex !== null && right.messageIndex === null) return -1;
+    if (left.messageIndex === null && right.messageIndex !== null) return 1;
+    return left.createdAt.localeCompare(right.createdAt);
+  });
 }

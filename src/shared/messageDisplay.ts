@@ -33,6 +33,36 @@ export const MESSAGE_NATIVE_TOOLBAR_SUPPORTED = false;
 export const MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON =
   "lumiverse-spindle-types@0.5.21 exposes message DOM helpers, message widgets, message tags, and message_footer mounting, but no per-message toolbar action slot.";
 
+export const LTRACKER_DOM_TRACKER_CSS = `
+.ltracker-dom-tracker { margin: 0 0 4px; border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 8px; background: color-mix(in srgb, currentColor 3%, transparent); color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 100%; }
+.ltracker-dom-tracker.ltd-missing-tracker { display: inline-flex; border-radius: 999px; background: color-mix(in srgb, currentColor 5%, transparent); }
+.ltracker-dom-tracker details { margin: 0; min-width: 0; }
+.ltracker-dom-tracker summary { cursor: pointer; list-style: none; min-height: 26px; padding: 3px 5px; }
+.ltracker-dom-tracker summary::-webkit-details-marker { display: none; }
+.ltd-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.ltd-head { display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; min-width: 0; }
+.ltd-title { font-weight: 700; letter-spacing: 0; }
+.ltd-control-icon { width: 18px; height: 18px; display: inline-grid; place-items: center; border-radius: 999px; background: color-mix(in srgb, currentColor 8%, transparent); }
+.ltd-control-icon svg { width: 13px; height: 13px; transition: transform .15s ease; }
+.ltracker-dom-tracker details[open] .ltd-control-icon svg { transform: rotate(180deg); }
+.ltd-missing-tracker .ltd-control-icon svg, .ltd-spinning svg { transform: none; }
+.ltd-meta { opacity: .68; overflow-wrap: anywhere; }
+.ltd-pill { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 999px; padding: 1px 5px; opacity: .8; }
+.ltd-warning { color: #f59e0b; }
+.ltd-actions { display: inline-flex; align-items: center; gap: 4px; }
+.ltd-icon-button { width: 24px; height: 24px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 6%, transparent); color: inherit; cursor: pointer; padding: 0; }
+.ltd-comfortable .ltd-icon-button { width: 28px; height: 28px; }
+.ltd-icon-button svg { width: 14px; height: 14px; }
+.ltd-icon-button:hover, .ltd-icon-button:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); outline: 2px solid color-mix(in srgb, currentColor 30%, transparent); }
+.ltd-spinning svg { animation: ltd-spin .9s linear infinite; }
+.ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; max-height: min(var(--ltracker-expanded-max-height, 56vh), 900px); overflow: auto; }
+.ltd-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ltracker-dom-tracker details:not([open]) { min-height: 0; }
+.ltracker-dom-tracker details:not([open]) .ltd-body { display: none; }
+@keyframes ltd-spin { to { transform: rotate(360deg); } }
+@media (max-width: 520px) { .ltd-meta { display: none; } .ltd-summary { gap: 4px; } .ltd-icon-button { width: 28px; height: 28px; } .ltd-body { max-height: 48vh; } }
+`;
+
 interface RenderMessageTrackerInput {
   messageId: string;
   messageIndex: number | null;
@@ -439,35 +469,6 @@ function buildDomHtml(
   const title = rendered.controlState.hasTracker ? "L" : "";
   return `
 <section class="ltracker-dom-tracker${compactClass}${densityClass}${placementClass}${hasTrackerClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}" data-ltracker-control-state="${escapeHtml(rendered.controlState.generationStatus)}">
-  <style>
-    .ltracker-dom-tracker { margin: 0 0 4px; border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 8px; background: color-mix(in srgb, currentColor 3%, transparent); color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 100%; }
-    .ltracker-dom-tracker.ltd-missing-tracker { display: inline-flex; border-radius: 999px; background: color-mix(in srgb, currentColor 5%, transparent); }
-    .ltracker-dom-tracker details { margin: 0; min-width: 0; }
-    .ltracker-dom-tracker summary { cursor: pointer; list-style: none; min-height: 26px; padding: 3px 5px; }
-    .ltracker-dom-tracker summary::-webkit-details-marker { display: none; }
-    .ltd-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-    .ltd-head { display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; min-width: 0; }
-    .ltd-title { font-weight: 700; letter-spacing: 0; }
-    .ltd-control-icon { width: 18px; height: 18px; display: inline-grid; place-items: center; border-radius: 999px; background: color-mix(in srgb, currentColor 8%, transparent); }
-    .ltd-control-icon svg { width: 13px; height: 13px; transition: transform .15s ease; }
-    .ltracker-dom-tracker details[open] .ltd-control-icon svg { transform: rotate(180deg); }
-    .ltd-missing-tracker .ltd-control-icon svg, .ltd-spinning svg { transform: none; }
-    .ltd-meta { opacity: .68; overflow-wrap: anywhere; }
-    .ltd-pill { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 999px; padding: 1px 5px; opacity: .8; }
-    .ltd-warning { color: #f59e0b; }
-    .ltd-actions { display: inline-flex; align-items: center; gap: 4px; }
-    .ltd-icon-button { width: 24px; height: 24px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 6%, transparent); color: inherit; cursor: pointer; padding: 0; }
-    .ltd-comfortable .ltd-icon-button { width: 28px; height: 28px; }
-    .ltd-icon-button svg { width: 14px; height: 14px; }
-    .ltd-icon-button:hover, .ltd-icon-button:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); outline: 2px solid color-mix(in srgb, currentColor 30%, transparent); }
-    .ltd-spinning svg { animation: ltd-spin .9s linear infinite; }
-    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; max-height: min(var(--ltracker-expanded-max-height, 56vh), 900px); overflow: auto; }
-    .ltd-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .ltracker-dom-tracker details:not([open]) { min-height: 0; }
-    .ltracker-dom-tracker details:not([open]) .ltd-body { display: none; }
-    @keyframes ltd-spin { to { transform: rotate(360deg); } }
-    @media (max-width: 520px) { .ltd-meta { display: none; } .ltd-summary { gap: 4px; } .ltd-icon-button { width: 28px; height: 28px; } .ltd-body { max-height: 48vh; } }
-  </style>
   <details${open}>
     <summary>
       <span class="ltd-summary">

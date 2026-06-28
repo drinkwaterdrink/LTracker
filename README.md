@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.15`
+Version: `0.16`
 
-Current release: `0.15 Auto Timing + Drawer UX Overhaul`
+Current release: `0.16 Production Readiness + Performance & Hardening Overhaul`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 

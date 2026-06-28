@@ -225,10 +225,10 @@ function stringAtPath(value, path) {
 
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
-var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.15; safe normal prompt injection uses the Lumiverse interceptor path instead.";
+var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.15";
+var EXTENSION_VERSION = "0.16";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -267,11 +267,15 @@ function findLTrackerTags(content) {
   const matches = [];
   let match;
   while ((match = pattern.exec(content)) !== null) {
+    const body = (match[2] ?? "").trim();
+    if (body.toLowerCase().includes(`<${LTRACKER_TAG_NAME}`)) {
+      continue;
+    }
     const attrs = parseTagAttributes(match[1] ?? "");
     if (attrs.type && attrs.type !== LTRACKER_TAG_TYPE) continue;
     matches.push({
       fullMatch: match[0],
-      content: (match[2] ?? "").trim(),
+      content: body,
       attrs,
       start: match.index,
       end: match.index + match[0].length
@@ -587,7 +591,11 @@ function sanitizeStyle(value, warnings) {
       warnings.push(`Removed unsupported style property ${property}.`);
       continue;
     }
-    if (lowerValue.includes("url(") || lowerValue.includes("expression") || lowerValue.includes("@import") || lowerValue.includes("javascript:") || lowerValue.includes("behavior:") || lowerValue.includes("-moz-binding") || /[<>{}]/.test(rawValue)) {
+    if (rawValue.includes("\\")) {
+      warnings.push(`Removed unsafe style value containing escape character.`);
+      continue;
+    }
+    if (lowerValue.includes("url(") || lowerValue.includes("expression") || lowerValue.includes("@import") || lowerValue.includes("javascript:") || lowerValue.includes("data:") || lowerValue.includes("behavior:") || lowerValue.includes("-moz-binding") || /[<>{}]/.test(rawValue)) {
       warnings.push(`Removed unsafe style value for ${property}.`);
       continue;
     }
@@ -1098,35 +1106,6 @@ function buildDomHtml(rendered, settings) {
   const title = rendered.controlState.hasTracker ? "L" : "";
   return `
 <section class="ltracker-dom-tracker${compactClass}${densityClass}${placementClass}${hasTrackerClass}" data-ltracker-message-id="${escapeHtml(rendered.messageId)}" data-ltracker-swipe-key="${escapeHtml(rendered.swipeKey)}" data-ltracker-control-state="${escapeHtml(rendered.controlState.generationStatus)}">
-  <style>
-    .ltracker-dom-tracker { margin: 0 0 4px; border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 8px; background: color-mix(in srgb, currentColor 3%, transparent); color: inherit; font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 100%; }
-    .ltracker-dom-tracker.ltd-missing-tracker { display: inline-flex; border-radius: 999px; background: color-mix(in srgb, currentColor 5%, transparent); }
-    .ltracker-dom-tracker details { margin: 0; min-width: 0; }
-    .ltracker-dom-tracker summary { cursor: pointer; list-style: none; min-height: 26px; padding: 3px 5px; }
-    .ltracker-dom-tracker summary::-webkit-details-marker { display: none; }
-    .ltd-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-    .ltd-head { display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; min-width: 0; }
-    .ltd-title { font-weight: 700; letter-spacing: 0; }
-    .ltd-control-icon { width: 18px; height: 18px; display: inline-grid; place-items: center; border-radius: 999px; background: color-mix(in srgb, currentColor 8%, transparent); }
-    .ltd-control-icon svg { width: 13px; height: 13px; transition: transform .15s ease; }
-    .ltracker-dom-tracker details[open] .ltd-control-icon svg { transform: rotate(180deg); }
-    .ltd-missing-tracker .ltd-control-icon svg, .ltd-spinning svg { transform: none; }
-    .ltd-meta { opacity: .68; overflow-wrap: anywhere; }
-    .ltd-pill { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 999px; padding: 1px 5px; opacity: .8; }
-    .ltd-warning { color: #f59e0b; }
-    .ltd-actions { display: inline-flex; align-items: center; gap: 4px; }
-    .ltd-icon-button { width: 24px; height: 24px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 7px; background: color-mix(in srgb, currentColor 6%, transparent); color: inherit; cursor: pointer; padding: 0; }
-    .ltd-comfortable .ltd-icon-button { width: 28px; height: 28px; }
-    .ltd-icon-button svg { width: 14px; height: 14px; }
-    .ltd-icon-button:hover, .ltd-icon-button:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); outline: 2px solid color-mix(in srgb, currentColor 30%, transparent); }
-    .ltd-spinning svg { animation: ltd-spin .9s linear infinite; }
-    .ltd-body { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); padding: 7px; overflow-wrap: anywhere; max-height: min(var(--ltracker-expanded-max-height, 56vh), 900px); overflow: auto; }
-    .ltd-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .ltracker-dom-tracker details:not([open]) { min-height: 0; }
-    .ltracker-dom-tracker details:not([open]) .ltd-body { display: none; }
-    @keyframes ltd-spin { to { transform: rotate(360deg); } }
-    @media (max-width: 520px) { .ltd-meta { display: none; } .ltd-summary { gap: 4px; } .ltd-icon-button { width: 28px; height: 28px; } .ltd-body { max-height: 48vh; } }
-  </style>
   <details${open}>
     <summary>
       <span class="ltd-summary">
@@ -1325,7 +1304,7 @@ var NORMAL_BUDGET_DEFAULTS = {
   promptPreviewBudgetTokens: 16e3,
   renderedHtmlMaxChars: 25e4,
   rawOutputMaxChars: 25e4,
-  presetImportMaxChars: 1e6
+  presetImportMaxChars: 1e7
 };
 var ULTRA_BUDGET_DEFAULTS = {
   recentMessageBudgetTokens: 128e3,
@@ -1336,7 +1315,7 @@ var ULTRA_BUDGET_DEFAULTS = {
   promptPreviewBudgetTokens: 128e3,
   renderedHtmlMaxChars: 2e6,
   rawOutputMaxChars: 2e6,
-  presetImportMaxChars: 1e7
+  presetImportMaxChars: 5e7
 };
 function estimateTokensFromChars(chars) {
   if (!Number.isFinite(chars) || chars <= 0) return 0;
@@ -2021,7 +2000,7 @@ var SETTINGS_LIMITS = {
   trackerOutputTokens: { min: 256, max: 64e3 },
   renderedHtmlMaxChars: { min: 1e3, max: 2e6 },
   rawOutputMaxChars: { min: 1e3, max: 2e6 },
-  presetImportMaxChars: { min: 1e4, max: 1e7 },
+  presetImportMaxChars: { min: 1e4, max: 1e8 },
   maxExpandedWidthPx: { min: 320, max: 1800, default: 900 },
   mobileHorizontalMarginPx: { min: 0, max: 32, default: 6 },
   expandedContentMaxHeightVh: { min: 30, max: 95, default: 75 }
@@ -2137,6 +2116,15 @@ var DEFAULT_SETTINGS = {
       thinkingDisplay: "auto"
     },
     testPrompt: TRACKER_CONNECTION_DEFAULT_TEST_PROMPT
+  },
+  history: {
+    pageSize: 25,
+    showDuplicates: false
+  },
+  storageMaintenance: {
+    enabled: false,
+    maxSnapshotsPerChat: 500,
+    cleanupDuplicatesOnly: true
   }
 };
 function isRecord6(value) {
@@ -2208,6 +2196,8 @@ function thinkingDisplay(value) {
 function repairSettings(value) {
   const source = isRecord6(value) ? value : {};
   const autoSource = isRecord6(source.auto) ? source.auto : {};
+  const historySource = isRecord6(source.history) ? source.history : {};
+  const storageMaintenanceSource = isRecord6(source.storageMaintenance) ? source.storageMaintenance : {};
   const autoTimingSource = isRecord6(source.autoTiming) ? source.autoTiming : {};
   const budgetSource = isRecord6(source.budget) ? source.budget : {};
   const memorySourceObject = isRecord6(source.memory) ? source.memory : {};
@@ -2512,6 +2502,25 @@ function repairSettings(value) {
         thinkingDisplay: thinkingDisplay(connectionReasoningSource.thinkingDisplay)
       },
       testPrompt: typeof connectionSource.testPrompt === "string" && connectionSource.testPrompt.trim() ? connectionSource.testPrompt : TRACKER_CONNECTION_DEFAULT_TEST_PROMPT
+    },
+    history: {
+      pageSize: clampNumber(
+        historySource.pageSize,
+        25,
+        10,
+        200
+      ),
+      showDuplicates: typeof historySource.showDuplicates === "boolean" ? historySource.showDuplicates : DEFAULT_SETTINGS.history.showDuplicates
+    },
+    storageMaintenance: {
+      enabled: typeof storageMaintenanceSource.enabled === "boolean" ? storageMaintenanceSource.enabled : DEFAULT_SETTINGS.storageMaintenance.enabled,
+      maxSnapshotsPerChat: clampNumber(
+        storageMaintenanceSource.maxSnapshotsPerChat,
+        500,
+        50,
+        1e4
+      ),
+      cleanupDuplicatesOnly: typeof storageMaintenanceSource.cleanupDuplicatesOnly === "boolean" ? storageMaintenanceSource.cleanupDuplicatesOnly : DEFAULT_SETTINGS.storageMaintenance.cleanupDuplicatesOnly
     }
   };
 }
@@ -3036,6 +3045,56 @@ function memoryOptionsFromTrigger(trigger, activePreset) {
     targetSwipeKey: trigger.swipeKey
   };
 }
+function selectTrackerMemoryCandidates(index, settings, options = {}) {
+  if (!settings.enabled || settings.retainCount <= 0) return [];
+  let filtered = index.filter((entry) => {
+    if (settings.excludeTargetMessage && options.targetMessageId) {
+      if (entry.messageId === options.targetMessageId) {
+        if (!options.targetSwipeKey || entry.swipeKey === options.targetSwipeKey) {
+          return false;
+        }
+      }
+    }
+    if (settings.requireSamePreset && options.activePreset && entry.presetId) {
+      if (entry.presetId !== options.activePreset.id) return false;
+    }
+    if (settings.requireSameSwipeWhenAvailable && options.targetSwipeKey && entry.swipeKey) {
+      if (entry.swipeKey !== options.targetSwipeKey) return false;
+    }
+    return true;
+  });
+  const dedupedMap = /* @__PURE__ */ new Map();
+  for (const entry of filtered) {
+    const key = `${entry.messageId}:${entry.swipeKey}`;
+    const existing = dedupedMap.get(key);
+    if (!existing || entry.createdAt.localeCompare(existing.createdAt) > 0) {
+      dedupedMap.set(key, entry);
+    }
+  }
+  const deduped = Array.from(dedupedMap.values());
+  const sortedNewestToOldest = deduped.sort((left, right) => {
+    if (left.messageIndex !== null && right.messageIndex !== null && left.messageIndex !== right.messageIndex) {
+      return right.messageIndex - left.messageIndex;
+    }
+    if (left.messageIndex !== null && right.messageIndex === null) return 1;
+    if (left.messageIndex === null && right.messageIndex !== null) return -1;
+    return right.createdAt.localeCompare(left.createdAt);
+  });
+  const targetRetain = Math.max(settings.retainCount, settings.fullSnapshotCount ?? 3, 1);
+  const candidateWindowSize = Math.min(
+    sortedNewestToOldest.length,
+    Math.max(targetRetain * 6 + 10, targetRetain + 20)
+  );
+  const selectedCandidates = sortedNewestToOldest.slice(0, candidateWindowSize);
+  return selectedCandidates.sort((left, right) => {
+    if (left.messageIndex !== null && right.messageIndex !== null && left.messageIndex !== right.messageIndex) {
+      return left.messageIndex - right.messageIndex;
+    }
+    if (left.messageIndex !== null && right.messageIndex === null) return -1;
+    if (left.messageIndex === null && right.messageIndex !== null) return 1;
+    return left.createdAt.localeCompare(right.createdAt);
+  });
+}
 
 // src/backend.ts
 var LTrackerStageError = class extends Error {
@@ -3068,6 +3127,41 @@ var contextHandlerRegistered = false;
 var interceptorRegistered = false;
 var internalTrackerGenerationDepth = 0;
 var disposed = false;
+function sweepStaleJobs(userId) {
+  const now = Date.now();
+  const maxAgeMs = 12e4;
+  for (const [key, job] of activeJobs.entries()) {
+    const started = Date.parse(job.startedAt);
+    if (Number.isFinite(started) && now - started > maxAgeMs) {
+      spindle.log.warn(`LTracker: Evicting stale job ${job.jobId} for chat ${job.chatId}`);
+      job.cancelReason = "Evicted as a stale job.";
+      job.controller.abort();
+      activeJobs.delete(key);
+      void (async () => {
+        const diags = await loadDiagnostics(job.chatId, userId);
+        await tryPersistDiagnostics({
+          ...diags,
+          staleJobsEvictedCount: (diags.staleJobsEvictedCount ?? 0) + 1,
+          lastJobTimeoutAt: nowIso(),
+          lastJobTimeoutJobId: job.jobId,
+          lastJobTimeoutMessageId: job.sourceMessageId ?? null,
+          lastJobTimeoutSwipeKey: job.swipeKey ?? null
+        }, userId).catch(() => {
+        });
+      })();
+    }
+  }
+}
+var recentlyDeletedSnapshots = /* @__PURE__ */ new Map();
+var UNDO_TIMEOUT_MS = 3e4;
+function cleanRecentlyDeletedSnapshots() {
+  const now = Date.now();
+  for (const [key, val] of recentlyDeletedSnapshots.entries()) {
+    if (now - val.deletedAt > UNDO_TIMEOUT_MS) {
+      recentlyDeletedSnapshots.delete(key);
+    }
+  }
+}
 function isRecord8(value) {
   return typeof value === "object" && value !== null;
 }
@@ -3123,7 +3217,10 @@ function isFrontendMessage(payload) {
     "delete_message_tracker",
     "save_edited_message_tracker",
     "cleanup_duplicate_history",
-    "embedded_tracker_tag_intercepted"
+    "embedded_tracker_tag_intercepted",
+    "restore_deleted_tracker",
+    "run_storage_maintenance_scan",
+    "cleanup_missing_index_entries"
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if ([
@@ -3149,7 +3246,10 @@ function isFrontendMessage(payload) {
     "delete_message_tracker",
     "save_edited_message_tracker",
     "cleanup_duplicate_history",
-    "embedded_tracker_tag_intercepted"
+    "embedded_tracker_tag_intercepted",
+    "restore_deleted_tracker",
+    "run_storage_maintenance_scan",
+    "cleanup_missing_index_entries"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
   if (payload.type === "save_settings" && !isRecord8(payload.settings)) return false;
   if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord8(payload.settings)) return false;
@@ -3162,6 +3262,7 @@ function isFrontendMessage(payload) {
   if (payload.type === "cancel_tracker_generation" && ("messageId" in payload && payload.messageId !== null && payload.messageId !== void 0 && typeof payload.messageId !== "string")) return false;
   if (payload.type === "cancel_tracker_generation" && ("swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
   if (payload.type === "delete_message_tracker" && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string")) return false;
+  if (payload.type === "restore_deleted_tracker" && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string")) return false;
   if (payload.type === "save_edited_message_tracker" && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string" || typeof payload.jsonText !== "string")) return false;
   if (payload.type === "embedded_tracker_tag_intercepted" && ("messageId" in payload && payload.messageId !== null && typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && typeof payload.swipeKey !== "string" || typeof payload.jsonText !== "string")) return false;
   if (payload.type === "render_template" && "source" in payload && payload.source !== void 0 && payload.source !== "latest_chat_snapshot" && payload.source !== "latest_message_snapshot") return false;
@@ -3353,7 +3454,20 @@ function defaultDiagnostics(chatId) {
     ultraModeEnabled: DEFAULT_SETTINGS.budget.ultraModeEnabled,
     estimatedPromptTokensLastRun: null,
     estimatedMemoryTokensLastRun: null,
-    iframeFallbackVisibleInMainUi: false
+    iframeFallbackVisibleInMainUi: false,
+    lastMemoryIndexCount: 0,
+    lastMemoryCandidateCount: 0,
+    lastMemoryLoadedSnapshotCount: 0,
+    lastMemoryLoadDurationMs: 0,
+    lastMemoryLoadSkippedCount: 0,
+    lastJobTimeoutAt: null,
+    lastJobTimeoutJobId: null,
+    lastJobTimeoutMessageId: null,
+    lastJobTimeoutSwipeKey: null,
+    staleJobsEvictedCount: 0,
+    lastHistoryOrphanCount: 0,
+    lastPresetEstimatedTokens: null,
+    lastPresetEstimatedRenderedChars: null
   };
 }
 function stringOrNull3(value) {
@@ -3834,16 +3948,64 @@ async function embeddedMemoryEntriesFromMessages(chatId, settings) {
   }
   return entries;
 }
-async function sidecarMemoryEntriesFromIndex(chatId, userId, index) {
+async function loadSnapshotCandidatesWithLimit(candidates, chatId, userId, concurrencyLimit = 4) {
+  const results = new Array(candidates.length);
+  let currentIndex = 0;
+  async function worker() {
+    while (currentIndex < candidates.length) {
+      const index = currentIndex++;
+      const cand = candidates[index];
+      if (!cand) continue;
+      try {
+        const snap = await loadMessageSnapshot(chatId, cand.messageId, userId, cand.swipeKey);
+        if (snap) {
+          results[index] = snap;
+        }
+      } catch (err) {
+      }
+    }
+  }
+  const workers = [];
+  for (let i = 0; i < Math.min(concurrencyLimit, candidates.length); i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results.filter(Boolean);
+}
+async function sidecarMemoryEntriesFromIndex(chatId, userId, index, settings, activePreset, trigger, diagnosticsAccumulator) {
+  const options = trigger ? memoryOptionsFromTrigger(trigger, activePreset) : { activePreset };
+  const candidates = selectTrackerMemoryCandidates(index, settings.memory, options);
+  if (diagnosticsAccumulator) {
+    diagnosticsAccumulator.lastMemoryIndexCount = index.length;
+    diagnosticsAccumulator.lastMemoryCandidateCount = candidates.length;
+  }
+  const startTime = Date.now();
+  const loaded = await loadSnapshotCandidatesWithLimit(candidates, chatId, userId, 4);
+  const duration = Date.now() - startTime;
+  if (diagnosticsAccumulator) {
+    diagnosticsAccumulator.lastMemoryLoadedSnapshotCount = loaded.length;
+    diagnosticsAccumulator.lastMemoryLoadDurationMs = duration;
+    diagnosticsAccumulator.lastMemoryLoadSkippedCount = Math.max(0, candidates.length - loaded.length);
+  }
+  let filteredLoaded = loaded.filter((attached) => {
+    if (settings.memory.requireSamePreset && activePreset) {
+      if (attached.presetId !== activePreset.id && attached.snapshot.presetId !== activePreset.id) {
+        return false;
+      }
+    }
+    if (settings.memory.requireSameSwipeWhenAvailable && trigger && trigger.kind !== "manual") {
+      if (attached.swipeKey !== trigger.swipeKey) return false;
+    }
+    return true;
+  });
+  const finalRetained = filteredLoaded.slice(-settings.memory.retainCount);
   const entries = [];
-  for (const indexEntry of index) {
-    const attached = await loadMessageSnapshot(chatId, indexEntry.messageId, userId, indexEntry.swipeKey);
-    if (!attached) continue;
+  for (const attached of finalRetained) {
     entries.push(memoryEntryFromAttachedSnapshot(attached));
   }
   return entries;
 }
-async function collectTrackerMemory(chatId, userId, settings, activePreset, trigger) {
+async function collectTrackerMemory(chatId, userId, settings, activePreset, trigger, diagnosticsAccumulator) {
   const memorySettings = {
     ...settings.memory,
     maxMemoryChars: effectiveTrackerMemoryChars(settings)
@@ -3854,7 +4016,7 @@ async function collectTrackerMemory(chatId, userId, settings, activePreset, trig
   const entries = [];
   const index = await loadMessageSnapshotIndex(chatId, userId);
   if (settings.memory.source === "hybrid" || settings.memory.source === "sidecar_index") {
-    entries.push(...await sidecarMemoryEntriesFromIndex(chatId, userId, index));
+    entries.push(...await sidecarMemoryEntriesFromIndex(chatId, userId, index, settings, activePreset, trigger, diagnosticsAccumulator));
   }
   if (settings.memory.source === "hybrid" || settings.memory.source === "embedded_tags" || settings.memory.source === "message_history") {
     entries.push(...await embeddedMemoryEntriesFromMessages(chatId, settings));
@@ -4067,7 +4229,7 @@ async function getSelectedConnectionProfile(settings, userId) {
     return null;
   }
 }
-async function buildState(chatId, userId, status, error = null, renderPreview = null) {
+async function buildState(chatId, userId, status, error = null, renderPreview = null, historyLimit) {
   const settings = await getSettings(userId);
   const diagnostics = await loadDiagnostics(chatId, userId);
   const connectionCache = connectionCacheForUser(userId);
@@ -4079,11 +4241,27 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
   const activeWidgetJobs = activeWidgetJobsForChat(chatId);
   const messageSnapshotIndex = await loadMessageSnapshotIndex(chatId, userId);
   const selectedSwipeIdentities = await selectedSwipeIdentitiesForChat(chatId);
-  const historySnapshots = await Promise.all(
-    messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId, entry.swipeKey))
-  );
+  const limit = Math.max(10, historyLimit ?? settings.history?.pageSize ?? 25);
+  const sortedNewestFirst = [...messageSnapshotIndex].sort((left, right) => {
+    if (left.messageIndex !== null && right.messageIndex !== null && left.messageIndex !== right.messageIndex) {
+      return right.messageIndex - left.messageIndex;
+    }
+    if (left.messageIndex !== null && right.messageIndex === null) return 1;
+    if (left.messageIndex === null && right.messageIndex !== null) return -1;
+    return right.createdAt.localeCompare(right.createdAt);
+  });
+  const dedupedMap = /* @__PURE__ */ new Map();
+  for (const entry of sortedNewestFirst) {
+    const key = `${entry.messageId}:${entry.swipeKey}`;
+    if (!dedupedMap.has(key)) {
+      dedupedMap.set(key, entry);
+    }
+  }
+  const dedupedIndex = Array.from(dedupedMap.values());
+  const slicedIndex = dedupedIndex.slice(0, limit);
+  const historySnapshots = await loadSnapshotCandidatesWithLimit(slicedIndex, chatId ?? "", userId, 4);
   const rawMessageSnapshotHistory = buildMessageTrackerHistory({
-    index: messageSnapshotIndex,
+    index: slicedIndex,
     snapshots: historySnapshots,
     latestChatSnapshot: snapshot,
     preset: presetState.activePreset,
@@ -4198,10 +4376,10 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
     connectionProfiles: connectionCache.profiles
   };
 }
-async function sendState(chatId, userId, status, error = null, requestId, renderPreview = null) {
+async function sendState(chatId, userId, status, error = null, requestId, renderPreview = null, historyLimit) {
   const message = {
     type: "state",
-    state: await buildState(chatId, userId, status, error, renderPreview)
+    state: await buildState(chatId, userId, status, error, renderPreview, historyLimit)
   };
   if (requestId) message.requestId = requestId;
   send(message, userId);
@@ -5209,6 +5387,7 @@ async function handlePromptInterceptorFailSafe(messages, context) {
   }
 }
 async function generateTracker(chatId, userId, trigger) {
+  sweepStaleJobs(userId);
   let stage = "active_chat";
   const requestId = trigger.requestId;
   const resolvedChatId = await resolveActiveChatId(chatId, userId).catch((error) => {
@@ -5272,6 +5451,25 @@ async function generateTracker(chatId, userId, trigger) {
     job.swipeContentHash = trigger.swipeContentHash;
     job.swipeKeySource = trigger.swipeKeySource;
   }
+  const timeoutMs = Math.max(1e4, settings.generationTimeoutMs ?? 45e3);
+  const timeoutId = setTimeout(() => {
+    const running = activeJobs.get(jobKey);
+    if (running && running.jobId === job.jobId) {
+      running.cancelReason = "Tracker generation timed out.";
+      void (async () => {
+        const diags = await loadDiagnostics(resolvedChatId, userId);
+        await tryPersistDiagnostics({
+          ...diags,
+          lastJobTimeoutAt: nowIso(),
+          lastJobTimeoutJobId: job.jobId,
+          lastJobTimeoutMessageId: trigger.kind === "manual" ? null : trigger.sourceMessageId,
+          lastJobTimeoutSwipeKey: trigger.kind === "manual" ? null : trigger.swipeKey
+        }, userId).catch(() => {
+        });
+      })();
+      running.controller.abort();
+    }
+  }, timeoutMs);
   activeJobs.set(jobKey, job);
   let diagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
@@ -5350,7 +5548,8 @@ async function generateTracker(chatId, userId, trigger) {
       effectivePerMessageChars(settings),
       effectiveRecentTranscriptChars(settings)
     );
-    const memory = settings.memory.enabled && settings.memory.includeInTrackerGeneration ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger) : {
+    const memDiags = {};
+    const memory = settings.memory.enabled && settings.memory.includeInTrackerGeneration ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger, memDiags) : {
       entries: [],
       renderedText: "",
       totalChars: 0,
@@ -5366,6 +5565,11 @@ async function generateTracker(chatId, userId, trigger) {
       ...diagnostics,
       lastPromptUsedPresetId: presetState.activePreset.id,
       lastPromptUsedPresetName: presetState.activePreset.name,
+      lastMemoryIndexCount: memDiags.lastMemoryIndexCount ?? 0,
+      lastMemoryCandidateCount: memDiags.lastMemoryCandidateCount ?? 0,
+      lastMemoryLoadedSnapshotCount: memDiags.lastMemoryLoadedSnapshotCount ?? 0,
+      lastMemoryLoadDurationMs: memDiags.lastMemoryLoadDurationMs ?? 0,
+      lastMemoryLoadSkippedCount: memDiags.lastMemoryLoadSkippedCount ?? 0,
       lastMemoryEntryCount: memory.entries.length,
       lastMemoryChars: memory.totalChars,
       lastMemoryTruncated: memory.truncated,
@@ -5591,6 +5795,7 @@ async function generateTracker(chatId, userId, trigger) {
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "error", currentError, requestId);
   } finally {
+    clearTimeout(timeoutId);
     if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
   }
 }
@@ -5905,7 +6110,7 @@ async function handleSettingsReset(payload, userId) {
 async function handleRefresh(payload, userId) {
   const resolvedChatId = payload.chatId ? payload.chatId : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
   rememberActiveChat(userId, resolvedChatId);
-  await sendState(resolvedChatId, userId, void 0, null);
+  await sendState(resolvedChatId, userId, void 0, null, void 0, null, payload.historyLimit);
 }
 async function handleConnectionRefresh(payload, userId) {
   const resolvedChatId = payload.chatId ? payload.chatId : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
@@ -6022,6 +6227,34 @@ async function deleteMessageTracker(payload, userId) {
     stageError("active_chat", error);
   });
   rememberActiveChat(userId, resolvedChatId);
+  let existingSnapshot = null;
+  let embeddedTagContent = null;
+  try {
+    existingSnapshot = await loadMessageSnapshot(resolvedChatId, payload.messageId, userId, payload.swipeKey);
+    const messages = await readChatMessages(resolvedChatId);
+    const msg = messages.find((m) => m.id === payload.messageId);
+    if (msg) {
+      const swipeIndex = resolveSwipeContentIndex(msg, payload.swipeKey);
+      const swipeContent = msg.swipes?.[swipeIndex] ?? null;
+      if (swipeContent) {
+        const matches = findLTrackerTags(swipeContent);
+        const match = matches[0];
+        if (match) {
+          embeddedTagContent = match.fullMatch;
+        }
+      }
+    }
+  } catch (err) {
+  }
+  if (existingSnapshot) {
+    const key = `${userId}:${resolvedChatId}:${payload.messageId}:${payload.swipeKey}`;
+    recentlyDeletedSnapshots.set(key, {
+      snapshot: existingSnapshot,
+      embeddedTagContent,
+      deletedAt: Date.now()
+    });
+    cleanRecentlyDeletedSnapshots();
+  }
   const path = messageSnapshotPath(resolvedChatId, payload.messageId, payload.swipeKey);
   if (await spindle.userStorage.exists(path, userId)) {
     await spindle.userStorage.delete(path, userId);
@@ -6290,6 +6523,159 @@ function registerSafePromptInterceptor() {
   spindle.registerInterceptor(async (messages, context) => handlePromptInterceptorFailSafe(messages, context), 0);
   interceptorRegistered = true;
 }
+async function restoreDeletedTracker(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const key = `${userId}:${resolvedChatId}:${payload.messageId}:${payload.swipeKey}`;
+  const deletedInfo = recentlyDeletedSnapshots.get(key);
+  if (!deletedInfo) {
+    throw new LTrackerStageError("storage", "Deleted tracker snapshot not found or expired.");
+  }
+  await saveMessageAttachedSnapshot(deletedInfo.snapshot, userId);
+  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  const updatedIndex = upsertMessageSnapshotIndexEntry(index, {
+    messageId: payload.messageId,
+    messageIndex: deletedInfo.snapshot.messageIndex,
+    swipeKey: payload.swipeKey,
+    swipeIndex: deletedInfo.snapshot.swipeIndex,
+    swipeId: deletedInfo.snapshot.swipeId,
+    swipeContentHash: deletedInfo.snapshot.swipeContentHash,
+    swipeKeySource: deletedInfo.snapshot.swipeKeySource,
+    createdAt: deletedInfo.snapshot.attachedAt,
+    presetId: deletedInfo.snapshot.presetId,
+    presetName: deletedInfo.snapshot.presetName,
+    storageKey: messageSnapshotPath(resolvedChatId, payload.messageId, payload.swipeKey)
+  });
+  await saveMessageSnapshotIndex(resolvedChatId, updatedIndex, userId);
+  if (deletedInfo.embeddedTagContent) {
+    try {
+      const messages = await readChatMessages(resolvedChatId);
+      const msg = messages.find((m) => m.id === payload.messageId);
+      if (msg) {
+        const swipeIndex = resolveSwipeContentIndex(msg, payload.swipeKey);
+        const content = msg.swipes?.[swipeIndex] ?? null;
+        if (content) {
+          const matches = findLTrackerTags(content);
+          if (matches.length === 0) {
+            const nextContent = `${content}
+${deletedInfo.embeddedTagContent}`;
+            const nextSwipes = [...msg.swipes];
+            nextSwipes[swipeIndex] = nextContent;
+            await spindle.chat.updateMessage(resolvedChatId, payload.messageId, { swipes: nextSwipes });
+          }
+        }
+      }
+    } catch (error) {
+      spindle.log.error("LTracker restore tag error: " + error);
+    }
+  }
+  recentlyDeletedSnapshots.delete(key);
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    messageSnapshotIndexCount: updatedIndex.length,
+    swipeTrackerIndexCount: updatedIndex.length,
+    lastError: null
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+async function runStorageMaintenanceScan(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  const indexKeys = new Set(index.map((e) => `${e.messageId}:${e.swipeKey}`));
+  const messages = await readChatMessages(resolvedChatId).catch(() => []);
+  let orphanCount = 0;
+  let missingCount = 0;
+  const orphansToFix = [];
+  for (const msg of messages) {
+    const swipeKeys = [DEFAULT_SWIPE_KEY];
+    if (msg.swipes) {
+      for (const k of Object.keys(msg.swipes)) {
+        if (k !== DEFAULT_SWIPE_KEY) swipeKeys.push(k);
+      }
+    }
+    for (const swipeKey of swipeKeys) {
+      const path = messageSnapshotPath(resolvedChatId, msg.id, swipeKey);
+      const key = `${msg.id}:${swipeKey}`;
+      const fileExists = await spindle.userStorage.exists(path, userId).catch(() => false);
+      if (fileExists) {
+        if (!indexKeys.has(key)) {
+          orphanCount++;
+          try {
+            const snap = await loadMessageSnapshot(resolvedChatId, msg.id, userId, swipeKey);
+            if (snap) {
+              orphansToFix.push({
+                messageId: msg.id,
+                messageIndex: msg.index_in_chat ?? null,
+                swipeKey,
+                swipeIndex: resolveSwipeContentIndex(msg, swipeKey),
+                swipeId: null,
+                swipeContentHash: null,
+                swipeKeySource: "swipe_id",
+                presetId: snap.presetId,
+                presetName: snap.presetName,
+                createdAt: snap.attachedAt,
+                storageKey: path
+              });
+            }
+          } catch (e) {
+          }
+        }
+      } else {
+        if (indexKeys.has(key)) {
+          missingCount++;
+        }
+      }
+    }
+  }
+  let nextIndex = [...index];
+  if (orphansToFix.length > 0) {
+    for (const orphan of orphansToFix) {
+      nextIndex = upsertMessageSnapshotIndexEntry(nextIndex, orphan);
+    }
+    await saveMessageSnapshotIndex(resolvedChatId, nextIndex, userId);
+  }
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastHistoryOrphanCount: orphanCount,
+    lastHistoryDuplicateCount: Math.max(0, index.length - repairMessageSnapshotIndex(index).length),
+    lastHistoryCleanupAt: nowIso(),
+    messageSnapshotIndexCount: nextIndex.length,
+    swipeTrackerIndexCount: nextIndex.length
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+async function cleanupMissingIndexEntries(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  const deduped = repairMessageSnapshotIndex(index);
+  const verified = [];
+  for (const entry of deduped) {
+    const path = messageSnapshotPath(resolvedChatId, entry.messageId, entry.swipeKey);
+    if (await spindle.userStorage.exists(path, userId)) {
+      verified.push(entry);
+    }
+  }
+  await saveMessageSnapshotIndex(resolvedChatId, verified, userId);
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastHistoryCleanupAt: nowIso(),
+    messageSnapshotIndexCount: verified.length,
+    swipeTrackerIndexCount: verified.length,
+    lastError: null
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
 registerEventListeners();
 registerSafePromptInterceptor();
 registerContextInjection();
@@ -6297,6 +6683,7 @@ spindle.onFrontendMessage((payload, userId) => {
   if (!isFrontendMessage(payload)) return;
   const requestId = "requestId" in payload ? payload.requestId : void 0;
   const chatId = payload.chatId;
+  const historyLimit = "historyLimit" in payload ? payload.historyLimit : void 0;
   if (chatId) rememberActiveChat(userId, chatId);
   void (async () => {
     try {
@@ -6411,11 +6798,23 @@ spindle.onFrontendMessage((payload, userId) => {
         await handleEmbeddedTrackerTagIntercepted(payload, userId);
         return;
       }
+      if (payload.type === "restore_deleted_tracker") {
+        await restoreDeletedTracker(payload, userId);
+        return;
+      }
+      if (payload.type === "run_storage_maintenance_scan") {
+        await runStorageMaintenanceScan(payload, userId);
+        return;
+      }
+      if (payload.type === "cleanup_missing_index_entries") {
+        await cleanupMissingIndexEntries(payload, userId);
+        return;
+      }
       await handleRefresh(payload, userId);
     } catch (error) {
       const currentError = diagnosticError(error, "unknown");
       spindle.log.warn(`LTracker request failed: ${currentError.message}`);
-      const state = await buildState(chatId, userId, "error", currentError);
+      const state = await buildState(chatId, userId, "error", currentError, null, historyLimit);
       const response = {
         type: "error",
         message: currentError.message,

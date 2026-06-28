@@ -22,6 +22,7 @@ import {
   findLTrackerTagForSwipe,
   removeLTrackerTag,
   upsertLTrackerTag,
+  findLTrackerTags,
 } from "../src/shared/embeddedTrackerTag";
 import {
   buildTrackerGenerationRequest,
@@ -97,6 +98,7 @@ import {
 import {
   buildTrackerMemoryResult,
   type TrackerMemoryEntry,
+  selectTrackerMemoryCandidates,
 } from "../src/shared/trackerMemory";
 import {
   EXTENSION_VERSION,
@@ -630,7 +632,7 @@ test("messageSnapshotIndexPath stores the per-chat index under message-snapshots
 
 test("embedded tracker tags build, replace, and remove by exact swipe", () => {
   const first = buildLTrackerTag("{\"scene\":{\"time\":\"one\"}}", "index-0");
-  assert.match(first, /<ltracker type="state" version="0.15" swipe="index-0">/);
+  assert.match(first, /<ltracker type="state" version="0\.\d+" swipe="index-0">/);
   const content = upsertLTrackerTag("Assistant reply.", "{\"a\":1}", "index-0");
   const withSecond = upsertLTrackerTag(content.content, "{\"b\":2}", "index-1");
   const replaced = upsertLTrackerTag(withSecond.content, "{\"a\":3}", "index-0");
@@ -2027,7 +2029,7 @@ test("renderHtmlTemplate reports errors instead of throwing", () => {
 
 test("context handler hotfix is disabled by default", () => {
   assert.equal(CONTEXT_HANDLER_EXPERIMENTAL_ENABLED, false);
-  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.15|remains disabled in 0\.15/);
+  assert.match(CONTEXT_HANDLER_DISABLED_REASON, /disabled in 0\.16|remains disabled in 0\.16/);
 });
 
 test("context handler guard never mutates a frozen context object when disabled", async () => {
@@ -2143,7 +2145,7 @@ test("backend tracker generation uses the shared connection helper", () => {
 test("backend tracker generation uses tracker memory before prompt building", () => {
   const backend = readFileSync("src/backend.ts", "utf8");
   assert.match(backend, /async function generateTracker[\s\S]*const memory = settings\.memory\.enabled/);
-  assert.match(backend, /async function generateTracker[\s\S]*collectTrackerMemory\(resolvedChatId, userId, settings, presetState\.activePreset, trigger\)/);
+  assert.match(backend, /async function generateTracker[\s\S]*collectTrackerMemory\(resolvedChatId, userId, settings, presetState\.activePreset, trigger(?:, memDiags)?\)/);
   assert.match(backend, /async function generateTracker[\s\S]*buildTrackerPrompt\([\s\S]*memory\.renderedText \? memory : null/);
 });
 
@@ -2305,7 +2307,7 @@ test("README settings reference covers the major setting groups", () => {
     "Default: Trusted Preset Mode",
     "Safe Mode",
     "Dev Mode",
-    "0.15 Auto Timing + Drawer UX Overhaul",
+    "0.16 Production Readiness + Performance & Hardening Overhaul",
     "0.16 Preset Pack Import/Export + Better Validation",
     "0.17 Power Template Engine",
     "0.18 Dev Mode Templates",
@@ -2377,4 +2379,55 @@ test("frontend message controls send exact message and swipe actions", () => {
   assert.match(frontend, /type: "cancel_tracker_generation"[\s\S]{0,240}messageId[\s\S]{0,80}swipeKey/);
   assert.match(frontend, /noteInlineAction\("generate", messageId, swipeKey\)/);
   assert.match(frontend, /noteInlineAction\("cancel", messageId, swipeKey\)/);
+});
+
+test("0.16 performance, sanitation, nesting, and memory selection features", () => {
+  // 1. Sanitizer: backslashes/escapes and url() protocols stripped
+  assert.equal(sanitizeHtml("<div style=\"background: url('http://evil.com')\"></div>").html.trim(), "<div></div>");
+  assert.equal(sanitizeHtml("<div style=\"color: \\5c red\"></div>").html.trim(), "<div></div>");
+  assert.equal(sanitizeHtml("<div style=\"background: url(data:text/html,evil)\"></div>").html.trim(), "<div></div>");
+
+  // 2. Nested tag guards: checks for nested tags inside embedded tags
+  const tags = findLTrackerTags("Hello <ltracker>first <ltracker>second</ltracker> third</ltracker>");
+  assert.equal(tags.length, 0);
+
+  // 3. Stable message snapshot index deduplication
+  const rawIndex = [
+    { messageId: "m1", swipeKey: "index-0", createdAt: "2026-01-01", storageKey: "k1" },
+    { messageId: "m1", swipeKey: "index-0", createdAt: "2026-01-02", storageKey: "k2" },
+  ];
+  const repairedIndex = repairMessageSnapshotIndex(rawIndex);
+  assert.equal(repairedIndex.length, 1);
+  assert.equal(repairedIndex[0].storageKey, "k1");
+
+  // 4. Tracker memory candidates window size limit formula
+  const entries: TrackerMemoryEntry[] = Array.from({ length: 100 }, (_, i) => ({
+    messageId: `m${i}`,
+    swipeKey: "index-0",
+    messageIndex: i,
+    swipeIndex: 0,
+    swipeId: null,
+    swipeContentHash: "h",
+    swipeKeySource: "swipe_index",
+    createdAt: "2026-01-01",
+    presetId: "p",
+    presetName: "p",
+    storageKey: "k",
+  }));
+  const mockSettings = {
+    enabled: true,
+    includeInTrackerGeneration: true,
+    retainCount: 5,
+    fullSnapshotCount: 2,
+    compactOlderSnapshots: true,
+    maxMemoryChars: 4000,
+    source: "message_attached_snapshot" as const,
+    excludeTargetMessage: false,
+    order: "recency" as const,
+    requireSamePreset: false,
+    requireSameSwipeWhenAvailable: false,
+  };
+  const candidates = selectTrackerMemoryCandidates(entries, mockSettings, { targetSwipeKey: "index-0" });
+  // targetRetain = 5 => Math.min(100, Math.max(5 * 6 + 10, 5 + 20)) = Math.min(100, Math.max(40, 25)) = 40
+  assert.equal(candidates.length, 40);
 });

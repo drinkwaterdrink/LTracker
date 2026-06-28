@@ -53,11 +53,15 @@ export function findLTrackerTags(content: string): LTrackerTagMatch[] {
   const matches: LTrackerTagMatch[] = [];
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(content)) !== null) {
+    const body = (match[2] ?? "").trim();
+    if (body.toLowerCase().includes(`<${LTRACKER_TAG_NAME}`)) {
+      continue;
+    }
     const attrs = parseTagAttributes(match[1] ?? "");
     if (attrs.type && attrs.type !== LTRACKER_TAG_TYPE) continue;
     matches.push({
       fullMatch: match[0],
-      content: (match[2] ?? "").trim(),
+      content: body,
       attrs,
       start: match.index,
       end: match.index + match[0].length,

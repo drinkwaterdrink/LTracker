@@ -103,6 +103,7 @@ import {
   buildTrackerMemoryResult,
   memoryOptionsFromTrigger,
   trackerMemorySourceSummary,
+  selectTrackerMemoryCandidates,
   type TrackerMemoryEntry,
   type TrackerMemoryResult,
 } from "./shared/trackerMemory";
@@ -254,6 +255,50 @@ let interceptorRegistered = false;
 let internalTrackerGenerationDepth = 0;
 let disposed = false;
 
+function sweepStaleJobs(userId: string): void {
+  const now = Date.now();
+  const maxAgeMs = 120_000; // 2 minutes max age for any job
+  for (const [key, job] of activeJobs.entries()) {
+    const started = Date.parse(job.startedAt);
+    if (Number.isFinite(started) && (now - started) > maxAgeMs) {
+      spindle.log.warn(`LTracker: Evicting stale job ${job.jobId} for chat ${job.chatId}`);
+      job.cancelReason = "Evicted as a stale job.";
+      job.controller.abort();
+      activeJobs.delete(key);
+      
+      // Update diagnostics
+      void (async () => {
+        const diags = await loadDiagnostics(job.chatId, userId);
+        await tryPersistDiagnostics({
+          ...diags,
+          staleJobsEvictedCount: (diags.staleJobsEvictedCount ?? 0) + 1,
+          lastJobTimeoutAt: nowIso(),
+          lastJobTimeoutJobId: job.jobId,
+          lastJobTimeoutMessageId: job.sourceMessageId ?? null,
+          lastJobTimeoutSwipeKey: job.swipeKey ?? null,
+        }, userId).catch(() => {});
+      })();
+    }
+  }
+}
+
+interface DeletedSnapshotInfo {
+  snapshot: MessageAttachedSnapshot;
+  embeddedTagContent: string | null;
+  deletedAt: number;
+}
+const recentlyDeletedSnapshots = new Map<string, DeletedSnapshotInfo>();
+const UNDO_TIMEOUT_MS = 30_000;
+
+function cleanRecentlyDeletedSnapshots(): void {
+  const now = Date.now();
+  for (const [key, val] of recentlyDeletedSnapshots.entries()) {
+    if (now - val.deletedAt > UNDO_TIMEOUT_MS) {
+      recentlyDeletedSnapshots.delete(key);
+    }
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -316,6 +361,9 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "save_edited_message_tracker",
     "cleanup_duplicate_history",
     "embedded_tracker_tag_intercepted",
+    "restore_deleted_tracker",
+    "run_storage_maintenance_scan",
+    "cleanup_missing_index_entries",
   ].includes(payload.type)) return false;
   if ("chatId" in payload && payload.chatId !== null && typeof payload.chatId !== "string") return false;
   if (
@@ -343,6 +391,9 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "save_edited_message_tracker",
       "cleanup_duplicate_history",
       "embedded_tracker_tag_intercepted",
+      "restore_deleted_tracker",
+      "run_storage_maintenance_scan",
+      "cleanup_missing_index_entries",
     ].includes(payload.type)
     && typeof payload.requestId !== "string"
   ) return false;
@@ -372,6 +423,7 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     && ("swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== undefined && typeof payload.swipeKey !== "string")
   ) return false;
   if (payload.type === "delete_message_tracker" && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string")) return false;
+  if (payload.type === "restore_deleted_tracker" && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string")) return false;
   if (
     payload.type === "save_edited_message_tracker"
     && (typeof payload.messageId !== "string" || typeof payload.swipeKey !== "string" || typeof payload.jsonText !== "string")
@@ -583,6 +635,19 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     estimatedPromptTokensLastRun: null,
     estimatedMemoryTokensLastRun: null,
     iframeFallbackVisibleInMainUi: false,
+    lastMemoryIndexCount: 0,
+    lastMemoryCandidateCount: 0,
+    lastMemoryLoadedSnapshotCount: 0,
+    lastMemoryLoadDurationMs: 0,
+    lastMemoryLoadSkippedCount: 0,
+    lastJobTimeoutAt: null,
+    lastJobTimeoutJobId: null,
+    lastJobTimeoutMessageId: null,
+    lastJobTimeoutSwipeKey: null,
+    staleJobsEvictedCount: 0,
+    lastHistoryOrphanCount: 0,
+    lastPresetEstimatedTokens: null,
+    lastPresetEstimatedRenderedChars: null,
   };
 }
 
@@ -1239,15 +1304,87 @@ async function embeddedMemoryEntriesFromMessages(
   return entries;
 }
 
+async function loadSnapshotCandidatesWithLimit(
+  candidates: MessageSnapshotIndexEntry[],
+  chatId: string,
+  userId: string,
+  concurrencyLimit: number = 4,
+): Promise<MessageAttachedSnapshot[]> {
+  const results: MessageAttachedSnapshot[] = new Array(candidates.length);
+  let currentIndex = 0;
+  
+  async function worker(): Promise<void> {
+    while (currentIndex < candidates.length) {
+      const index = currentIndex++;
+      const cand = candidates[index];
+      if (!cand) continue;
+      try {
+        const snap = await loadMessageSnapshot(chatId, cand.messageId, userId, cand.swipeKey);
+        if (snap) {
+          results[index] = snap;
+        }
+      } catch (err) {}
+    }
+  }
+  
+  const workers: Array<Promise<void>> = [];
+  for (let i = 0; i < Math.min(concurrencyLimit, candidates.length); i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  
+  return results.filter(Boolean);
+}
+
 async function sidecarMemoryEntriesFromIndex(
   chatId: string,
   userId: string,
   index: MessageSnapshotIndexEntry[],
+  settings: LTrackerSettings,
+  activePreset: TrackerSchemaPreset,
+  trigger?: TrackerTriggerSource,
+  diagnosticsAccumulator?: {
+    lastMemoryIndexCount?: number;
+    lastMemoryCandidateCount?: number;
+    lastMemoryLoadedSnapshotCount?: number;
+    lastMemoryLoadDurationMs?: number;
+    lastMemoryLoadSkippedCount?: number;
+  }
 ): Promise<TrackerMemoryEntry[]> {
+  const options = trigger ? memoryOptionsFromTrigger(trigger, activePreset) : { activePreset };
+  const candidates = selectTrackerMemoryCandidates(index, settings.memory, options);
+  
+  if (diagnosticsAccumulator) {
+    diagnosticsAccumulator.lastMemoryIndexCount = index.length;
+    diagnosticsAccumulator.lastMemoryCandidateCount = candidates.length;
+  }
+  
+  const startTime = Date.now();
+  const loaded = await loadSnapshotCandidatesWithLimit(candidates, chatId, userId, 4);
+  const duration = Date.now() - startTime;
+  
+  if (diagnosticsAccumulator) {
+    diagnosticsAccumulator.lastMemoryLoadedSnapshotCount = loaded.length;
+    diagnosticsAccumulator.lastMemoryLoadDurationMs = duration;
+    diagnosticsAccumulator.lastMemoryLoadSkippedCount = Math.max(0, candidates.length - loaded.length);
+  }
+  
+  let filteredLoaded = loaded.filter((attached) => {
+    if (settings.memory.requireSamePreset && activePreset) {
+      if (attached.presetId !== activePreset.id && attached.snapshot.presetId !== activePreset.id) {
+        return false;
+      }
+    }
+    if (settings.memory.requireSameSwipeWhenAvailable && trigger && trigger.kind !== "manual") {
+      if (attached.swipeKey !== trigger.swipeKey) return false;
+    }
+    return true;
+  });
+  
+  const finalRetained = filteredLoaded.slice(-settings.memory.retainCount);
+  
   const entries: TrackerMemoryEntry[] = [];
-  for (const indexEntry of index) {
-    const attached = await loadMessageSnapshot(chatId, indexEntry.messageId, userId, indexEntry.swipeKey);
-    if (!attached) continue;
+  for (const attached of finalRetained) {
     entries.push(memoryEntryFromAttachedSnapshot(attached));
   }
   return entries;
@@ -1259,6 +1396,13 @@ async function collectTrackerMemory(
   settings: LTrackerSettings,
   activePreset: TrackerSchemaPreset,
   trigger?: TrackerTriggerSource,
+  diagnosticsAccumulator?: {
+    lastMemoryIndexCount?: number;
+    lastMemoryCandidateCount?: number;
+    lastMemoryLoadedSnapshotCount?: number;
+    lastMemoryLoadDurationMs?: number;
+    lastMemoryLoadSkippedCount?: number;
+  }
 ): Promise<TrackerMemoryResult> {
   const memorySettings = {
     ...settings.memory,
@@ -1273,7 +1417,7 @@ async function collectTrackerMemory(
   const entries: TrackerMemoryEntry[] = [];
   const index = await loadMessageSnapshotIndex(chatId, userId);
   if (settings.memory.source === "hybrid" || settings.memory.source === "sidecar_index") {
-    entries.push(...await sidecarMemoryEntriesFromIndex(chatId, userId, index));
+    entries.push(...await sidecarMemoryEntriesFromIndex(chatId, userId, index, settings, activePreset, trigger, diagnosticsAccumulator));
   }
   if (settings.memory.source === "hybrid" || settings.memory.source === "embedded_tags" || settings.memory.source === "message_history") {
     entries.push(...await embeddedMemoryEntriesFromMessages(chatId, settings));
@@ -1534,6 +1678,7 @@ async function buildState(
   status?: FrontendState["status"],
   error: LTrackerError | null = null,
   renderPreview: RenderedTrackerPreview | null = null,
+  historyLimit?: number,
 ): Promise<FrontendState> {
   const settings = await getSettings(userId);
   const diagnostics = await loadDiagnostics(chatId, userId);
@@ -1547,11 +1692,33 @@ async function buildState(
   const activeWidgetJobs = activeWidgetJobsForChat(chatId);
   const messageSnapshotIndex = await loadMessageSnapshotIndex(chatId, userId);
   const selectedSwipeIdentities = await selectedSwipeIdentitiesForChat(chatId);
-  const historySnapshots = await Promise.all(
-    messageSnapshotIndex.map((entry) => loadMessageSnapshot(chatId, entry.messageId, userId, entry.swipeKey)),
-  );
+
+  // Group / Deduplicate history index rows before loading files
+  const limit = Math.max(10, historyLimit ?? settings.history?.pageSize ?? 25);
+  const sortedNewestFirst = [...messageSnapshotIndex].sort((left, right) => {
+    if (left.messageIndex !== null && right.messageIndex !== null && left.messageIndex !== right.messageIndex) {
+      return right.messageIndex - left.messageIndex;
+    }
+    if (left.messageIndex !== null && right.messageIndex === null) return 1;
+    if (left.messageIndex === null && right.messageIndex !== null) return -1;
+    return right.createdAt.localeCompare(right.createdAt);
+  });
+
+  const dedupedMap = new Map<string, MessageSnapshotIndexEntry>();
+  for (const entry of sortedNewestFirst) {
+    const key = `${entry.messageId}:${entry.swipeKey}`;
+    if (!dedupedMap.has(key)) {
+      dedupedMap.set(key, entry);
+    }
+  }
+  const dedupedIndex = Array.from(dedupedMap.values());
+  const slicedIndex = dedupedIndex.slice(0, limit);
+
+  // Load only the visible page with concurrency limiter (max 4)
+  const historySnapshots = await loadSnapshotCandidatesWithLimit(slicedIndex, chatId ?? "", userId, 4);
+
   const rawMessageSnapshotHistory = buildMessageTrackerHistory({
-    index: messageSnapshotIndex,
+    index: slicedIndex,
     snapshots: historySnapshots,
     latestChatSnapshot: snapshot,
     preset: presetState.activePreset,
@@ -1690,10 +1857,11 @@ async function sendState(
   error: LTrackerError | null = null,
   requestId?: string,
   renderPreview: RenderedTrackerPreview | null = null,
+  historyLimit?: number,
 ): Promise<void> {
   const message: BackendMessage = {
     type: "state",
-    state: await buildState(chatId, userId, status, error, renderPreview),
+    state: await buildState(chatId, userId, status, error, renderPreview, historyLimit),
   };
   if (requestId) message.requestId = requestId;
   send(message, userId);
@@ -2995,6 +3163,7 @@ async function generateTracker(
   userId: string,
   trigger: TrackerTriggerSource,
 ): Promise<void> {
+  sweepStaleJobs(userId);
   let stage: LTrackerErrorStage = "active_chat";
   const requestId = trigger.requestId;
   const resolvedChatId = await resolveActiveChatId(chatId, userId).catch((error: unknown) => {
@@ -3065,6 +3234,28 @@ async function generateTracker(
     job.swipeContentHash = trigger.swipeContentHash;
     job.swipeKeySource = trigger.swipeKeySource;
   }
+
+  const timeoutMs = Math.max(10_000, settings.generationTimeoutMs ?? 45_000);
+  const timeoutId = setTimeout(() => {
+    const running = activeJobs.get(jobKey);
+    if (running && running.jobId === job.jobId) {
+      running.cancelReason = "Tracker generation timed out.";
+      
+      void (async () => {
+        const diags = await loadDiagnostics(resolvedChatId, userId);
+        await tryPersistDiagnostics({
+          ...diags,
+          lastJobTimeoutAt: nowIso(),
+          lastJobTimeoutJobId: job.jobId,
+          lastJobTimeoutMessageId: trigger.kind === "manual" ? null : trigger.sourceMessageId,
+          lastJobTimeoutSwipeKey: trigger.kind === "manual" ? null : trigger.swipeKey,
+        }, userId).catch(() => {});
+      })();
+
+      running.controller.abort();
+    }
+  }, timeoutMs);
+
   activeJobs.set(jobKey, job);
 
   let diagnostics: LTrackerDiagnostics = {
@@ -3148,8 +3339,9 @@ async function generateTracker(
       effectivePerMessageChars(settings),
       effectiveRecentTranscriptChars(settings),
     );
+    const memDiags: any = {};
     const memory = settings.memory.enabled && settings.memory.includeInTrackerGeneration
-      ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger)
+      ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger, memDiags)
       : {
           entries: [],
           renderedText: "",
@@ -3168,6 +3360,11 @@ async function generateTracker(
       ...diagnostics,
       lastPromptUsedPresetId: presetState.activePreset.id,
       lastPromptUsedPresetName: presetState.activePreset.name,
+      lastMemoryIndexCount: memDiags.lastMemoryIndexCount ?? 0,
+      lastMemoryCandidateCount: memDiags.lastMemoryCandidateCount ?? 0,
+      lastMemoryLoadedSnapshotCount: memDiags.lastMemoryLoadedSnapshotCount ?? 0,
+      lastMemoryLoadDurationMs: memDiags.lastMemoryLoadDurationMs ?? 0,
+      lastMemoryLoadSkippedCount: memDiags.lastMemoryLoadSkippedCount ?? 0,
       lastMemoryEntryCount: memory.entries.length,
       lastMemoryChars: memory.totalChars,
       lastMemoryTruncated: memory.truncated,
@@ -3414,6 +3611,7 @@ async function generateTracker(
     await tryPersistDiagnostics(diagnostics, userId);
     await sendState(resolvedChatId, userId, "error", currentError, requestId);
   } finally {
+    clearTimeout(timeoutId);
     if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
   }
 }
@@ -3790,7 +3988,7 @@ async function handleRefresh(
     ? payload.chatId
     : await resolveActiveChatId(payload.chatId, userId).catch(() => null);
   rememberActiveChat(userId, resolvedChatId);
-  await sendState(resolvedChatId, userId, undefined, null);
+  await sendState(resolvedChatId, userId, undefined, null, undefined, null, payload.historyLimit);
 }
 
 async function handleConnectionRefresh(
@@ -3936,6 +4134,37 @@ async function deleteMessageTracker(
     stageError("active_chat", error);
   });
   rememberActiveChat(userId, resolvedChatId);
+
+  // Cache snapshot and tag before deletion for optional 30s undo
+  let existingSnapshot: MessageAttachedSnapshot | null = null;
+  let embeddedTagContent: string | null = null;
+  try {
+    existingSnapshot = await loadMessageSnapshot(resolvedChatId, payload.messageId, userId, payload.swipeKey);
+    const messages = await readChatMessages(resolvedChatId);
+    const msg = messages.find((m) => m.id === payload.messageId);
+    if (msg) {
+      const swipeIndex = resolveSwipeContentIndex(msg, payload.swipeKey);
+      const swipeContent = msg.swipes?.[swipeIndex] ?? null;
+      if (swipeContent) {
+        const matches = findLTrackerTags(swipeContent);
+        const match = matches[0];
+        if (match) {
+          embeddedTagContent = match.fullMatch;
+        }
+      }
+    }
+  } catch (err) {}
+
+  if (existingSnapshot) {
+    const key = `${userId}:${resolvedChatId}:${payload.messageId}:${payload.swipeKey}`;
+    recentlyDeletedSnapshots.set(key, {
+      snapshot: existingSnapshot,
+      embeddedTagContent,
+      deletedAt: Date.now(),
+    });
+    cleanRecentlyDeletedSnapshots();
+  }
+
   const path = messageSnapshotPath(resolvedChatId, payload.messageId, payload.swipeKey);
   if (await spindle.userStorage.exists(path, userId)) {
     await spindle.userStorage.delete(path, userId);
@@ -4229,6 +4458,187 @@ function registerSafePromptInterceptor(): void {
   interceptorRegistered = true;
 }
 
+async function restoreDeletedTracker(
+  payload: Extract<FrontendMessage, { type: "restore_deleted_tracker" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const key = `${userId}:${resolvedChatId}:${payload.messageId}:${payload.swipeKey}`;
+  const deletedInfo = recentlyDeletedSnapshots.get(key);
+  if (!deletedInfo) {
+    throw new LTrackerStageError("storage", "Deleted tracker snapshot not found or expired.");
+  }
+  
+  // 1. Write the snapshot file back
+  await saveMessageAttachedSnapshot(deletedInfo.snapshot, userId);
+  
+  // 2. Add entry back to the index
+  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  const updatedIndex = upsertMessageSnapshotIndexEntry(index, {
+    messageId: payload.messageId,
+    messageIndex: deletedInfo.snapshot.messageIndex,
+    swipeKey: payload.swipeKey,
+    swipeIndex: deletedInfo.snapshot.swipeIndex,
+    swipeId: deletedInfo.snapshot.swipeId,
+    swipeContentHash: deletedInfo.snapshot.swipeContentHash,
+    swipeKeySource: deletedInfo.snapshot.swipeKeySource,
+    createdAt: deletedInfo.snapshot.attachedAt,
+    presetId: deletedInfo.snapshot.presetId,
+    presetName: deletedInfo.snapshot.presetName,
+    storageKey: messageSnapshotPath(resolvedChatId, payload.messageId, payload.swipeKey),
+  });
+  await saveMessageSnapshotIndex(resolvedChatId, updatedIndex, userId);
+  
+  // 3. Write embedded tag back if original tag was present
+  if (deletedInfo.embeddedTagContent) {
+    try {
+      const messages = await readChatMessages(resolvedChatId);
+      const msg = messages.find((m) => m.id === payload.messageId);
+      if (msg) {
+        const swipeIndex = resolveSwipeContentIndex(msg, payload.swipeKey);
+        const content = msg.swipes?.[swipeIndex] ?? null;
+        if (content) {
+          const matches = findLTrackerTags(content);
+          if (matches.length === 0) {
+            const nextContent = `${content}\n${deletedInfo.embeddedTagContent}`;
+            const nextSwipes = [...msg.swipes];
+            nextSwipes[swipeIndex] = nextContent;
+            await spindle.chat.updateMessage(resolvedChatId, payload.messageId, { swipes: nextSwipes });
+          }
+        }
+      }
+    } catch (error) {
+      spindle.log.error("LTracker restore tag error: " + error);
+    }
+  }
+  
+  recentlyDeletedSnapshots.delete(key);
+  
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    messageSnapshotIndexCount: updatedIndex.length,
+    swipeTrackerIndexCount: updatedIndex.length,
+    lastError: null,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function runStorageMaintenanceScan(
+  payload: Extract<FrontendMessage, { type: "run_storage_maintenance_scan" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  
+  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  const indexKeys = new Set(index.map((e) => `${e.messageId}:${e.swipeKey}`));
+  
+  const messages = await readChatMessages(resolvedChatId).catch(() => []);
+  
+  let orphanCount = 0;
+  let missingCount = 0;
+  const orphansToFix: MessageSnapshotIndexEntry[] = [];
+  
+  for (const msg of messages) {
+    const swipeKeys = [DEFAULT_SWIPE_KEY];
+    if (msg.swipes) {
+      for (const k of Object.keys(msg.swipes)) {
+        if (k !== DEFAULT_SWIPE_KEY) swipeKeys.push(k);
+      }
+    }
+    for (const swipeKey of swipeKeys) {
+      const path = messageSnapshotPath(resolvedChatId, msg.id, swipeKey);
+      const key = `${msg.id}:${swipeKey}`;
+      const fileExists = await spindle.userStorage.exists(path, userId).catch(() => false);
+      if (fileExists) {
+        if (!indexKeys.has(key)) {
+          orphanCount++;
+          try {
+            const snap = await loadMessageSnapshot(resolvedChatId, msg.id, userId, swipeKey);
+            if (snap) {
+              orphansToFix.push({
+                messageId: msg.id,
+                messageIndex: msg.index_in_chat ?? null,
+                swipeKey,
+                swipeIndex: resolveSwipeContentIndex(msg, swipeKey),
+                swipeId: null,
+                swipeContentHash: null,
+                swipeKeySource: "swipe_id",
+                presetId: snap.presetId,
+                presetName: snap.presetName,
+                createdAt: snap.attachedAt,
+                storageKey: path,
+              });
+            }
+          } catch (e) {}
+        }
+      } else {
+        if (indexKeys.has(key)) {
+          missingCount++;
+        }
+      }
+    }
+  }
+  
+  let nextIndex = [...index];
+  if (orphansToFix.length > 0) {
+    for (const orphan of orphansToFix) {
+      nextIndex = upsertMessageSnapshotIndexEntry(nextIndex, orphan);
+    }
+    await saveMessageSnapshotIndex(resolvedChatId, nextIndex, userId);
+  }
+  
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastHistoryOrphanCount: orphanCount,
+    lastHistoryDuplicateCount: Math.max(0, index.length - repairMessageSnapshotIndex(index).length),
+    lastHistoryCleanupAt: nowIso(),
+    messageSnapshotIndexCount: nextIndex.length,
+    swipeTrackerIndexCount: nextIndex.length,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function cleanupMissingIndexEntries(
+  payload: Extract<FrontendMessage, { type: "cleanup_missing_index_entries" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
+  
+  const deduped = repairMessageSnapshotIndex(index);
+  
+  const verified: MessageSnapshotIndexEntry[] = [];
+  for (const entry of deduped) {
+    const path = messageSnapshotPath(resolvedChatId, entry.messageId, entry.swipeKey);
+    if (await spindle.userStorage.exists(path, userId)) {
+      verified.push(entry);
+    }
+  }
+  
+  await saveMessageSnapshotIndex(resolvedChatId, verified, userId);
+  
+  const diagnostics = {
+    ...await loadDiagnostics(resolvedChatId, userId),
+    lastHistoryCleanupAt: nowIso(),
+    messageSnapshotIndexCount: verified.length,
+    swipeTrackerIndexCount: verified.length,
+    lastError: null,
+  };
+  await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
 registerEventListeners();
 registerSafePromptInterceptor();
 registerContextInjection();
@@ -4238,6 +4648,7 @@ spindle.onFrontendMessage((payload, userId) => {
 
   const requestId = "requestId" in payload ? payload.requestId : undefined;
   const chatId = payload.chatId;
+  const historyLimit = "historyLimit" in payload ? payload.historyLimit : undefined;
   if (chatId) rememberActiveChat(userId, chatId);
 
   void (async () => {
@@ -4353,11 +4764,23 @@ spindle.onFrontendMessage((payload, userId) => {
         await handleEmbeddedTrackerTagIntercepted(payload, userId);
         return;
       }
+      if (payload.type === "restore_deleted_tracker") {
+        await restoreDeletedTracker(payload, userId);
+        return;
+      }
+      if (payload.type === "run_storage_maintenance_scan") {
+        await runStorageMaintenanceScan(payload, userId);
+        return;
+      }
+      if (payload.type === "cleanup_missing_index_entries") {
+        await cleanupMissingIndexEntries(payload, userId);
+        return;
+      }
       await handleRefresh(payload, userId);
     } catch (error) {
       const currentError = diagnosticError(error, "unknown");
       spindle.log.warn(`LTracker request failed: ${currentError.message}`);
-      const state = await buildState(chatId, userId, "error", currentError);
+      const state = await buildState(chatId, userId, "error", currentError, null, historyLimit);
       const response: BackendMessage = {
         type: "error",
         message: currentError.message,

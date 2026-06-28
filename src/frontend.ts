@@ -12,6 +12,7 @@ import {
   MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
   MESSAGE_WIDGET_ID,
   renderMessageTracker,
+  LTRACKER_DOM_TRACKER_CSS,
 } from "./shared/messageDisplay";
 import { LTRACKER_TAG_NAME, LTRACKER_TAG_TYPE } from "./shared/embeddedTrackerTag";
 import { DEFAULT_SETTINGS } from "./shared/settings";
@@ -356,6 +357,76 @@ const STYLES = `
     grid-template-columns: 1fr;
   }
 }
+.ltracker-undo-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 8px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 0.85rem;
+}
+.ltracker-undo-banner button {
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.ltracker-undo-banner button:hover {
+  opacity: 0.9;
+}
+.ltracker-confirm-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+.ltracker-confirm-dialog {
+  background: var(--ltracker-bg, #1e1e1e);
+  color: var(--ltracker-fg, #ffffff);
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 12px;
+  padding: 20px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+.ltracker-confirm-dialog h3 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-size: 1.15rem;
+}
+.ltracker-confirm-dialog p {
+  margin-top: 0;
+  margin-bottom: 20px;
+  font-size: 0.92rem;
+  line-height: 1.4;
+  opacity: 0.85;
+}
+.ltracker-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.ltd-danger {
+  background: #ef4444 !important;
+  color: #fff !important;
+  border-color: #ef4444 !important;
+}
+.ltd-danger:hover {
+  background: #dc2626 !important;
+}
 `;
 
 function emptyError(message: string): LTrackerError {
@@ -562,6 +633,19 @@ function emptyState(): FrontendState {
       estimatedPromptTokensLastRun: null,
       estimatedMemoryTokensLastRun: null,
       iframeFallbackVisibleInMainUi: false,
+      lastMemoryIndexCount: 0,
+      lastMemoryCandidateCount: 0,
+      lastMemoryLoadedSnapshotCount: 0,
+      lastMemoryLoadDurationMs: 0,
+      lastMemoryLoadSkippedCount: 0,
+      lastJobTimeoutAt: null,
+      lastJobTimeoutJobId: null,
+      lastJobTimeoutMessageId: null,
+      lastJobTimeoutSwipeKey: null,
+      staleJobsEvictedCount: 0,
+      lastHistoryOrphanCount: 0,
+      lastPresetEstimatedTokens: null,
+      lastPresetEstimatedRenderedChars: null,
     },
     memoryPreview: null,
     injectionPreview: null,
@@ -681,9 +765,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let historyErrorsOnly = false;
   let historyCurrentPresetOnly = false;
   let historySelectedSwipeOnly = false;
+  let currentHistoryLimit = 25;
+  let recentlyDeletedBanner: { messageId: string; swipeKey: string; timer: ReturnType<typeof setTimeout> } | null = null;
 
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
+
+  if (!document.getElementById("ltracker-dom-style")) {
+    const styleTag = document.createElement("style");
+    styleTag.id = "ltracker-dom-style";
+    styleTag.textContent = LTRACKER_DOM_TRACKER_CSS;
+    document.head.appendChild(styleTag);
+  }
 
   const tab = ctx.ui.registerDrawerTab({
     id: "ltracker",
@@ -714,7 +807,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   function send(message: FrontendMessage): void {
-    if (!disposed) ctx.sendToBackend(message);
+    if (disposed) return;
+    if (message.type === "ready" || message.type === "refresh_state") {
+      message.historyLimit = currentHistoryLimit;
+    }
+    ctx.sendToBackend(message);
   }
 
   function trackerEntryKey(messageId: string, swipeKey: string): string {
@@ -1753,6 +1850,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         },
         testPrompt: connectionTextValue("testPrompt"),
       },
+      history: {
+        pageSize: state.settings.history?.pageSize ?? 25,
+        showDuplicates: state.settings.history?.showDuplicates ?? false,
+      },
+      storageMaintenance: {
+        enabled: state.settings.storageMaintenance?.enabled ?? false,
+        maxSnapshotsPerChat: state.settings.storageMaintenance?.maxSnapshotsPerChat ?? 100,
+        cleanupDuplicatesOnly: state.settings.storageMaintenance?.cleanupDuplicatesOnly ?? false,
+      },
     };
   }
 
@@ -1942,14 +2048,58 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
   }
 
-  async function deleteMessageTracker(messageId: string, swipeKey: string): Promise<void> {
-    const confirmed = await ctx.ui.showConfirm({
-      title: "Delete Tracker",
-      message: "Delete this tracker snapshot for the selected message swipe? The chat message will not be changed.",
-      variant: "danger",
-      confirmLabel: "Delete",
+  async function showLTrackerConfirm(title: string, message: string): Promise<boolean> {
+    if (ctx.ui?.showConfirm) {
+      const res = await ctx.ui.showConfirm({
+        title,
+        message,
+        variant: "danger",
+        confirmLabel: "Delete",
+      });
+      return res.confirmed;
+    }
+    
+    return new Promise<boolean>((resolve) => {
+      const backdrop = document.createElement("div");
+      backdrop.className = "ltracker-confirm-backdrop";
+      backdrop.innerHTML = `
+        <div class="ltracker-confirm-dialog">
+          <h3>${escapeHtml(title)}</h3>
+          <p>${escapeHtml(message)}</p>
+          <div class="ltracker-confirm-actions">
+            <button class="ltracker-button ltracker-cancel-btn" type="button">Cancel</button>
+            <button class="ltracker-button ltracker-confirm-btn ltd-danger" type="button">Delete</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(backdrop);
+      
+      const onCancel = () => {
+        cleanup();
+        resolve(false);
+      };
+      const onConfirm = () => {
+        cleanup();
+        resolve(true);
+      };
+      const cleanup = () => {
+        backdrop.querySelector(".ltracker-cancel-btn")?.removeEventListener("click", onCancel);
+        backdrop.querySelector(".ltracker-confirm-btn")?.removeEventListener("click", onConfirm);
+        backdrop.remove();
+      };
+      
+      backdrop.querySelector(".ltracker-cancel-btn")?.addEventListener("click", onCancel);
+      backdrop.querySelector(".ltracker-confirm-btn")?.addEventListener("click", onConfirm);
     });
-    if (!confirmed.confirmed) return;
+  }
+
+  async function deleteMessageTracker(messageId: string, swipeKey: string): Promise<void> {
+    const confirmed = await showLTrackerConfirm(
+      "Delete Tracker",
+      "Delete tracker for this message/swipe? This does not delete the chat message."
+    );
+    if (!confirmed) return;
+    
     send({
       type: "delete_message_tracker",
       chatId: activeChatId(),
@@ -1957,6 +2107,20 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       swipeKey,
       requestId: requestId("tracker-delete"),
     });
+
+    if (recentlyDeletedBanner) {
+      clearTimeout(recentlyDeletedBanner.timer);
+    }
+    
+    const timer = setTimeout(() => {
+      if (recentlyDeletedBanner && recentlyDeletedBanner.messageId === messageId && recentlyDeletedBanner.swipeKey === swipeKey) {
+        recentlyDeletedBanner = null;
+        render();
+      }
+    }, 30000);
+    
+    recentlyDeletedBanner = { messageId, swipeKey, timer };
+    render();
   }
 
   function openTrackerEditor(entry: MessageTrackerHistoryEntry): void {
@@ -2083,13 +2247,35 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ].filter((item): item is string => Boolean(item)).join(" ").toLowerCase();
       return haystack.includes(filter);
     });
+
+    const undoBannerHtml = recentlyDeletedBanner
+      ? `
+        <div class="ltracker-undo-banner">
+          <span>Tracker snapshot deleted.</span>
+          <button class="ltracker-button" type="button" data-action="undo-delete">Undo</button>
+        </div>
+      `
+      : "";
+
+    const loadMoreHtml = state.diagnostics.messageSnapshotIndexCount > currentHistoryLimit
+      ? `
+        <div class="ltracker-history-load-more" style="margin-top: 14px; text-align: center;">
+          <button class="ltracker-button" type="button" data-action="load-more-history">Load More</button>
+        </div>
+      `
+      : "";
+
     if (entries.length === 0) {
       const message = baseEntries.length > 0
         ? "No message-attached tracker snapshots match the current filters."
         : "No message-attached tracker snapshots are indexed for this chat yet.";
-      return `<div class="ltracker-render-placeholder">${escapeHtml(message)}</div>`;
+      return `
+        ${undoBannerHtml}
+        <div class="ltracker-render-placeholder">${escapeHtml(message)}</div>
+      `;
     }
     return `
+      ${undoBannerHtml}
       <div class="ltracker-history-list">
         ${entries.map((entry) => {
           const rendered = entry.rendered;
@@ -2150,6 +2336,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           `;
         }).join("")}
       </div>
+      ${loadMoreHtml}
     `;
   }
 
@@ -2961,6 +3148,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           <div class="ltracker-actions" style="margin-bottom: 10px;">
             <button class="ltracker-button" type="button" data-action="refresh">Refresh History</button>
             <button class="ltracker-button" type="button" data-action="cleanup-duplicates" ${disabled(diagnostics.lastHistoryDuplicateCount <= 0)}>Clear Duplicate Index Entries</button>
+            <button class="ltracker-button" type="button" data-action="run-storage-maintenance-scan">Scan History Index</button>
+            <button class="ltracker-button" type="button" data-action="cleanup-missing-index">Cleanup Missing Index Entries</button>
+            <button class="ltracker-button" type="button" data-action="copy-storage-report">Copy Storage Report</button>
           </div>
           <div class="ltracker-chip-row" style="margin-bottom: 10px;">
             <span class="ltracker-chip">Groups ${escapeHtml(String(diagnostics.lastHistoryGroupedCount))}</span>
@@ -3037,177 +3227,240 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
         <section class="ltracker-panel ltracker-section" id="ltracker-section-diagnostics">
           <span class="ltracker-label">Diagnostics</span>
-          <div class="ltracker-grid">
-            ${renderRow("Extension version", state.version)}
-            ${renderRow("Active chat id", state.chatId)}
-            ${renderRow("Current status", state.status)}
-            ${renderRow("Auto mode", autoStatus)}
-            ${renderRow("Permission status", permissionText)}
-            ${renderRow("Connection mode", diagnostics.connectionMode)}
-            ${renderRow("Selected connection id", diagnostics.selectedConnectionId)}
-            ${renderRow("Selected connection name", diagnostics.selectedConnectionName)}
-            ${renderRow("Selected connection available", diagnostics.selectedConnectionAvailable ? "yes" : "no")}
-            ${renderRow("Connection list count", diagnostics.connectionListCount)}
-            ${renderRow("Last connection refresh", diagnostics.lastConnectionRefreshAt)}
-            ${renderRow("Last connection refresh error", diagnostics.lastConnectionRefreshError)}
-            ${renderRow("Last generation connection mode", diagnostics.lastGenerationConnectionModeUsed)}
-            ${renderRow("Last generation connection id", diagnostics.lastGenerationConnectionIdUsed)}
-            ${renderRow("Last generation connection name", diagnostics.lastGenerationConnectionNameUsed)}
-            ${renderRow("Last generation connection fallback", diagnostics.lastGenerationConnectionFallbackReason)}
-            ${renderRow("Last generation parameters", compactRecord(diagnostics.lastGenerationParametersUsed))}
-            ${renderRow("Last reasoning override", compactRecord(diagnostics.lastReasoningOverrideUsed))}
-            ${renderRow("Last connection test at", diagnostics.lastConnectionTestAt)}
-            ${renderRow("Last connection test status", diagnostics.lastConnectionTestStatus)}
-            ${renderRow("Last connection test duration", diagnostics.lastConnectionTestDurationMs)}
-            ${renderRow("Last connection test error", diagnostics.lastConnectionTestError)}
-            ${renderRow("Last connection test finish", diagnostics.lastConnectionTestFinishReason)}
-            ${renderRow("Last connection test usage", compactRecord(diagnostics.lastConnectionTestUsage))}
-            ${renderRow("Message display enabled", diagnostics.messageDisplayEnabled ? "yes" : "no")}
-            ${renderRow("Message display mode", diagnostics.messageDisplayMode)}
-            ${renderRow("Message display renderer", diagnostics.messageDisplayRenderer)}
-            ${renderRow("Message display placement", diagnostics.messageDisplayPlacement)}
-            ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
-            ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
-            ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
-            ${renderRow("Last message control render", diagnostics.lastMessageControlRenderAt)}
-            ${renderRow("Last message control message", diagnostics.lastMessageControlMessageId)}
-            ${renderRow("Last message control swipe", diagnostics.lastMessageControlSwipeKey)}
-            ${renderRow("Last message control state", diagnostics.lastMessageControlState)}
-            ${renderRow("Last generate button message", diagnostics.lastGenerateButtonMessageId)}
-            ${renderRow("Last generate button click", diagnostics.lastGenerateButtonClickedAt)}
-            ${renderRow("Last inline action", diagnostics.lastInlineActionClicked)}
-            ${renderRow("Last inline action at", diagnostics.lastInlineActionAt)}
-            ${renderRow("Last inline action error", diagnostics.lastInlineActionError)}
-            ${renderRow("Native toolbar supported", diagnostics.nativeToolbarSupported ? "yes" : "no")}
-            ${renderRow("Native toolbar fallback", diagnostics.nativeToolbarFallbackReason)}
-            ${renderRow("Last placement requested", diagnostics.lastPlacementRequested)}
-            ${renderRow("Last placement resolved", diagnostics.lastPlacementResolved)}
-            ${renderRow("Last placement attempt", diagnostics.lastPlacementRenderAttemptAt)}
-            ${renderRow("Last placement result", diagnostics.lastPlacementRenderResult)}
-            ${renderRow("Last placement error", diagnostics.lastPlacementError)}
-            ${renderRow("Last mount strategy", diagnostics.lastMountPointStrategy)}
-            ${renderRow("Last DOM injection", diagnostics.lastDomInjectionAt)}
-            ${renderRow("Last DOM injection error", diagnostics.lastDomInjectionError)}
-            ${renderRow("Last uninject", diagnostics.lastUninjectAt)}
-            ${renderRow("Last embedded tag write", diagnostics.lastEmbeddedTagWriteAt)}
-            ${renderRow("Last embedded tag message", diagnostics.lastEmbeddedTagWriteMessageId)}
-            ${renderRow("Last embedded tag swipe", diagnostics.lastEmbeddedTagWriteSwipeKey)}
-            ${renderRow("Last embedded tag error", diagnostics.lastEmbeddedTagError)}
-            ${renderRow("Last tag intercept", diagnostics.lastTagInterceptAt)}
-            ${renderRow("Last tag intercept message", diagnostics.lastTagInterceptMessageId)}
-            ${renderRow("Last tag intercept swipe", diagnostics.lastTagInterceptSwipeKey)}
-            ${renderRow("Last tag intercept error", diagnostics.lastTagInterceptError)}
-            ${renderRow("Message-local UI supported", diagnostics.messageLocalUiSupported ? "yes" : "no")}
-            ${renderRow("Message-local fallback reason", diagnostics.messageLocalUiFallbackReason)}
-            ${renderRow("Message snapshot index count", diagnostics.messageSnapshotIndexCount)}
-            ${renderRow("Swipe tracker index count", diagnostics.swipeTrackerIndexCount)}
-            ${renderRow("Last deleted tracker message", diagnostics.lastDeletedTrackerMessageId)}
-            ${renderRow("Last deleted tracker swipe", diagnostics.lastDeletedTrackerSwipeKey)}
-            ${renderRow("Last edited tracker message", diagnostics.lastEditedTrackerMessageId)}
-            ${renderRow("Last edited tracker swipe", diagnostics.lastEditedTrackerSwipeKey)}
-            ${renderRow("Last swipe detected message", diagnostics.lastSwipeDetectedMessageId)}
-            ${renderRow("Last swipe key", diagnostics.lastSwipeKey)}
-            ${renderRow("Last swipe key source", diagnostics.lastSwipeKeySource)}
-            ${renderRow("Active tracker jobs", diagnostics.activeTrackerJobs.map((job) => `${job.messageId}/${job.swipeKey}`).join(", "))}
-            ${renderRow("Last widget regenerate message", diagnostics.lastWidgetRegenerateMessageId)}
-            ${renderRow("Last widget regenerate started", diagnostics.lastWidgetRegenerateStartedAt)}
-            ${renderRow("Last widget regenerate completed", diagnostics.lastWidgetRegenerateCompletedAt)}
-            ${renderRow("Last widget regenerate duration", diagnostics.lastWidgetRegenerateDurationMs)}
-            ${renderRow("Last widget regenerate cancelled", diagnostics.lastWidgetRegenerateCancelledAt)}
-            ${renderRow("Last widget regenerate error", diagnostics.lastWidgetRegenerateError)}
-            ${renderRow("Active widget regenerations", diagnostics.activeWidgetRegenerationCount)}
-            ${renderRow("Message widget placement resolved", diagnostics.messageWidgetPlacementResolved)}
-            ${renderRow("Message widget placement reason", diagnostics.messageWidgetPlacementReason)}
-            ${renderRow("Injection enabled", diagnostics.injectionEnabled ? "yes" : "no")}
-            ${renderRow("Context handler registered", diagnostics.contextHandlerRegistered ? "yes" : "no")}
-            ${renderRow("Context handler disabled reason", diagnostics.contextHandlerDisabledReason)}
-            ${renderRow("Last context handler error", diagnostics.lastContextHandlerError)}
-            ${renderRow("Last injection at", diagnostics.lastInjectionAt)}
-            ${renderRow("Last injection mode", diagnostics.lastInjectionMode)}
-            ${renderRow("Last injection format", diagnostics.lastInjectionFormat)}
-            ${renderRow("Last injected chars", diagnostics.lastInjectedChars)}
-            ${renderRow("Last injection skipped", diagnostics.lastInjectionSkippedReason)}
-            ${renderRow("Last injection snapshot", diagnostics.lastInjectionSnapshotCreatedAt)}
-            ${renderRow("Last injection source message", diagnostics.lastInjectionSourceMessageId)}
-            ${renderRow("Last memory entry count", diagnostics.lastMemoryEntryCount)}
-            ${renderRow("Last memory chars", diagnostics.lastMemoryChars)}
-            ${renderRow("Last memory truncated", diagnostics.lastMemoryTruncated ? "yes" : "no")}
-            ${renderRow("Last memory sources", diagnostics.lastMemorySourceSummary)}
-            ${renderRow("Last memory skipped", diagnostics.lastMemorySkippedReason)}
-            ${renderRow("Last prompt included memory", diagnostics.lastPromptIncludedMemory ? "yes" : "no")}
-            ${renderRow("Interceptor registered", diagnostics.interceptorRegistered ? "yes" : "no")}
-            ${renderRow("Last interceptor at", diagnostics.lastInterceptorAt)}
-            ${renderRow("Last interceptor injected count", diagnostics.lastInterceptorInjectedCount)}
-            ${renderRow("Last interceptor injected chars", diagnostics.lastInterceptorInjectedChars)}
-            ${renderRow("Last interceptor stripped count", diagnostics.lastInterceptorStrippedCount)}
-            ${renderRow("Last interceptor skipped", diagnostics.lastInterceptorSkippedReason)}
-            ${renderRow("Last interceptor error", diagnostics.lastInterceptorError)}
-            ${renderRow("Prompt trackers before", diagnostics.lastInterceptorPromptTrackerCountBefore)}
-            ${renderRow("Prompt trackers after", diagnostics.lastInterceptorPromptTrackerCountAfter)}
-            ${renderRow("Selected preset id", diagnostics.selectedPresetId ?? activePreset.id)}
-            ${renderRow("Selected preset name", diagnostics.selectedPresetName ?? activePreset.name)}
-            ${renderRow("Last preset fallback", diagnostics.lastPresetFallbackReason)}
-            ${renderRow("Last preset validation error", diagnostics.lastPresetValidationError)}
-            ${renderRow("Last prompt preset id", diagnostics.lastPromptUsedPresetId)}
-            ${renderRow("Last prompt preset name", diagnostics.lastPromptUsedPresetName)}
-            ${renderRow("Last render at", diagnostics.lastRenderAt)}
-            ${renderRow("Last render preset id", diagnostics.lastRenderPresetId)}
-            ${renderRow("Last render preset name", diagnostics.lastRenderPresetName)}
-            ${renderRow("Last render snapshot", diagnostics.lastRenderSnapshotCreatedAt)}
-            ${renderRow("Last render source", diagnostics.lastRenderSource)}
-            ${renderRow("Last render status", diagnostics.lastRenderStatus)}
-            ${renderRow("Last sanitized HTML chars", diagnostics.lastSanitizedHtmlChars)}
-            ${renderRow("Last fallback text chars", diagnostics.lastFallbackTextChars)}
-            ${renderRow("Last render warnings", diagnostics.lastRenderWarnings.join(", "))}
-            ${renderRow("Last render errors", diagnostics.lastRenderErrors.join(", "))}
-            ${renderRow("Last generation source", diagnostics.lastGenerationSource)}
-            ${renderRow("Last generation started", diagnostics.lastGenerationStartedAt)}
-            ${renderRow("Last generation completed", diagnostics.lastGenerationCompletedAt)}
-            ${renderRow("Last duration ms", diagnostics.lastGenerationDurationMs)}
-            ${renderRow("Last auto event", diagnostics.lastAutoEventAt)}
-            ${renderRow("Last auto event type", diagnostics.lastAutoEventType)}
-            ${renderRow("Last auto scheduled", diagnostics.lastAutoScheduledAt)}
-            ${renderRow("Last auto triggered", diagnostics.lastAutoTriggeredAt)}
-            ${renderRow("Last auto skipped", diagnostics.lastAutoSkippedReason)}
-            ${renderRow("Last auto source message", diagnostics.lastAutoSourceMessageId)}
-            ${renderRow("Last auto source index", diagnostics.lastAutoSourceMessageIndex)}
-            ${renderRow("Last auto generation id", diagnostics.lastAutoGenerationId)}
-            ${renderRow("Auto finalization state", diagnostics.lastAutoFinalizationState)}
-            ${renderRow("Auto waiting message", diagnostics.lastAutoWaitingMessageId)}
-            ${renderRow("Auto waiting swipe", diagnostics.lastAutoWaitingSwipeKey)}
-            ${renderRow("Auto finalized at", diagnostics.lastAutoFinalizedAt)}
-            ${renderRow("Auto stable check at", diagnostics.lastAutoStableCheckAt)}
-            ${renderRow("Auto stable passed", diagnostics.lastAutoStableCheckPassed === null ? null : diagnostics.lastAutoStableCheckPassed ? "yes" : "no")}
-            ${renderRow("Auto stable hash", diagnostics.lastAutoContentStableHash)}
-            ${renderRow("Auto finalization skipped", diagnostics.lastAutoFinalizationSkippedReason)}
-            ${renderRow("Pending auto finalizations", diagnostics.pendingAutoFinalizationCount)}
-            ${renderRow("Swipe change cancelled pending", diagnostics.lastSwipeChangeCancelledPendingJob ? "yes" : "no")}
-            ${renderRow("History grouped count", diagnostics.lastHistoryGroupedCount)}
-            ${renderRow("History duplicate count", diagnostics.lastHistoryDuplicateCount)}
-            ${renderRow("History cleanup at", diagnostics.lastHistoryCleanupAt)}
-            ${renderRow("Template trust mode", diagnostics.templateTrustMode)}
-            ${renderRow("Ultra mode", diagnostics.ultraModeEnabled ? "yes" : "no")}
-            ${renderRow("Estimated prompt tokens", diagnostics.estimatedPromptTokensLastRun)}
-            ${renderRow("Estimated memory tokens", diagnostics.estimatedMemoryTokensLastRun)}
-            ${renderRow("Expanded width mode", diagnostics.expandedWidthModeResolved)}
-            ${renderRow("Expanded width px", diagnostics.lastExpandedTrackerWidthPx)}
-            ${renderRow("Iframe fallback visible in main UI", diagnostics.iframeFallbackVisibleInMainUi ? "yes" : "no")}
-            ${renderRow("Latest attached message", diagnostics.latestAttachedMessageId)}
-            ${renderRow("Latest attached index", diagnostics.latestAttachedMessageIndex)}
-            ${renderRow("Latest attached at", diagnostics.latestAttachedSnapshotAt)}
-            ${renderRow("Latest attached storage key", diagnostics.latestAttachedSnapshotStorageKey)}
-            ${renderRow("Messages read", diagnostics.lastMessagesRead)}
-            ${renderRow("Source message range", diagnostics.lastSourceMessageRange)}
-            ${renderRow("Source message ids", diagnostics.lastSourceMessageIds.join(", "))}
-            ${renderRow("Storage key", diagnostics.storageKey)}
-            ${renderRow("Last job id", diagnostics.lastJobId)}
-            ${renderRow("Last request id", diagnostics.lastRequestId)}
-            ${renderRow("Last cancellation", diagnostics.lastCancellation ? `${diagnostics.lastCancellation.jobId}: ${diagnostics.lastCancellation.reason}` : null)}
-            ${renderRow("Build target", diagnostics.buildInfo.buildTarget)}
-            ${renderRow("Spindle types", diagnostics.buildInfo.spindleTypesVersion)}
-            ${renderRow("Storage schema", diagnostics.buildInfo.storageSchemaVersion)}
-            ${renderRow("Settings schema", diagnostics.buildInfo.settingsSchemaVersion)}
+          <div class="ltracker-actions" style="margin-bottom: 12px;">
+            <button class="ltracker-button" type="button" data-action="copy-all-diagnostics">Copy All Diagnostics</button>
+            <button class="ltracker-button" type="button" data-action="copy-last-error">Copy Last Error</button>
           </div>
+          
+          <details class="ltracker-details">
+            <summary>Status & General</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Extension version", state.version)}
+              ${renderRow("Active chat id", state.chatId)}
+              ${renderRow("Current status", state.status)}
+              ${renderRow("Auto mode", autoStatus)}
+              ${renderRow("Permission status", permissionText)}
+              ${renderRow("Connection mode", diagnostics.connectionMode)}
+              ${renderRow("Native toolbar supported", diagnostics.nativeToolbarSupported ? "yes" : "no")}
+              ${renderRow("Native toolbar fallback", diagnostics.nativeToolbarFallbackReason)}
+              ${renderRow("Message-local UI supported", diagnostics.messageLocalUiSupported ? "yes" : "no")}
+              ${renderRow("Message-local fallback reason", diagnostics.messageLocalUiFallbackReason)}
+              ${renderRow("Build target", diagnostics.buildInfo.buildTarget)}
+              ${renderRow("Spindle types", diagnostics.buildInfo.spindleTypesVersion)}
+              ${renderRow("Storage schema", diagnostics.buildInfo.storageSchemaVersion)}
+              ${renderRow("Settings schema", diagnostics.buildInfo.settingsSchemaVersion)}
+            </div>
+          </details>
+
+          <details class="ltracker-details">
+            <summary>Generation Jobs</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Active tracker jobs", diagnostics.activeTrackerJobs.map((job) => `${job.messageId}/${job.swipeKey}`).join(", "))}
+              ${renderRow("Active widget regenerations", diagnostics.activeWidgetRegenerationCount)}
+              ${renderRow("Last job id", diagnostics.lastJobId)}
+              ${renderRow("Last request id", diagnostics.lastRequestId)}
+              ${renderRow("Last duration ms", diagnostics.lastGenerationDurationMs)}
+              ${renderRow("Last generation source", diagnostics.lastGenerationSource)}
+              ${renderRow("Last generation started", diagnostics.lastGenerationStartedAt)}
+              ${renderRow("Last generation completed", diagnostics.lastGenerationCompletedAt)}
+              ${renderRow("Last cancellation", diagnostics.lastCancellation ? `${diagnostics.lastCancellation.jobId}: ${diagnostics.lastCancellation.reason}` : null)}
+              ${renderRow("Last widget regenerate message", diagnostics.lastWidgetRegenerateMessageId)}
+              ${renderRow("Last widget regenerate started", diagnostics.lastWidgetRegenerateStartedAt)}
+              ${renderRow("Last widget regenerate completed", diagnostics.lastWidgetRegenerateCompletedAt)}
+              ${renderRow("Last widget regenerate duration", diagnostics.lastWidgetRegenerateDurationMs)}
+              ${renderRow("Last widget regenerate cancelled", diagnostics.lastWidgetRegenerateCancelledAt)}
+              ${renderRow("Last widget regenerate error", diagnostics.lastWidgetRegenerateError)}
+              ${renderRow("Last job timeout at", diagnostics.lastJobTimeoutAt)}
+              ${renderRow("Last job timeout job id", diagnostics.lastJobTimeoutJobId)}
+              ${renderRow("Last job timeout message id", diagnostics.lastJobTimeoutMessageId)}
+              ${renderRow("Last job timeout swipe key", diagnostics.lastJobTimeoutSwipeKey)}
+              ${renderRow("Stale jobs evicted count", diagnostics.staleJobsEvictedCount)}
+            </div>
+          </details>
+
+          <details class="ltracker-details">
+            <summary>Auto Timing</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Last auto event", diagnostics.lastAutoEventAt)}
+              ${renderRow("Last auto event type", diagnostics.lastAutoEventType)}
+              ${renderRow("Last auto scheduled", diagnostics.lastAutoScheduledAt)}
+              ${renderRow("Last auto triggered", diagnostics.lastAutoTriggeredAt)}
+              ${renderRow("Last auto skipped", diagnostics.lastAutoSkippedReason)}
+              ${renderRow("Last auto source message", diagnostics.lastAutoSourceMessageId)}
+              ${renderRow("Last auto source index", diagnostics.lastAutoSourceMessageIndex)}
+              ${renderRow("Last auto generation id", diagnostics.lastAutoGenerationId)}
+              ${renderRow("Auto finalization state", diagnostics.lastAutoFinalizationState)}
+              ${renderRow("Auto waiting message", diagnostics.lastAutoWaitingMessageId)}
+              ${renderRow("Auto waiting swipe", diagnostics.lastAutoWaitingSwipeKey)}
+              ${renderRow("Auto finalized at", diagnostics.lastAutoFinalizedAt)}
+              ${renderRow("Auto stable check at", diagnostics.lastAutoStableCheckAt)}
+              ${renderRow("Auto stable passed", diagnostics.lastAutoStableCheckPassed === null ? null : diagnostics.lastAutoStableCheckPassed ? "yes" : "no")}
+              ${renderRow("Auto stable hash", diagnostics.lastAutoContentStableHash)}
+              ${renderRow("Auto finalization skipped", diagnostics.lastAutoFinalizationSkippedReason)}
+              ${renderRow("Pending auto finalizations", diagnostics.pendingAutoFinalizationCount)}
+              ${renderRow("Swipe change cancelled pending", diagnostics.lastSwipeChangeCancelledPendingJob ? "yes" : "no")}
+            </div>
+          </details>
+
+          <details class="ltracker-details">
+            <summary>Memory</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Last memory index count", diagnostics.lastMemoryIndexCount)}
+              ${renderRow("Last memory candidate count", diagnostics.lastMemoryCandidateCount)}
+              ${renderRow("Last memory loaded snapshot count", diagnostics.lastMemoryLoadedSnapshotCount)}
+              ${renderRow("Last memory load duration ms", diagnostics.lastMemoryLoadDurationMs)}
+              ${renderRow("Last memory load skipped count", diagnostics.lastMemoryLoadSkippedCount)}
+              ${renderRow("Last memory entry count", diagnostics.lastMemoryEntryCount)}
+              ${renderRow("Last memory chars", diagnostics.lastMemoryChars)}
+              ${renderRow("Last memory truncated", diagnostics.lastMemoryTruncated ? "yes" : "no")}
+              ${renderRow("Last memory sources", diagnostics.lastMemorySourceSummary)}
+              ${renderRow("Last memory skipped", diagnostics.lastMemorySkippedReason)}
+              ${renderRow("Last prompt included memory", diagnostics.lastPromptIncludedMemory ? "yes" : "no")}
+              ${renderRow("Estimated memory tokens", diagnostics.estimatedMemoryTokensLastRun)}
+            </div>
+          </details>
+
+          <details class="ltracker-details">
+            <summary>Prompt Injection</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Injection enabled", diagnostics.injectionEnabled ? "yes" : "no")}
+              ${renderRow("Context handler registered", diagnostics.contextHandlerRegistered ? "yes" : "no")}
+              ${renderRow("Context handler disabled reason", diagnostics.contextHandlerDisabledReason)}
+              ${renderRow("Last context handler error", diagnostics.lastContextHandlerError)}
+              ${renderRow("Last injection at", diagnostics.lastInjectionAt)}
+              ${renderRow("Last injection mode", diagnostics.lastInjectionMode)}
+              ${renderRow("Last injection format", diagnostics.lastInjectionFormat)}
+              ${renderRow("Last injected chars", diagnostics.lastInjectedChars)}
+              ${renderRow("Last injection skipped", diagnostics.lastInjectionSkippedReason)}
+              ${renderRow("Last injection snapshot", diagnostics.lastInjectionSnapshotCreatedAt)}
+              ${renderRow("Last injection source message", diagnostics.lastInjectionSourceMessageId)}
+              ${renderRow("Interceptor registered", diagnostics.interceptorRegistered ? "yes" : "no")}
+              ${renderRow("Last interceptor at", diagnostics.lastInterceptorAt)}
+              ${renderRow("Last interceptor injected count", diagnostics.lastInterceptorInjectedCount)}
+              ${renderRow("Last interceptor injected chars", diagnostics.lastInterceptorInjectedChars)}
+              ${renderRow("Last interceptor stripped count", diagnostics.lastInterceptorStrippedCount)}
+              ${renderRow("Last interceptor skipped", diagnostics.lastInterceptorSkippedReason)}
+              ${renderRow("Last interceptor error", diagnostics.lastInterceptorError)}
+              ${renderRow("Prompt trackers before", diagnostics.lastInterceptorPromptTrackerCountBefore)}
+              ${renderRow("Prompt trackers after", diagnostics.lastInterceptorPromptTrackerCountAfter)}
+              ${renderRow("Estimated prompt tokens", diagnostics.estimatedPromptTokensLastRun)}
+            </div>
+          </details>
+
+          <details class="ltracker-details">
+            <summary>Display / DOM</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Message display enabled", diagnostics.messageDisplayEnabled ? "yes" : "no")}
+              ${renderRow("Message display mode", diagnostics.messageDisplayMode)}
+              ${renderRow("Message display renderer", diagnostics.messageDisplayRenderer)}
+              ${renderRow("Message display placement", diagnostics.messageDisplayPlacement)}
+              ${renderRow("Message display hydrated count", diagnostics.messageDisplayHydratedCount)}
+              ${renderRow("Last message display hydration", diagnostics.lastMessageDisplayHydratedAt)}
+              ${renderRow("Last message display error", diagnostics.lastMessageDisplayError)}
+              ${renderRow("Last message control render", diagnostics.lastMessageControlRenderAt)}
+              ${renderRow("Last message control message", diagnostics.lastMessageControlMessageId)}
+              ${renderRow("Last message control swipe", diagnostics.lastMessageControlSwipeKey)}
+              ${renderRow("Last message control state", diagnostics.lastMessageControlState)}
+              ${renderRow("Last generate button message", diagnostics.lastGenerateButtonMessageId)}
+              ${renderRow("Last generate button click", diagnostics.lastGenerateButtonClickedAt)}
+              ${renderRow("Last inline action", diagnostics.lastInlineActionClicked)}
+              ${renderRow("Last inline action at", diagnostics.lastInlineActionAt)}
+              ${renderRow("Last inline action error", diagnostics.lastInlineActionError)}
+              ${renderRow("Message widget placement resolved", diagnostics.messageWidgetPlacementResolved)}
+              ${renderRow("Message widget placement reason", diagnostics.messageWidgetPlacementReason)}
+              ${renderRow("Expanded width mode", diagnostics.expandedWidthModeResolved)}
+              ${renderRow("Expanded width px", diagnostics.lastExpandedTrackerWidthPx)}
+              ${renderRow("Iframe fallback visible in main UI", diagnostics.iframeFallbackVisibleInMainUi ? "yes" : "no")}
+              ${renderRow("Latest attached message", diagnostics.latestAttachedMessageId)}
+              ${renderRow("Latest attached index", diagnostics.latestAttachedMessageIndex)}
+              ${renderRow("Latest attached at", diagnostics.latestAttachedSnapshotAt)}
+              ${renderRow("Latest attached storage key", diagnostics.latestAttachedSnapshotStorageKey)}
+              ${renderRow("Last DOM injection", diagnostics.lastDomInjectionAt)}
+              ${renderRow("Last DOM injection error", diagnostics.lastDomInjectionError)}
+              ${renderRow("Last uninject", diagnostics.lastUninjectAt)}
+              ${renderRow("Last embedded tag write", diagnostics.lastEmbeddedTagWriteAt)}
+              ${renderRow("Last embedded tag message", diagnostics.lastEmbeddedTagWriteMessageId)}
+              ${renderRow("Last embedded tag swipe", diagnostics.lastEmbeddedTagWriteSwipeKey)}
+              ${renderRow("Last embedded tag error", diagnostics.lastEmbeddedTagError)}
+              ${renderRow("Last tag intercept", diagnostics.lastTagInterceptAt)}
+              ${renderRow("Last tag intercept message", diagnostics.lastTagInterceptMessageId)}
+              ${renderRow("Last tag intercept swipe", diagnostics.lastTagInterceptSwipeKey)}
+              ${renderRow("Last tag intercept error", diagnostics.lastTagInterceptError)}
+            </div>
+          </details>
+
+          <details class="ltracker-details">
+            <summary>Storage & History</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Message snapshot index count", diagnostics.messageSnapshotIndexCount)}
+              ${renderRow("Swipe tracker index count", diagnostics.swipeTrackerIndexCount)}
+              ${renderRow("History grouped count", diagnostics.lastHistoryGroupedCount)}
+              ${renderRow("History duplicate count", diagnostics.lastHistoryDuplicateCount)}
+              ${renderRow("History orphan count", diagnostics.lastHistoryOrphanCount)}
+              ${renderRow("History cleanup at", diagnostics.lastHistoryCleanupAt)}
+              ${renderRow("Storage key", diagnostics.storageKey)}
+              ${renderRow("Messages read", diagnostics.lastMessagesRead)}
+              ${renderRow("Source message range", diagnostics.lastSourceMessageRange)}
+              ${renderRow("Source message ids", diagnostics.lastSourceMessageIds.join(", "))}
+              ${renderRow("Last deleted tracker message", diagnostics.lastDeletedTrackerMessageId)}
+              ${renderRow("Last deleted tracker swipe", diagnostics.lastDeletedTrackerSwipeKey)}
+              ${renderRow("Last edited tracker message", diagnostics.lastEditedTrackerMessageId)}
+              ${renderRow("Last edited tracker swipe", diagnostics.lastEditedTrackerSwipeKey)}
+              ${renderRow("Last swipe detected message", diagnostics.lastSwipeDetectedMessageId)}
+              ${renderRow("Last swipe key", diagnostics.lastSwipeKey)}
+              ${renderRow("Last swipe key source", diagnostics.lastSwipeKeySource)}
+            </div>
+          </details>
+
+          <details class="ltracker-details">
+            <summary>Connections</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Selected connection id", diagnostics.selectedConnectionId)}
+              ${renderRow("Selected connection name", diagnostics.selectedConnectionName)}
+              ${renderRow("Selected connection available", diagnostics.selectedConnectionAvailable ? "yes" : "no")}
+              ${renderRow("Connection list count", diagnostics.connectionListCount)}
+              ${renderRow("Last connection refresh", diagnostics.lastConnectionRefreshAt)}
+              ${renderRow("Last connection refresh error", diagnostics.lastConnectionRefreshError)}
+              ${renderRow("Last generation connection mode", diagnostics.lastGenerationConnectionModeUsed)}
+              ${renderRow("Last generation connection id", diagnostics.lastGenerationConnectionIdUsed)}
+              ${renderRow("Last generation connection name", diagnostics.lastGenerationConnectionNameUsed)}
+              ${renderRow("Last generation connection fallback", diagnostics.lastGenerationConnectionFallbackReason)}
+              ${renderRow("Last generation parameters", compactRecord(diagnostics.lastGenerationParametersUsed))}
+              ${renderRow("Last reasoning override", compactRecord(diagnostics.lastReasoningOverrideUsed))}
+              ${renderRow("Last connection test at", diagnostics.lastConnectionTestAt)}
+              ${renderRow("Last connection test status", diagnostics.lastConnectionTestStatus)}
+              ${renderRow("Last connection test duration", diagnostics.lastConnectionTestDurationMs)}
+              ${renderRow("Last connection test error", diagnostics.lastConnectionTestError)}
+              ${renderRow("Last connection test finish", diagnostics.lastConnectionTestFinishReason)}
+              ${renderRow("Last connection test usage", compactRecord(diagnostics.lastConnectionTestUsage))}
+            </div>
+          </details>
+
+          <details class="ltracker-details">
+            <summary>Renderer & Presets</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Selected preset id", diagnostics.selectedPresetId ?? activePreset.id)}
+              ${renderRow("Selected preset name", diagnostics.selectedPresetName ?? activePreset.name)}
+              ${renderRow("Last preset fallback", diagnostics.lastPresetFallbackReason)}
+              ${renderRow("Last preset validation error", diagnostics.lastPresetValidationError)}
+              ${renderRow("Last prompt preset id", diagnostics.lastPromptUsedPresetId)}
+              ${renderRow("Last prompt preset name", diagnostics.lastPromptUsedPresetName)}
+              ${renderRow("Last render at", diagnostics.lastRenderAt)}
+              ${renderRow("Last render preset id", diagnostics.lastRenderPresetId)}
+              ${renderRow("Last render preset name", diagnostics.lastRenderPresetName)}
+              ${renderRow("Last render snapshot", diagnostics.lastRenderSnapshotCreatedAt)}
+              ${renderRow("Last render source", diagnostics.lastRenderSource)}
+              ${renderRow("Last render status", diagnostics.lastRenderStatus)}
+              ${renderRow("Last sanitized HTML chars", diagnostics.lastSanitizedHtmlChars)}
+              ${renderRow("Last fallback text chars", diagnostics.lastFallbackTextChars)}
+              ${renderRow("Last render warnings", diagnostics.lastRenderWarnings.join(", "))}
+              ${renderRow("Last render errors", diagnostics.lastRenderErrors.join(", "))}
+              ${renderRow("Template trust mode", diagnostics.templateTrustMode)}
+              ${renderRow("Ultra mode", diagnostics.ultraModeEnabled ? "yes" : "no")}
+              ${renderRow("Last preset estimated tokens", diagnostics.lastPresetEstimatedTokens)}
+              ${renderRow("Last preset estimated chars", diagnostics.lastPresetEstimatedRenderedChars)}
+            </div>
+          </details>
           <details class="ltracker-details">
             <summary>Last raw model output</summary>
             <pre class="ltracker-text">${escapeHtml(rawOutput ?? "None")}</pre>
@@ -3326,6 +3579,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (action === "copy-memory-preview") void copyText(state.memoryPreview, "tracker memory block");
     if (action === "copy-injection-preview") void copyText(state.injectionPreview, "injection preview");
+    if (action === "copy-storage-report") {
+      const report = [
+        `Storage key: ${state.diagnostics.storageKey}`,
+        `Message snapshot index count: ${state.diagnostics.messageSnapshotIndexCount}`,
+        `Swipe tracker index count: ${state.diagnostics.swipeTrackerIndexCount}`,
+        `History grouped count: ${state.diagnostics.lastHistoryGroupedCount}`,
+        `History duplicate count: ${state.diagnostics.lastHistoryDuplicateCount}`,
+        `History orphan count: ${state.diagnostics.lastHistoryOrphanCount}`,
+        `History cleanup at: ${state.diagnostics.lastHistoryCleanupAt}`,
+      ].join("\n");
+      void copyText(report, "storage report");
+    }
     if (action === "render-template") renderTemplatePreview();
     if (action === "copy-render-html") void copyText(state.renderPreview?.html ?? null, "sanitized HTML");
     if (action === "copy-render-fallback") void copyText(state.renderPreview?.textFallback ?? null, "text fallback");
@@ -3359,6 +3624,50 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (action === "validate-preset") validatePreset();
     if (action === "export-preset") {
       void copyText(JSON.stringify(exportTrackerPreset(state.activePreset), null, 2), "selected preset export");
+    }
+    if (action === "undo-delete" && recentlyDeletedBanner) {
+      send({
+        type: "restore_deleted_tracker",
+        chatId: activeChatId(),
+        messageId: recentlyDeletedBanner.messageId,
+        swipeKey: recentlyDeletedBanner.swipeKey,
+        requestId: requestId("tracker-restore"),
+      });
+      clearTimeout(recentlyDeletedBanner.timer);
+      recentlyDeletedBanner = null;
+      render();
+    }
+    if (action === "load-more-history") {
+      currentHistoryLimit += 25;
+      send({
+        type: "refresh_state",
+        chatId: activeChatId(),
+      });
+    }
+    if (action === "run-storage-maintenance-scan") {
+      send({
+        type: "run_storage_maintenance_scan",
+        chatId: activeChatId(),
+        requestId: requestId("storage-scan"),
+      });
+    }
+    if (action === "cleanup-missing-index") {
+      send({
+        type: "cleanup_missing_index_entries",
+        chatId: activeChatId(),
+        requestId: requestId("storage-clean"),
+      });
+    }
+    if (action === "copy-all-diagnostics") {
+      const flatDiags = Object.entries(state.diagnostics)
+        .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
+        .join("\n");
+      void copyText(flatDiags, "all diagnostics");
+    }
+    if (action === "copy-last-error") {
+      const err = state.diagnostics.lastError;
+      const errText = err ? `Stage: ${err.stage}\nMessage: ${err.message}${err.detail ? `\nDetail: ${err.detail}` : ""}` : "No error recorded.";
+      void copyText(errText, "last error");
     }
   };
 

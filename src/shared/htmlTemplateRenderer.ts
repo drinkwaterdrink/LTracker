@@ -350,11 +350,16 @@ function sanitizeStyle(value: string, warnings: string[]): string | null {
       warnings.push(`Removed unsupported style property ${property}.`);
       continue;
     }
+    if (rawValue.includes("\\")) {
+      warnings.push(`Removed unsafe style value containing escape character.`);
+      continue;
+    }
     if (
       lowerValue.includes("url(")
       || lowerValue.includes("expression")
       || lowerValue.includes("@import")
       || lowerValue.includes("javascript:")
+      || lowerValue.includes("data:")
       || lowerValue.includes("behavior:")
       || lowerValue.includes("-moz-binding")
       || /[<>{}]/.test(rawValue)
