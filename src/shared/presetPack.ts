@@ -146,33 +146,47 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-const SECRET_PATTERNS = [
-  /api[_-]?key/i,
-  /secret/i,
-  /password/i,
-  /token(?!s$)/i,
-  /auth[_-]?bearer/i,
-  /private[_-]?key/i,
-  /access[_-]?key/i,
-  /credential/i,
-];
+const REAL_CREDENTIAL_KEY_NAMES = new Set([
+  "apikey",
+  "authkey",
+  "authtoken",
+  "bearer",
+  "bearertoken",
+  "credential",
+  "credentials",
+  "clientsecret",
+  "password",
+  "secret",
+  "privatekey",
+  "secretkey",
+  "token",
+  "accesskey",
+]);
 
-function containsSecretKeys(obj: unknown, depth = 0): boolean {
-  if (depth > 10 || !isRecord(obj)) return false;
-  for (const key of Object.keys(obj)) {
-    if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) return true;
-    if (isRecord(obj[key]) && containsSecretKeys(obj[key], depth + 1)) return true;
-  }
-  return false;
+function credentialKeyName(key: string): string {
+  return key.replace(/[^a-z0-9]/gi, "").toLowerCase();
 }
 
-function stripSecretKeys(obj: Record<string, unknown>, depth = 0): Record<string, unknown> {
+function isRealCredentialKey(key: string): boolean {
+  return REAL_CREDENTIAL_KEY_NAMES.has(credentialKeyName(key));
+}
+
+function stripRecommendedSettingCredentials(
+  obj: Record<string, unknown>,
+  path: string,
+  strippedPaths: string[],
+  depth = 0,
+): Record<string, unknown> {
   if (depth > 10) return {};
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) continue;
+    const nextPath = `${path}.${key}`;
+    if (isRealCredentialKey(key)) {
+      strippedPaths.push(nextPath);
+      continue;
+    }
     if (isRecord(value)) {
-      result[key] = stripSecretKeys(value, depth + 1);
+      result[key] = stripRecommendedSettingCredentials(value, nextPath, strippedPaths, depth + 1);
     } else {
       result[key] = value;
     }
@@ -303,17 +317,39 @@ export function exportPresetPack(
 // Import (supports pack, old envelope, raw preset)
 // ---------------------------------------------------------------------------
 
-function validatePackRecommendedSettings(value: unknown): PackRecommendedSettings | null {
-  if (!isRecord(value)) return null;
+function validatePackRecommendedSettings(value: unknown): { settings: PackRecommendedSettings | null; warnings: string[] } {
+  if (!isRecord(value)) return { settings: null, warnings: [] };
   const result: PackRecommendedSettings = {};
-  if (isRecord(value.connection)) result.connection = stripSecretKeys(value.connection) as Partial<LTrackerSettings["connection"]>;
+  const strippedPaths: string[] = [];
+  if (isRecord(value.connection)) {
+    result.connection = stripRecommendedSettingCredentials(
+      value.connection,
+      "recommendedSettings.connection",
+      strippedPaths,
+    ) as Partial<LTrackerSettings["connection"]>;
+  }
   if (isRecord(value.memory)) result.memory = value.memory as Partial<LTrackerSettings["memory"]>;
   if (isRecord(value.injection)) result.injection = value.injection as Partial<LTrackerSettings["injection"]>;
   if (isRecord(value.renderer)) result.renderer = value.renderer as Partial<LTrackerSettings["renderer"]>;
   if (isRecord(value.messageDisplay)) result.messageDisplay = value.messageDisplay as Partial<LTrackerSettings["messageDisplay"]>;
   if (isRecord(value.expandedWidth)) result.expandedWidth = value.expandedWidth as Partial<LTrackerSettings["expandedWidth"]>;
-  if (isRecord(value.budget)) result.budget = stripSecretKeys(value.budget) as Partial<LTrackerSettings["budget"]>;
-  return Object.keys(result).length > 0 ? result : null;
+  if (isRecord(value.budget)) result.budget = value.budget as Partial<LTrackerSettings["budget"]>;
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (
+      key !== "connection"
+      && key !== "memory"
+      && key !== "injection"
+      && key !== "renderer"
+      && key !== "messageDisplay"
+      && key !== "expandedWidth"
+      && key !== "budget"
+      && isRecord(nestedValue)
+    ) {
+      stripRecommendedSettingCredentials(nestedValue, `recommendedSettings.${key}`, strippedPaths);
+    }
+  }
+  const warnings = strippedPaths.map((path) => `Removed credential-like recommended setting field: ${path}`);
+  return { settings: Object.keys(result).length > 0 ? result : null, warnings };
 }
 
 export function importPresetPack(
@@ -329,10 +365,6 @@ export function importPresetPack(
   if (value.kind === PRESET_PACK_KIND) {
     if (value.formatVersion !== PRESET_PACK_FORMAT_VERSION) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: `Unsupported preset pack format version: ${value.formatVersion}. Expected ${PRESET_PACK_FORMAT_VERSION}.`, warnings: [], packMeta: null };
-    }
-
-    if (containsSecretKeys(value)) {
-      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import rejected: pack contains potential secret/API key fields.", warnings: [], packMeta: null };
     }
 
     const presetData = isRecord(value.preset) ? value.preset : null;
@@ -378,7 +410,9 @@ export function importPresetPack(
       warnings.push("Imported preset has empty prompt instructions.");
     }
 
-    const recommendedSettings = validatePackRecommendedSettings(value.recommendedSettings);
+    const recommendedSettingsResult = validatePackRecommendedSettings(value.recommendedSettings);
+    warnings.push(...recommendedSettingsResult.warnings);
+    const recommendedSettings = recommendedSettingsResult.settings;
     const exampleSnapshot = isRecord(value.exampleSnapshot) ? value.exampleSnapshot as Record<string, unknown> : null;
 
     const tags = Array.isArray(presetData.tags)
@@ -462,7 +496,7 @@ const FIELD_HEURISTICS: Array<[RegExp, () => unknown]> = [
   [/^(mana|mp|energy)$/i, () => 60],
   [/^percent(age)?$|^progress$/i, () => 66],
   [/^level$/i, () => 5],
-  [/^(color|colour)$/i, () => "#9b5cff"],
+  [/^(color|colour)$/i, () => "#75f4e8"],
   [/^(background[-_]?)?color$/i, () => "#1a1a2e"],
   [/^description$/i, () => "A brief description of the current state."],
   [/^notes?$/i, () => "No special notes."],

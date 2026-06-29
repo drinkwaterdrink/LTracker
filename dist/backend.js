@@ -228,7 +228,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.22";
+var EXTENSION_VERSION = "0.23";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -2660,31 +2660,39 @@ function isRecord7(value) {
 function stringValue2(value, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
-var SECRET_PATTERNS = [
-  /api[_-]?key/i,
-  /secret/i,
-  /password/i,
-  /token(?!s$)/i,
-  /auth[_-]?bearer/i,
-  /private[_-]?key/i,
-  /access[_-]?key/i,
-  /credential/i
-];
-function containsSecretKeys(obj, depth = 0) {
-  if (depth > 10 || !isRecord7(obj)) return false;
-  for (const key of Object.keys(obj)) {
-    if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) return true;
-    if (isRecord7(obj[key]) && containsSecretKeys(obj[key], depth + 1)) return true;
-  }
-  return false;
+var REAL_CREDENTIAL_KEY_NAMES = /* @__PURE__ */ new Set([
+  "apikey",
+  "authkey",
+  "authtoken",
+  "bearer",
+  "bearertoken",
+  "credential",
+  "credentials",
+  "clientsecret",
+  "password",
+  "secret",
+  "privatekey",
+  "secretkey",
+  "token",
+  "accesskey"
+]);
+function credentialKeyName(key) {
+  return key.replace(/[^a-z0-9]/gi, "").toLowerCase();
 }
-function stripSecretKeys(obj, depth = 0) {
+function isRealCredentialKey(key) {
+  return REAL_CREDENTIAL_KEY_NAMES.has(credentialKeyName(key));
+}
+function stripRecommendedSettingCredentials(obj, path, strippedPaths, depth = 0) {
   if (depth > 10) return {};
   const result = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (SECRET_PATTERNS.some((pattern) => pattern.test(key))) continue;
+    const nextPath = `${path}.${key}`;
+    if (isRealCredentialKey(key)) {
+      strippedPaths.push(nextPath);
+      continue;
+    }
     if (isRecord7(value)) {
-      result[key] = stripSecretKeys(value, depth + 1);
+      result[key] = stripRecommendedSettingCredentials(value, nextPath, strippedPaths, depth + 1);
     } else {
       result[key] = value;
     }
@@ -2790,16 +2798,29 @@ function exportPresetPack(preset, options) {
   return pack;
 }
 function validatePackRecommendedSettings(value) {
-  if (!isRecord7(value)) return null;
+  if (!isRecord7(value)) return { settings: null, warnings: [] };
   const result = {};
-  if (isRecord7(value.connection)) result.connection = stripSecretKeys(value.connection);
+  const strippedPaths = [];
+  if (isRecord7(value.connection)) {
+    result.connection = stripRecommendedSettingCredentials(
+      value.connection,
+      "recommendedSettings.connection",
+      strippedPaths
+    );
+  }
   if (isRecord7(value.memory)) result.memory = value.memory;
   if (isRecord7(value.injection)) result.injection = value.injection;
   if (isRecord7(value.renderer)) result.renderer = value.renderer;
   if (isRecord7(value.messageDisplay)) result.messageDisplay = value.messageDisplay;
   if (isRecord7(value.expandedWidth)) result.expandedWidth = value.expandedWidth;
-  if (isRecord7(value.budget)) result.budget = stripSecretKeys(value.budget);
-  return Object.keys(result).length > 0 ? result : null;
+  if (isRecord7(value.budget)) result.budget = value.budget;
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (key !== "connection" && key !== "memory" && key !== "injection" && key !== "renderer" && key !== "messageDisplay" && key !== "expandedWidth" && key !== "budget" && isRecord7(nestedValue)) {
+      stripRecommendedSettingCredentials(nestedValue, `recommendedSettings.${key}`, strippedPaths);
+    }
+  }
+  const warnings = strippedPaths.map((path) => `Removed credential-like recommended setting field: ${path}`);
+  return { settings: Object.keys(result).length > 0 ? result : null, warnings };
 }
 function importPresetPack(value, existingIds, now) {
   if (!isRecord7(value)) {
@@ -2808,9 +2829,6 @@ function importPresetPack(value, existingIds, now) {
   if (value.kind === PRESET_PACK_KIND) {
     if (value.formatVersion !== PRESET_PACK_FORMAT_VERSION) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: `Unsupported preset pack format version: ${value.formatVersion}. Expected ${PRESET_PACK_FORMAT_VERSION}.`, warnings: [], packMeta: null };
-    }
-    if (containsSecretKeys(value)) {
-      return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import rejected: pack contains potential secret/API key fields.", warnings: [], packMeta: null };
     }
     const presetData = isRecord7(value.preset) ? value.preset : null;
     if (!presetData) {
@@ -2846,7 +2864,9 @@ function importPresetPack(value, existingIds, now) {
     if (!preset.promptInstructions.trim()) {
       warnings.push("Imported preset has empty prompt instructions.");
     }
-    const recommendedSettings = validatePackRecommendedSettings(value.recommendedSettings);
+    const recommendedSettingsResult = validatePackRecommendedSettings(value.recommendedSettings);
+    warnings.push(...recommendedSettingsResult.warnings);
+    const recommendedSettings = recommendedSettingsResult.settings;
     const exampleSnapshot = isRecord7(value.exampleSnapshot) ? value.exampleSnapshot : null;
     const tags = Array.isArray(presetData.tags) ? presetData.tags.filter((t) => typeof t === "string") : [];
     const packMeta = {
@@ -2912,7 +2932,7 @@ var FIELD_HEURISTICS = [
   [/^(mana|mp|energy)$/i, () => 60],
   [/^percent(age)?$|^progress$/i, () => 66],
   [/^level$/i, () => 5],
-  [/^(color|colour)$/i, () => "#9b5cff"],
+  [/^(color|colour)$/i, () => "#75f4e8"],
   [/^(background[-_]?)?color$/i, () => "#1a1a2e"],
   [/^description$/i, () => "A brief description of the current state."],
   [/^notes?$/i, () => "No special notes."],

@@ -2797,20 +2797,25 @@ test("frontend exposes a storage-free Preset Render Lab", () => {
   assert.match(frontend, /data-action="open-render-lab-preview"/);
   assert.match(frontend, /data-action="open-render-lab-fullscreen-preview"/);
   assert.match(frontend, /ltracker-render-lab-overlay/);
+  assert.match(frontend, /Open Preview/);
+  assert.match(frontend, /Open Fullscreen Preview/);
   assert.match(frontend, /copy-render-lab-html/);
   assert.match(frontend, /copy-render-lab-sample/);
   assert.match(frontend, /copy-render-lab-report/);
+  assert.match(frontend, /copy-validation-report/);
+  assert.match(frontend, /Render Lab previews open in the floating preview overlay/);
   assert.match(frontend, /generateSampleSnapshot\(schema, renderLabSampleMode\)/);
   assert.match(frontend, /renderHtmlTemplate\(/);
   assert.match(frontend, /recordRenderLabDiagnostics/);
+  assert.doesNotMatch(frontend, /Latest sanitized preview/);
   assert.doesNotMatch(frontend, /type: "render_lab/);
 });
 
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
-    "Version: `0.22`",
-    "Current release: `0.22 Drawer Shell Polish + True Panel Navigation`",
+    "Version: `0.23`",
+    "Current release: `0.23 Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup`",
     "Drawer Command Center",
     "Sticky Command Header",
     "Scrollable Active Panel",
@@ -2889,6 +2894,13 @@ test("README settings reference covers the major setting groups", () => {
     "{{meterWidth value}}",
     "Trusted SVG allowlist",
     "Preset Import Review And Validation",
+    "v0.23 Import And Validation Cleanup",
+    "Fictional tracker fields named like secrets/tokens/credentials are allowed",
+    "real connection credentials in recommended settings are stripped",
+    "Pack chars",
+    "Model prompt token estimate",
+    "Template chars",
+    "Rendered chars",
     "This preset uses:",
     "Possible raw object interpolation",
     "Possible mobile overflow",
@@ -2940,11 +2952,11 @@ test("README settings reference covers the major setting groups", () => {
     "template CSS stripped",
     "tracker generated for wrong swipe",
     "old tracker changed appearance",
-    "0.23 Sequential + Partial Regeneration",
-    "0.24 Cleanup / Repair / Pending Fields",
-    "0.25 World Books, Character Exclusions, and Context Filters",
-    "0.26 Dev Mode JS Sandbox Experiments",
-    "0.27 Preset Marketplace / Pack Collections / Advanced Export Polish",
+    "0.24 Sequential + Partial Regeneration",
+    "0.25 Cleanup / Repair / Pending Fields",
+    "0.26 World Books, Character Exclusions, and Context Filters",
+    "0.27 Dev Mode JS Sandbox Experiments",
+    "0.28 Preset Marketplace / Pack Collections / Advanced Export Polish",
   ]) {
     assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
@@ -3241,16 +3253,116 @@ test("v0.17 Preset Pack Import/Export + Validation + Snapshot tests", () => {
   assert.equal((snapshot.list as unknown[]).length, 2); // array size constraint
 });
 
-test("v0.22 Release Completion Verification", () => {
+test("preset pack import allows narrative secret-like schema fields", () => {
+  const narrativePreset: TrackerSchemaPreset = {
+    id: "narrative-secrets",
+    name: "Narrative Secrets",
+    description: "Schema intentionally uses fictional secret/private/token words.",
+    version: "1.0",
+    createdAt: "2026-06-28",
+    updatedAt: "2026-06-28",
+    jsonSchema: {
+      type: "object",
+      properties: {
+        secrets: { type: "array", items: { type: "string" } },
+        secretHints: { type: "string" },
+        privateKnowledge: { type: "string" },
+        tokens: { type: "array", items: { type: "string" } },
+        credentials: { type: "string" },
+        hiddenTruths: { type: "array", items: { type: "object" } },
+      },
+    },
+    htmlTemplate: "<section>{{secretHints}}{{#each secrets}}{{this}}{{/each}}</section>",
+    promptInstructions: "Track secrets, private knowledge, tokens, and credentials as fictional story state.",
+    notes: "private token secret credential words here are narrative, not app secrets.",
+    origin: "user_created",
+  };
+  const pack = exportPresetPack(narrativePreset, {
+    exampleSnapshot: {
+      secrets: ["The door remembers."],
+      secretHints: "Look below the ash.",
+      privateKnowledge: "Only the narrator knows this.",
+      tokens: ["brass-token"],
+      credentials: "fictional court pass",
+    },
+  });
+
+  const imported = importPresetPack(pack, [], "2026-06-28");
+  assert.equal(imported.ok, true);
+  assert.equal(imported.error, null);
+  assert.equal(imported.preset?.name, "Narrative Secrets");
+  assert.equal(typeof imported.preset?.jsonSchema, "object");
+  assert.notEqual(imported.preset?.jsonSchema, null);
+  assert.match(JSON.stringify(imported.preset?.jsonSchema), /privateKnowledge/);
+  assert.match(JSON.stringify(imported.exampleSnapshot), /brass-token/);
+});
+
+test("preset pack import strips real recommended setting credentials without leaking values", () => {
+  const pack = exportPresetPack(DEFAULT_TRACKER_PRESET);
+  const unsafeValue = "sk-live-do-not-leak";
+  const unsafePassword = "hunter2-do-not-leak";
+  const unsafePrivateKey = "private-key-do-not-leak";
+  const imported = importPresetPack({
+    ...pack,
+    recommendedSettings: {
+      connection: {
+        mode: "selected_connection_raw",
+        apiKey: unsafeValue,
+        password: unsafePassword,
+        provider: {
+          privateKey: unsafePrivateKey,
+        },
+        credentials: {
+          token: "token-do-not-leak",
+        },
+        parameters: {
+          temperature: 0.2,
+        },
+      },
+    },
+  }, [], "2026-06-28");
+
+  assert.equal(imported.ok, true);
+  const connection = imported.recommendedSettings?.connection as Record<string, unknown>;
+  assert.ok(connection);
+  assert.equal("apiKey" in connection, false);
+  assert.equal("password" in connection, false);
+  assert.deepEqual(connection.parameters, { temperature: 0.2 });
+  assert.doesNotMatch(JSON.stringify(imported.recommendedSettings), /do-not-leak|hunter2|private-key|token-do-not-leak/);
+  assert.ok(imported.warnings.some((warning) => warning.includes("recommendedSettings.connection.apiKey")));
+  assert.ok(imported.warnings.some((warning) => warning.includes("recommendedSettings.connection.password")));
+  assert.ok(imported.warnings.some((warning) => warning.includes("recommendedSettings.connection.provider.privateKey")));
+  assert.ok(imported.warnings.every((warning) => !warning.includes(unsafeValue) && !warning.includes(unsafePassword)));
+});
+
+test("exported preset packs never include connection ids or credential-like fields", () => {
+  const exported = exportPresetPack(DEFAULT_TRACKER_PRESET, {
+    includeRecommendedSettings: true,
+    settings: {
+      ...DEFAULT_SETTINGS,
+      connection: {
+        ...DEFAULT_SETTINGS.connection,
+        selectedConnectionId: "conn-secret-id",
+        selectedConnectionName: "Private Tracker Profile",
+      },
+    },
+  });
+  const serialized = JSON.stringify(exported);
+  assert.doesNotMatch(serialized, /conn-secret-id|Private Tracker Profile/);
+  assert.doesNotMatch(serialized, /apiKey|secretKey|password|privateKey|accessKey|bearer/i);
+});
+
+test("v0.23 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.22");
-  assert.equal(spindleJson.version, "0.22");
-  assert.equal(EXTENSION_VERSION, "0.22");
+  assert.equal(packageJson.version, "0.23");
+  assert.equal(spindleJson.version, "0.23");
+  assert.equal(EXTENSION_VERSION, "0.23");
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.23 - Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup/);
   assert.match(changelog, /## 0\.22 - Drawer Shell Polish \+ True Panel Navigation/);
   assert.match(changelog, /## 0\.21 - Drawer Command Center \/ Settings UX Overhaul/);
   assert.match(changelog, /## 0\.20 - Preset Authoring Studio \+ Template Helper Pack \+ Mobile Render QA/);
@@ -3260,9 +3372,12 @@ test("v0.22 Release Completion Verification", () => {
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.22`/);
-  assert.match(readme, /Current release: `0\.22 Drawer Shell Polish \+ True Panel Navigation`/);
+  assert.match(readme, /Version: `0\.23`/);
+  assert.match(readme, /Current release: `0\.23 Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup`/);
   assert.match(readme, /Drawer Command Center/);
+  assert.match(readme, /v0\.23 Import And Validation Cleanup/);
+  assert.match(readme, /fictional fields such as `secrets`, `secretHints`, `tokens`, `credentials`, or `privateKnowledge`/);
+  assert.match(readme, /Warnings name the stripped setting path only and never echo the secret value/);
   assert.match(readme, /Only the active panel renders at a time/);
   assert.match(readme, /Render Lab.*floating fullscreen-style overlay/s);
   assert.match(readme, /Quick Setup Profiles/);

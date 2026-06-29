@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.22`
+Version: `0.23`
 
-Current release: `0.22 Drawer Shell Polish + True Panel Navigation`
+Current release: `0.23 Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -23,10 +23,12 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Preset QA warnings for raw array/object interpolation, mobile overflow risk, and vertical text risk.
 - Safe Mode for shared or unknown presets, with full style-block removal so raw CSS is not shown as text.
 - Preset pack import/export, import review, validation reports, sample snapshot rendering, and Ultra Tracker Mode budgets.
+- Preset import credential guardrails that allow fictional schema/template words like secrets, tokens, and credentials while stripping real connection credentials from recommended settings.
+- Compact validation UX with grouped reports, clear pack/template/rendered character labels, and reliable copyable validation reports.
 
 ## Drawer Command Center
 
-Version `0.22` turns the drawer into a true mobile-first app shell:
+Version `0.22` turned the drawer into a true mobile-first app shell, and `0.23` tightens the shell, theme, import review, Render Lab, and validation report UX:
 
 ```text
 Sticky Command Header
@@ -49,6 +51,24 @@ Home shows the active preset, selected tracker profile, display surface, auto-mo
 Presets keeps everyday preset selection, import/export, validation, duplicate/delete/reset, and compatibility warnings visible. The large JSON Schema, HTML Template, Prompt Instructions, Description, and Notes authoring fields are collapsed behind Authoring mode.
 
 Render Lab remains storage-free and chat-safe. The drawer panel shows controls plus a compact result summary. The rendered tracker preview opens in a floating fullscreen-style overlay with a large fixed close button, normal Close button, mobile safe-area spacing, optional Escape close, and backdrop-close behavior that follows the current display setting. It previews the active or staged preset with phone narrow, phone large, tablet, desktop, or custom widths; minimal, normal, stress, mobile torture, cast-heavy, or world-heavy samples; and inline contained, inline wide, popover, or fullscreen shells. It can copy sample JSON, sanitized HTML, and the lint report.
+
+## v0.23 Import And Validation Cleanup
+
+Preset import now distinguishes story/preset vocabulary from actual extension credentials. A tracker schema may safely use fictional fields such as `secrets`, `secretHints`, `tokens`, `credentials`, or `privateKnowledge`; those names are common tracker concepts and no longer cause broad false-positive rejection.
+
+LTracker still strips real credential-bearing recommended settings before install. This applies to actual connection/provider/config fields such as `apiKey`, `secretKey`, `password`, `bearer`, `privateKey`, `accessKey`, and similar credential names inside `recommendedSettings.connection` or future provider/auth-style settings blocks. Warnings name the stripped setting path only and never echo the secret value.
+
+Validation reports now show the small summary first:
+
+- Errors, warnings, and pass counts.
+- Pack chars.
+- Model prompt token estimate.
+- Template chars.
+- Schema chars.
+- Rendered chars.
+- Renderer requirements and mobile QA warnings in collapsed groups.
+
+Render Lab previews stay out of the normal drawer scroll. Use `Open Preview` or `Open Fullscreen Preview` to inspect the rendered tracker in the overlay.
 
 Display uses visual cards instead of raw mode selectors:
 
@@ -212,7 +232,7 @@ class, aria-hidden, role
 
 ### Dev Mode
 
-Dev Mode is a future explicit opt-in sandbox experiment. Imported presets cannot enable Dev Mode automatically. JavaScript remains disabled in v0.22; if script-like content is detected, LTracker strips it and warns:
+Dev Mode is a future explicit opt-in sandbox experiment. Imported presets cannot enable Dev Mode automatically. JavaScript remains disabled in v0.23; if script-like content is detected, LTracker strips it and warns:
 
 ```text
 JavaScript requires Dev Mode and was not executed.
@@ -496,7 +516,7 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 - Tracker too narrow: use Display -> Inline Wide and Expanded width mode `full_mobile` on phones or `wide` on desktop. If the host message bubble still constrains it, use Anchored Popover or Fullscreen Reader.
 - Popover not opening: confirm Display is Anchored Popover, message display is enabled, and the compact LTracker pill is present for that message/swipe. Check Diagnostics -> Display / DOM for overlay and mount details.
-- Preset import rejected: open Presets -> Import Review, confirm the file is a `.ltracker.json`, check import size limits, and validate the preset before installing.
+- Preset import rejected: open Presets -> Import Review, confirm the file is a `.ltracker.json`, check import size limits, and validate the preset before installing. Fictional tracker fields named like secrets/tokens/credentials are allowed; real connection credentials in recommended settings are stripped with path-only warnings.
 - Raw JSON appears in tracker: run Validate Preset or Render Lab. Direct `{{rel}}`, `{{pockets}}`, or `{{cast}}` interpolation should usually become `{{#each ...}}`, `{{chipList ...}}`, or `{{fieldChipList ...}}`.
 - Template CSS stripped: use Trusted Mode for user-authored presets that need scoped CSS. Safe Mode removes style blocks by design.
 - Tracker generated for wrong swipe: check Diagnostics -> Storage / history and Display / DOM. LTracker keys tracker state by chat, message, and swipe identity; missing exact state shows a generate control instead of silently falling back.
@@ -514,12 +534,12 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 ## Roadmap
 
-1. `0.23 Sequential + Partial Regeneration`
-2. `0.24 Cleanup / Repair / Pending Fields`
-3. `0.25 World Books, Character Exclusions, and Context Filters`
-4. `0.26 Dev Mode JS Sandbox Experiments`
-5. `0.27 Preset Marketplace / Pack Collections / Advanced Export Polish`
+1. `0.24 Sequential + Partial Regeneration`
+2. `0.25 Cleanup / Repair / Pending Fields`
+3. `0.26 World Books, Character Exclusions, and Context Filters`
+4. `0.27 Dev Mode JS Sandbox Experiments`
+5. `0.28 Preset Marketplace / Pack Collections / Advanced Export Polish`
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.22`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.23`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

@@ -86,32 +86,10 @@ const STYLES = `
   font: inherit;
   min-height: 100%;
 }
-.ltracker-shell {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-}
 .ltracker-command-center {
   background:
-    radial-gradient(circle at top left, rgba(92, 120, 255, 0.14), transparent 34%),
-    radial-gradient(circle at top right, rgba(38, 198, 218, 0.10), transparent 30%);
-}
-.ltracker-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.ltracker-command-header {
-  backdrop-filter: blur(16px);
-  background: color-mix(in srgb, currentColor 7%, transparent);
-  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-  border-radius: 12px;
-  padding: 10px;
-  position: sticky;
-  top: 0;
-  z-index: 20;
+    radial-gradient(circle at top left, rgba(117, 244, 232, 0.12), transparent 34%),
+    radial-gradient(circle at top right, rgba(143, 123, 255, 0.08), transparent 30%);
 }
 .ltracker-brand {
   align-items: center;
@@ -149,25 +127,11 @@ const STYLES = `
   flex-wrap: wrap;
   gap: 8px;
 }
-.ltracker-section-nav,
 .ltracker-chip-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.ltracker-command-nav {
-  background: color-mix(in srgb, currentColor 5%, transparent);
-  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-  border-radius: 12px;
-  flex-wrap: nowrap;
-  margin: -2px 0 2px;
-  overflow-x: auto;
-  padding: 6px;
-  position: sticky;
-  top: 64px;
-  z-index: 18;
-}
-.ltracker-nav-chip,
 .ltracker-chip {
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
   border-radius: 999px;
@@ -179,40 +143,10 @@ const STYLES = `
   padding: 5px 8px;
   text-decoration: none;
 }
-.ltracker-nav-chip {
-  background: color-mix(in srgb, currentColor 5%, transparent);
-}
-.ltracker-nav-chip {
-  align-items: center;
-  flex: 0 0 auto;
-  min-height: 36px;
-  padding: 7px 11px;
-}
-.ltracker-nav-chip:hover {
-  background: color-mix(in srgb, currentColor 11%, transparent);
-}
 .ltracker-card-grid {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-}
-.ltracker-command-card,
-.ltracker-display-card,
-.ltracker-setup-card {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, currentColor 7%, transparent), color-mix(in srgb, currentColor 3%, transparent));
-  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-  border-radius: 8px;
-  min-width: 0;
-  padding: 10px;
-}
-.ltracker-command-card-header,
-.ltracker-display-card-header {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  margin-bottom: 6px;
 }
 .ltracker-card-title {
   font-weight: 750;
@@ -222,37 +156,6 @@ const STYLES = `
   font-size: 0.82rem;
   line-height: 1.38;
   opacity: 0.78;
-}
-.ltracker-status-chip {
-  align-items: center;
-  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
-  border-radius: 999px;
-  display: inline-flex;
-  font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1.1;
-  min-height: 24px;
-  padding: 4px 8px;
-}
-.ltracker-status-chip[data-tone="success"] {
-  background: rgba(52, 168, 83, 0.14);
-  border-color: rgba(52, 168, 83, 0.36);
-  color: #66d18f;
-}
-.ltracker-status-chip[data-tone="warning"] {
-  background: rgba(251, 188, 5, 0.14);
-  border-color: rgba(251, 188, 5, 0.36);
-  color: #ffd45a;
-}
-.ltracker-status-chip[data-tone="error"] {
-  background: rgba(234, 67, 53, 0.14);
-  border-color: rgba(234, 67, 53, 0.40);
-  color: #ff8f86;
-}
-.ltracker-status-chip[data-tone="active"] {
-  background: rgba(110, 92, 255, 0.18);
-  border-color: rgba(110, 92, 255, 0.44);
-  color: #b8b0ff;
 }
 .ltracker-display-card {
   display: flex;
@@ -373,8 +276,8 @@ const STYLES = `
 }
 .ltracker-reader-fixed-close {
   align-items: center;
-  background: #ea4335;
-  border: 1px solid #ff8a80;
+  background: #e24f5d;
+  border: 1px solid #ff9aa4;
   border-radius: 999px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   color: #fff;
@@ -424,11 +327,6 @@ const STYLES = `
 .ltracker-display-preview-body {
   overflow: auto;
   padding: 12px;
-}
-.ltracker-panel {
-  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
-  border-radius: 8px;
-  padding: 11px;
 }
 .ltracker-label {
   display: block;
@@ -623,13 +521,6 @@ const STYLES = `
   padding: 8px;
 }
 @media (max-width: 520px) {
-  .ltracker-shell {
-    padding: 10px;
-  }
-  .ltracker-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
   .ltracker-actions,
   .ltracker-copy-actions {
     width: 100%;
@@ -639,9 +530,6 @@ const STYLES = `
   }
   .ltracker-grid {
     grid-template-columns: 1fr;
-  }
-  .ltracker-command-nav {
-    top: 86px;
   }
   .ltracker-card-grid {
     grid-template-columns: 1fr;
@@ -731,17 +619,38 @@ const STYLES = `
     linear-gradient(145deg, #060b11, #0a121b 52%, #080d13);
   color: var(--lt-text);
 }
+.ltracker-reader-overlay,
+.ltracker-display-preview-overlay,
+.ltracker-render-lab-overlay {
+  --lt-bg: #071017;
+  --lt-shell: rgba(8, 16, 24, 0.94);
+  --lt-panel: rgba(12, 22, 32, 0.92);
+  --lt-card: rgba(16, 27, 39, 0.86);
+  --lt-card2: rgba(23, 37, 52, 0.72);
+  --lt-line: rgba(148, 181, 202, 0.18);
+  --lt-text: #f4f7fb;
+  --lt-muted: #a5b3c2;
+  --lt-accent: #75f4e8;
+  --lt-accent2: #8f7bff;
+  --lt-success: #72e49a;
+  --lt-warning: #ffd166;
+  --lt-danger: #ff7b7b;
+  --lt-radius: 18px;
+  --lt-shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
+}
 .ltracker-drawer-shell {
   box-sizing: border-box;
   color: var(--lt-text);
   display: grid;
-  gap: 12px;
+  gap: 10px;
   grid-template-rows: auto auto minmax(0, 1fr);
   height: min(100%, 100vh);
+  height: min(100%, 100dvh);
   max-height: 100vh;
+  max-height: 100dvh;
   min-height: 0;
   overflow: hidden;
-  padding: 12px;
+  padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
   position: relative;
 }
 .ltracker-drawer-shell::before {
@@ -770,8 +679,8 @@ const STYLES = `
 .ltracker-command-header {
   border-radius: calc(var(--lt-radius) + 4px);
   display: grid;
-  gap: 14px;
-  padding: 18px;
+  gap: 10px;
+  padding: 14px;
   position: static;
   top: auto;
 }
@@ -797,7 +706,7 @@ const STYLES = `
   grid-template-columns: repeat(5, minmax(0, 1fr));
   margin: 0;
   overflow: hidden;
-  padding: 5px;
+  padding: 4px;
   position: static;
   top: auto;
   z-index: 2;
@@ -859,6 +768,10 @@ const STYLES = `
 }
 .ltracker-command-card-header,
 .ltracker-display-card-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
   margin-bottom: 10px;
 }
 .ltracker-card-title {
@@ -887,11 +800,15 @@ const STYLES = `
   background: linear-gradient(180deg, rgba(117, 244, 232, 0.32), rgba(38, 159, 166, 0.34));
 }
 .ltracker-status-chip {
+  align-items: center;
   border-color: var(--lt-line);
+  display: inline-flex;
   font-size: 0.76rem;
+  font-weight: 760;
   gap: 6px;
-  min-height: 30px;
-  padding: 6px 11px;
+  line-height: 1.1;
+  min-height: 28px;
+  padding: 5px 10px;
 }
 .ltracker-status-chip::before {
   background: currentColor;
@@ -942,6 +859,118 @@ const STYLES = `
 }
 .ltracker-details summary {
   color: var(--lt-text);
+}
+.ltracker-panel-spaced {
+  margin-top: 12px;
+}
+.ltracker-list-compact {
+  margin: 6px 0 0 18px;
+  padding: 0;
+}
+.ltracker-list-compact li + li {
+  margin-top: 4px;
+}
+.ltracker-import-review,
+.ltracker-validation-report,
+.ltracker-sample-snapshot-preview {
+  background: linear-gradient(180deg, rgba(16, 27, 39, 0.84), rgba(7, 15, 22, 0.70));
+  border: 1px solid var(--lt-line);
+  border-radius: 16px;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
+  margin-top: 14px;
+  padding: 14px;
+}
+.ltracker-import-review {
+  margin-bottom: 14px;
+}
+.ltracker-import-review-title,
+.ltracker-validation-title,
+.ltracker-sample-preview-title {
+  color: var(--lt-accent);
+  font-size: 0.95rem;
+  font-weight: 800;
+  margin: 0 0 10px;
+}
+.ltracker-validation-title[data-ok="true"] {
+  color: var(--lt-success);
+}
+.ltracker-validation-title[data-ok="false"] {
+  color: var(--lt-danger);
+}
+.ltracker-themed-callout {
+  background: rgba(117, 244, 232, 0.045);
+  border: 1px solid rgba(117, 244, 232, 0.22);
+  border-radius: 12px;
+  color: var(--lt-text);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin-bottom: 12px;
+  padding: 10px;
+}
+.ltracker-rec-details {
+  color: var(--lt-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin-top: 6px;
+}
+.ltracker-validation-scroll {
+  background: rgba(0, 0, 0, 0.16);
+  border: 1px solid rgba(148, 181, 202, 0.12);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  max-height: 210px;
+  overflow: auto;
+  padding: 8px;
+}
+.ltracker-validation-entry {
+  align-items: flex-start;
+  display: flex;
+  font-size: 0.78rem;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ltracker-validation-badge {
+  border-radius: 999px;
+  color: #061018;
+  flex: 0 0 auto;
+  font-size: 0.64rem;
+  font-weight: 900;
+  min-width: 54px;
+  padding: 3px 7px;
+  text-align: center;
+  text-transform: uppercase;
+}
+.ltracker-validation-badge[data-severity="error"] {
+  background: var(--lt-danger);
+}
+.ltracker-validation-badge[data-severity="warning"] {
+  background: var(--lt-warning);
+}
+.ltracker-validation-badge[data-severity="pass"] {
+  background: var(--lt-success);
+}
+.ltracker-validation-badge[data-severity="info"] {
+  background: var(--lt-accent);
+}
+.ltracker-validation-category {
+  color: var(--lt-muted);
+  font-weight: 800;
+}
+.ltracker-warning-text {
+  color: var(--lt-warning);
+}
+.ltracker-success-text {
+  color: var(--lt-success);
+}
+.ltracker-info-text {
+  color: var(--lt-accent);
+}
+.ltracker-danger-text {
+  color: var(--lt-danger);
+}
+.ltracker-compact-pre {
+  font-size: 0.72rem;
+  max-height: 160px;
 }
 .ltracker-render-lab {
   border: 0;
@@ -1015,6 +1044,16 @@ const STYLES = `
   overflow: auto;
   padding: 10px;
 }
+.ltracker-display-preview-panel {
+  background: linear-gradient(180deg, rgba(15, 26, 38, 0.98), rgba(6, 12, 18, 0.98));
+  border-color: var(--lt-line);
+  border-radius: 14px;
+  box-shadow: var(--lt-shadow);
+  color: var(--lt-text);
+}
+.ltracker-display-preview-header {
+  border-bottom-color: var(--lt-line);
+}
 .ltracker-render-lab-close {
   align-items: center;
   background: #e24f5d;
@@ -1043,17 +1082,29 @@ const STYLES = `
 }
 @media (max-width: 520px) {
   .ltracker-drawer-shell {
-    gap: 10px;
-    padding: 10px;
+    gap: 8px;
   }
   .ltracker-command-header {
-    padding: 15px;
+    padding: 11px;
+  }
+  .ltracker-title {
+    font-size: 1.18rem;
+  }
+  .ltracker-version {
+    font-size: 0.82rem;
   }
   .ltracker-command-nav {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
   .ltracker-nav-chip {
-    min-height: 40px;
+    min-height: 38px;
+    padding-left: 2px;
+    padding-right: 2px;
+  }
+  .ltracker-status-chip {
+    font-size: 0.7rem;
+    min-height: 26px;
+    padding: 4px 8px;
   }
   .ltracker-render-lab-overlay-header {
     align-items: flex-start;
@@ -2100,9 +2151,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       : entry.rendered.controlState.error ? `<span class="ltd-pill ltd-warning" data-ltracker-status>warning</span>` : "";
 
     panel.innerHTML = `
-      <div class="ltd-popover-header" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; min-width: 0; border-bottom: 1px solid #333; padding: 8px 10px 8px 12px; background: #222; border-top-left-radius: 8px; border-top-right-radius: 8px;">
+      <div class="ltd-popover-header" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; min-width: 0; border-bottom: 1px solid rgba(148,181,202,.18); padding: 8px 10px 8px 12px; background: #101b27; border-top-left-radius: 8px; border-top-right-radius: 8px;">
         <div style="display: flex; align-items: center; gap: 8px; font-family: sans-serif; min-width: 0; flex: 1 1 auto; flex-wrap: wrap;">
-          <span style="font-weight: bold; color: #9b5cff; font-size: 13px;">${preview ? "LTracker Popover Preview" : "LTracker Popover"}</span>
+          <span style="font-weight: bold; color: #75f4e8; font-size: 13px;">${preview ? "LTracker Popover Preview" : "LTracker Popover"}</span>
           <span style="font-size: 11px; color: #aaa; min-width: 0; max-width: min(42vw, 250px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(meta)}</span>
           ${elapsedMarkup}
           ${statusMarkup}
@@ -2112,10 +2163,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           <button class="ltd-icon-button" data-popover-action="toggle_regenerate" title="Regenerate" style="width: 22px; height: 22px; padding: 0;">${iconSvg(entry.rendered.isRegenerating ? "stop" : "refresh")}</button>
           <button class="ltd-icon-button" data-popover-action="edit" title="Edit" style="width: 22px; height: 22px; padding: 0;">${iconSvg("edit")}</button>
           <button class="ltd-icon-button" data-popover-action="delete" title="Delete" style="width: 22px; height: 22px; padding: 0;">${iconSvg("delete")}</button>
-          <button class="ltd-icon-button" data-popover-action="close" title="Close" style="background: #ea4335; border-color: #ea4335; color: #fff; min-width: 44px; min-height: 44px; width: 44px; height: 44px; padding: 0; font-weight: bold; font-size: 20px; line-height: 1;">&times;</button>
+          <button class="ltd-icon-button" data-popover-action="close" title="Close" style="background: #e24f5d; border-color: #ff9aa4; color: #fff; min-width: 44px; min-height: 44px; width: 44px; height: 44px; padding: 0; font-weight: bold; font-size: 20px; line-height: 1;">&times;</button>
         </div>
       </div>
-      <div class="ltd-popover-body" style="padding: 12px; overflow-y: auto; background: #161616; flex: 1; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; overflow-x: auto; max-width: 100%;">
+      <div class="ltd-popover-body" style="padding: 12px; overflow-y: auto; background: #071017; flex: 1; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; overflow-x: auto; max-width: 100%;">
         ${body}
       </div>
     `;
@@ -2251,7 +2302,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       left: "0",
       width: "100vw",
       height: "100vh",
-      background: "#111",
+      background: "#071017",
       zIndex: "999999",
       color: "#eee",
       fontFamily: "system-ui, -apple-system, sans-serif",
@@ -2283,9 +2334,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
     overlay.innerHTML = `
       <button class="ltracker-reader-fixed-close" data-reader-action="close" title="Close Reader" aria-label="Close Reader">&times;</button>
-      <header class="ltracker-reader-header" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; min-width: 0; border-bottom: 1px solid #333; padding: calc(10px + env(safe-area-inset-top)) 64px 10px 16px; background: #1a1a1a; font-family: sans-serif; flex-wrap: wrap;">
+      <header class="ltracker-reader-header" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; min-width: 0; border-bottom: 1px solid rgba(148,181,202,.18); padding: calc(10px + env(safe-area-inset-top)) 64px 10px 16px; background: #101b27; font-family: sans-serif; flex-wrap: wrap;">
         <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 260px; flex-wrap: wrap;">
-          <h2 style="margin: 0; font-size: 15px; font-weight: bold; color: #9b5cff; min-width: 0;">${preview ? "LTracker Reader Preview" : "LTracker Reader"}</h2>
+          <h2 style="margin: 0; font-size: 15px; font-weight: bold; color: #75f4e8; min-width: 0;">${preview ? "LTracker Reader Preview" : "LTracker Reader"}</h2>
           <span style="font-size: 11px; color: #aaa; min-width: 0; max-width: min(52vw, 350px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(meta)}</span>
           ${elapsedMarkup}
           ${statusMarkup}
@@ -2294,11 +2345,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           <button class="ltd-icon-button" data-reader-action="toggle_regenerate" title="Regenerate" style="width: 24px; height: 24px; padding: 0;">${iconSvg(entry.rendered.isRegenerating ? "stop" : "refresh")}</button>
           <button class="ltd-icon-button" data-reader-action="edit" title="Edit" style="width: 24px; height: 24px; padding: 0;">${iconSvg("edit")}</button>
           <button class="ltd-icon-button" data-reader-action="delete" title="Delete" style="width: 24px; height: 24px; padding: 0;">${iconSvg("delete")}</button>
-          <button class="ltd-icon-button" data-reader-action="close" title="Close Reader" style="background: #ea4335; border-color: #ea4335; color: #fff; width: auto; padding: 0 12px; font-weight: bold; height: 24px; font-size: 12px; line-height: 22px; cursor: pointer; border-radius: 6px;">Close</button>
+          <button class="ltd-icon-button" data-reader-action="close" title="Close Reader" style="background: #e24f5d; border-color: #ff9aa4; color: #fff; width: auto; padding: 0 12px; font-weight: bold; height: 24px; font-size: 12px; line-height: 22px; cursor: pointer; border-radius: 6px;">Close</button>
         </div>
       </header>
-      <main class="ltracker-reader-body" style="flex: 1; min-height: 0; padding: 18px; overflow-y: auto; background: #111; box-sizing: border-box;">
-        <div class="ltracker-reader-content-wrapper" style="width: 100%; max-width: min(100%, var(--ltracker-reader-content-max, 1100px)); margin: 0 auto; overflow-x: auto; box-sizing: border-box; background: #161616; padding: 15px; border-radius: 8px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+      <main class="ltracker-reader-body" style="flex: 1; min-height: 0; padding: 18px; overflow-y: auto; background: #071017; box-sizing: border-box;">
+        <div class="ltracker-reader-content-wrapper" style="width: 100%; max-width: min(100%, var(--ltracker-reader-content-max, 1100px)); margin: 0 auto; overflow-x: auto; box-sizing: border-box; background: #101b27; padding: 15px; border-radius: 8px; border: 1px solid rgba(148,181,202,.18); box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
           ${body}
         </div>
       </main>
@@ -3835,6 +3886,34 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     ].join("\n");
   }
 
+  function validationReportText(rep: PresetValidationReport): string {
+    const preset = stagedImportPack?.preset ?? state.activePreset;
+    const templateChars = (preset.htmlTemplate ?? "").length;
+    const schemaChars = JSON.stringify(preset.jsonSchema ?? {}).length;
+    return [
+      `Preset Validation: ${rep.ok ? "Passed" : "Failed with Errors"}`,
+      `Errors: ${rep.errorCount}`,
+      `Warnings: ${rep.warningCount}`,
+      `Passes: ${rep.passCount}`,
+      `Pack chars: ${rep.estimatedPackSizeChars}`,
+      `Model prompt tokens: ~${rep.estimatedPromptTokens}`,
+      `Template chars: ${templateChars}`,
+      `Schema chars: ${schemaChars}`,
+      `Rendered chars: ${rep.estimatedRenderedChars}`,
+      `Renderer requirements: ${rep.rendererRequirements.features.join(", ") || "Basic HTML"}`,
+      `Recommended mode: ${rep.rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : rep.rendererRequirements.recommendedMode}`,
+      `Missing schema fields: ${rep.missingPlaceholders.join(", ") || "none"}`,
+      `Unused schema fields: ${rep.unusedSchemaFields.join(", ") || "none"}`,
+      `Raw array interpolation paths: ${rep.rawArrayInterpolationPaths.join(", ") || "none"}`,
+      `Raw object interpolation paths: ${rep.rawObjectInterpolationPaths.join(", ") || "none"}`,
+      `Mobile overflow risks: ${rep.mobileRiskWarnings.join(" | ") || "none"}`,
+      `Vertical text risks: ${rep.verticalTextRiskWarnings.join(" | ") || "none"}`,
+      `Sanitizer warning groups: ${rep.sanitizerWarningGroups.join(" | ") || "none"}`,
+      "",
+      ...rep.entries.map((entry) => `[${entry.severity}] ${entry.category}: ${entry.message}`),
+    ].join("\n");
+  }
+
   function recordRenderLabDiagnostics(result: ReturnType<typeof buildRenderLabPreview>): void {
     localDiagnostics({
       lastPresetRenderLabViewport: renderLabViewport,
@@ -4332,21 +4411,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ?? "No tracker memory block available yet.";
     const injectionPreviewText = state.injectionPreview
       ?? "No injection preview available yet.";
-    const renderPreview = state.renderPreview;
-    const renderStatus = renderPreview?.status ?? "not rendered";
-    const renderSnapshotAt = renderPreview?.snapshotCreatedAt ?? "None";
-    const renderHasTemplate = state.activePreset.htmlTemplate?.trim() ? "yes" : "no";
-    const renderHtmlPreview = renderPreview?.html
-      ? `<div class="ltracker-render-preview">${renderPreview.html}</div>`
-      : `<div class="ltracker-render-preview ltracker-render-placeholder">${escapeHtml("No sanitized HTML preview yet. Render a snapshot to preview the active template.")}</div>`;
-    const renderTextFallback = renderPreview?.textFallback
-      ?? "No text fallback preview yet. Render a snapshot to create one.";
-    const renderWarningsText = renderPreview?.warnings.length
-      ? renderPreview.warnings.join("\n")
-      : "None";
-    const renderErrorsText = renderPreview?.errors.length
-      ? renderPreview.errors.join("\n")
-      : "None";
     const messageHistoryHtml = renderMessageHistory();
     const placementWarning = state.settings.messageDisplay.placement === "top"
       && diagnostics.messageWidgetPlacementReason
@@ -4579,7 +4643,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }
 
       const recDetailsHtml = recDetailsList.length > 0
-        ? `<div class="ltracker-rec-details" style="font-size: 10px; color: #aaa; margin-top: 4px; padding-left: 10px;">Applying recommendations will update:<ul>${recDetailsList.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
+        ? `<div class="ltracker-rec-details">Applying recommendations will update:<ul class="ltracker-list-compact">${recDetailsList.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
         : "";
       const rendererRequirements = detectTemplateRendererRequirements(preset?.htmlTemplate ?? "");
       const importValidation = preset ? validatePresetReport(preset, {
@@ -4597,23 +4661,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         : [];
       const rendererRequirementsHtml = rendererRequirements.features.length > 0 || rendererRequirements.warnings.length > 0
         ? `
-          <div class="ltracker-rec-details" style="font-size: 11px; color: #ddd; margin-bottom: 12px; border: 1px solid rgba(155,92,255,.35); padding: 8px; border-radius: 6px;">
+          <div class="ltracker-themed-callout">
             <strong>This preset uses:</strong>
-            <ul style="margin: 6px 0 6px 18px; padding: 0;">
+            <ul class="ltracker-list-compact">
               ${rendererRequirements.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("") || "<li>Basic HTML template features</li>"}
             </ul>
             <div>Recommended mode: ${escapeHtml(rendererRequirements.recommendedMode === "dev" ? "Trusted; JavaScript remains stripped until future Dev Mode" : rendererRequirements.recommendedMode === "trusted" ? "Trusted" : "Safe")}</div>
-            ${importValidation ? `<div>Estimated prompt tokens: ~${escapeHtml(importValidation.estimatedPromptTokens.toLocaleString())} / rendered size: ${escapeHtml(importValidation.estimatedRenderedChars.toLocaleString())} chars / schema fields: ${escapeHtml(String(importValidation.unusedSchemaFields.length + importValidation.missingPlaceholders.length))} QA paths checked</div>` : ""}
-            ${importQaSignals.length > 0 ? `<div style="color: #fbbc05; margin-top: 4px;">Mobile QA status: review recommended. ${escapeHtml(importQaSignals.join(" / "))}</div>` : `<div style="color: #34a853; margin-top: 4px;">Mobile QA status: no obvious raw-object or mobile layout warnings in sample preview.</div>`}
-            ${rendererRequirements.warnings.map((warning) => `<div style="color: #fbbc05; margin-top: 4px;">${escapeHtml(warning)}</div>`).join("")}
+            ${importValidation ? `<div>Model prompt tokens: ~${escapeHtml(importValidation.estimatedPromptTokens.toLocaleString())} / rendered chars: ${escapeHtml(importValidation.estimatedRenderedChars.toLocaleString())} / QA paths checked: ${escapeHtml(String(importValidation.unusedSchemaFields.length + importValidation.missingPlaceholders.length))}</div>` : ""}
+            ${importQaSignals.length > 0 ? `<div class="ltracker-warning-text">Mobile QA status: review recommended. ${escapeHtml(importQaSignals.join(" / "))}</div>` : `<div class="ltracker-success-text">Mobile QA status: no obvious raw-object or mobile layout warnings in sample preview.</div>`}
+            ${rendererRequirements.warnings.map((warning) => `<div class="ltracker-warning-text">${escapeHtml(warning)}</div>`).join("")}
           </div>
         `
         : "";
 
       importReviewHtml = `
-        <div class="ltracker-import-review" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.02); margin-bottom: 15px;">
-          <h3 style="margin-top: 0; color: #9b5cff; font-size: 14px; font-weight: bold; margin-bottom: 8px;">Preset Pack Import Review</h3>
-          <div class="ltracker-grid ltracker-details" style="margin-bottom: 12px;">
+        <div class="ltracker-import-review">
+          <h3 class="ltracker-import-review-title">Preset Pack Import Review</h3>
+          <div class="ltracker-grid ltracker-details">
             ${renderRow("Pack name", preset?.name ?? "Unknown")}
             ${renderRow("Version", preset?.version ?? "1.0")}
             ${renderRow("Author/Exported by", meta?.author ?? "Unknown")}
@@ -4623,7 +4687,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           </div>
           ${rendererRequirementsHtml}
 
-          <div class="ltracker-settings" style="margin-bottom: 12px;">
+          <div class="ltracker-settings">
             <label class="ltracker-field">
               Preset name (editable)
               <input type="text" data-import-review-name value="${escapeHtml(preset?.name ?? "Imported Preset")}">
@@ -4659,8 +4723,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ` : ""}
           </div>
 
-          <div class="ltracker-actions">
-            <button class="ltracker-button" type="button" data-action="import-preset-pack" style="background: #9b5cff; color: #fff;">
+          <div class="ltracker-actions ltracker-panel-spaced">
+            <button class="ltracker-button" type="button" data-action="import-preset-pack">
               Install Preset
             </button>
             <button class="ltracker-button" type="button" data-action="cancel-import">
@@ -4674,39 +4738,56 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     let validationReportHtml = "";
     if (stagedValidationReport) {
       const rep = stagedValidationReport;
-      const entriesHtml = rep.entries.map((entry) => {
-        let badgeColor = "#444";
-        if (entry.severity === "error") badgeColor = "#ea4335";
-        if (entry.severity === "warning") badgeColor = "#fbbc05";
-        if (entry.severity === "pass") badgeColor = "#34a853";
-        if (entry.severity === "info") badgeColor = "#4285f4";
-
+      const validationPreset = stagedImportPack?.preset ?? activePreset;
+      const validationTemplateChars = (validationPreset.htmlTemplate ?? "").length;
+      const validationSchemaChars = JSON.stringify(validationPreset.jsonSchema ?? {}).length;
+      const entryItemHtml = (entry: PresetValidationReport["entries"][number]): string => {
         return `
-          <div class="ltracker-validation-entry" style="display: flex; gap: 8px; margin-bottom: 4px; font-size: 11px; align-items: flex-start;">
-            <span style="background: ${badgeColor}; color: #fff; padding: 1px 4px; border-radius: 3px; font-size: 9px; text-transform: uppercase; font-weight: bold; min-width: 50px; text-align: center; margin-top: 2px;">
+          <div class="ltracker-validation-entry">
+            <span class="ltracker-validation-badge" data-severity="${escapeHtml(entry.severity)}">
               ${escapeHtml(entry.severity)}
             </span>
             <div>
-              <span style="font-weight: bold; color: #ccc;">[${escapeHtml(entry.category)}]</span>
+              <span class="ltracker-validation-category">[${escapeHtml(entry.category)}]</span>
               <span>${escapeHtml(entry.message)}</span>
             </div>
           </div>
         `;
-      }).join("");
+      };
+      const groupedEntriesHtml = (severity: PresetValidationReport["entries"][number]["severity"], label: string, open = false): string => {
+        const entries = rep.entries.filter((entry) => entry.severity === severity);
+        if (entries.length === 0) return "";
+        return `
+          <details class="ltracker-details"${open ? " open" : ""}>
+            <summary>${escapeHtml(label)} (${entries.length})</summary>
+            <div class="ltracker-validation-scroll">${entries.map(entryItemHtml).join("")}</div>
+          </details>
+        `;
+      };
 
       const placeholdersHtml = rep.missingPlaceholders.length > 0
-        ? `<p class="ltracker-note" style="color: #fbbc05; margin-top: 5px;">Missing Schema Fields: ${rep.missingPlaceholders.map(p => `<code>${escapeHtml(p)}</code>`).join(", ")}</p>`
+        ? `
+          <details class="ltracker-details">
+            <summary>Missing schema fields (${rep.missingPlaceholders.length})</summary>
+            <p class="ltracker-note ltracker-warning-text">${rep.missingPlaceholders.map(p => `<code>${escapeHtml(p)}</code>`).join(", ")}</p>
+          </details>
+        `
         : "";
 
       const unusedHtml = rep.unusedSchemaFields.length > 0
-        ? `<p class="ltracker-note" style="color: #4285f4; margin-top: 5px;">Unused Schema Fields: ${rep.unusedSchemaFields.map(f => `<code>${escapeHtml(f)}</code>`).join(", ")}</p>`
+        ? `
+          <details class="ltracker-details">
+            <summary>Unused schema fields (${rep.unusedSchemaFields.length})</summary>
+            <p class="ltracker-note ltracker-info-text">${rep.unusedSchemaFields.map(f => `<code>${escapeHtml(f)}</code>`).join(", ")}</p>
+          </details>
+        `
         : "";
 
       const warningGroupsHtml = rep.sanitizerWarningGroups.length > 0
         ? `
-          <details style="margin-top: 5px;">
-            <summary style="font-size: 11px; color: #fbbc05; cursor: pointer;">Sanitizer Warnings (${rep.sanitizerWarningGroups.length})</summary>
-            <ul style="font-size: 10px; margin: 4px 0 0 15px; padding: 0; color: #aaa;">
+          <details class="ltracker-details">
+            <summary>Sanitizer warnings (${rep.sanitizerWarningGroups.length})</summary>
+            <ul class="ltracker-list-compact ltracker-warning-text">
               ${rep.sanitizerWarningGroups.map(g => `<li>${escapeHtml(g)}</li>`).join("")}
             </ul>
           </details>
@@ -4717,9 +4798,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         || rep.mobileRiskWarnings.length > 0
         || rep.verticalTextRiskWarnings.length > 0
         ? `
-          <details style="margin-top: 5px;" open>
-            <summary style="font-size: 11px; color: #fbbc05; cursor: pointer;">Preset Authoring Warnings</summary>
-            <ul style="font-size: 10px; margin: 4px 0 0 15px; padding: 0; color: #aaa;">
+          <details class="ltracker-details" open>
+            <summary>Preset Authoring Warnings</summary>
+            <ul class="ltracker-list-compact ltracker-warning-text">
               ${rep.rawArrayInterpolationPaths.map((path) => `<li>${escapeHtml(`Raw array interpolation risk: ${path}. Use #each or fieldChipList/chipList.`)}</li>`).join("")}
               ${rep.rawObjectInterpolationPaths.map((path) => `<li>${escapeHtml(`Raw object interpolation risk: ${path}. Use #with, json, or a field helper.`)}</li>`).join("")}
               ${rep.mobileRiskWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}
@@ -4730,7 +4811,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         : "";
       const rendererReqHtml = rep.rendererRequirements.features.length > 0 || rep.rendererRequirements.warnings.length > 0
         ? `
-          <div style="font-size: 11px; color: #ddd; margin-top: 8px; border: 1px solid rgba(155,92,255,.25); padding: 6px; border-radius: 4px;">
+          <div class="ltracker-themed-callout">
             Renderer requirements: ${escapeHtml(rep.rendererRequirements.features.join(", ") || "Basic HTML")}
             <br>Recommended mode: ${escapeHtml(rep.rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : rep.rendererRequirements.recommendedMode)}
           </div>
@@ -4738,32 +4819,36 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         : "";
 
       validationReportHtml = `
-        <div class="ltracker-validation-report" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.01); margin-top: 15px;">
-          <h3 style="margin-top: 0; color: ${rep.ok ? "#34a853" : "#ea4335"}; font-size: 14px; font-weight: bold; margin-bottom: 8px;">
+        <div class="ltracker-validation-report">
+          <h3 class="ltracker-validation-title" data-ok="${rep.ok ? "true" : "false"}">
             Preset Validation: ${rep.ok ? "Passed" : "Failed with Errors"}
           </h3>
-          <div class="ltracker-chip-row" style="margin-bottom: 8px;">
-            <span class="ltracker-chip" style="background: rgba(234,67,53,0.1); color: #ea4335;">Errors: ${rep.errorCount}</span>
-            <span class="ltracker-chip" style="background: rgba(251,188,5,0.1); color: #fbbc05;">Warnings: ${rep.warningCount}</span>
-            <span class="ltracker-chip" style="background: rgba(52,168,83,0.1); color: #34a853;">Passes: ${rep.passCount}</span>
+          <div class="ltracker-chip-row">
+            ${statusTone(rep.errorCount > 0 ? "error" : "success", `Errors: ${rep.errorCount}`)}
+            ${statusTone(rep.warningCount > 0 ? "warning" : "success", `Warnings: ${rep.warningCount}`)}
+            ${statusTone("success", `Passes: ${rep.passCount}`)}
           </div>
-
-          <div style="max-height: 200px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.05); padding: 6px; border-radius: 4px; background: rgba(0,0,0,0.1); margin-bottom: 8px;">
-            ${entriesHtml}
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Pack chars", `${rep.estimatedPackSizeChars.toLocaleString()} chars`)}
+            ${renderRow("Model prompt tokens", `~${rep.estimatedPromptTokens.toLocaleString()}`)}
+            ${renderRow("Template chars", `${validationTemplateChars.toLocaleString()} chars`)}
+            ${renderRow("Schema chars", `${validationSchemaChars.toLocaleString()} chars`)}
+            ${renderRow("Rendered chars", `${rep.estimatedRenderedChars.toLocaleString()} chars`)}
+            ${renderRow("Ultra Mode recommended", rep.estimatedPromptTokens > 8000 || rep.estimatedRenderedChars > 100000 ? "Yes" : "No")}
           </div>
+          <div class="ltracker-actions ltracker-panel-spaced">
+            <button class="ltracker-button" type="button" data-action="copy-validation-report">Copy Validation Report</button>
+          </div>
+          ${groupedEntriesHtml("error", "Errors", rep.errorCount > 0)}
+          ${groupedEntriesHtml("warning", "Warnings", rep.errorCount === 0 && rep.warningCount > 0)}
+          ${groupedEntriesHtml("info", "Info")}
+          ${groupedEntriesHtml("pass", "Passes")}
 
           ${placeholdersHtml}
           ${unusedHtml}
           ${authoringLintHtml}
           ${warningGroupsHtml}
           ${rendererReqHtml}
-
-          <div class="ltracker-grid ltracker-details" style="margin-top: 8px; font-size: 11px;">
-            ${renderRow("Est. Pack Size", `${rep.estimatedPackSizeChars.toLocaleString()} chars`)}
-            ${renderRow("Est. Prompt Tokens", `~${rep.estimatedPromptTokens.toLocaleString()}`)}
-            ${renderRow("Est. Rendered HTML Size", `${rep.estimatedRenderedChars.toLocaleString()} chars`)}
-            ${renderRow("Ultra Mode recommended", rep.estimatedPromptTokens > 8000 || rep.estimatedRenderedChars > 100000 ? "Yes" : "No")}
-          </div>
         </div>
       `;
     }
@@ -4771,21 +4856,22 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     let sampleSnapshotHtml = "";
     if (stagedSampleSnapshot) {
       const renderPreview = stagedSampleRenderResult;
-      const sampleHtmlPreview = renderPreview?.html
-        ? `<div class="ltracker-render-preview">${renderPreview.html}</div>`
-        : `<div class="ltracker-render-preview ltracker-render-placeholder">${escapeHtml("No HTML preview rendered.")}</div>`;
 
       sampleSnapshotHtml = `
-        <div class="ltracker-sample-snapshot-preview" style="border: 1px solid var(--border-color, #444); padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.01); margin-top: 15px;">
-          <h3 style="margin-top: 0; color: #4285f4; font-size: 14px; font-weight: bold; margin-bottom: 8px;">Sample Snapshot & Render Preview</h3>
-          <details style="margin-bottom: 8px;">
-            <summary style="font-size: 11px; cursor: pointer; color: #aaa;">View Sample Snapshot Data</summary>
-            <pre class="ltracker-json" style="max-height: 150px; font-size: 10px;">${escapeHtml(JSON.stringify(stagedSampleSnapshot, null, 2))}</pre>
+        <div class="ltracker-sample-snapshot-preview">
+          <h3 class="ltracker-sample-preview-title">Sample Snapshot</h3>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Sample chars", JSON.stringify(stagedSampleSnapshot).length.toLocaleString())}
+            ${renderRow("Rendered chars", renderPreview?.html ? renderPreview.html.length.toLocaleString() : null)}
+            ${renderRow("Renderer warnings", renderPreview?.warnings.length ?? null)}
+            ${renderRow("Renderer errors", renderPreview?.errors.length ?? null)}
+          </div>
+          <p class="ltracker-note">Render Lab previews open in the floating preview overlay so this drawer panel stays compact.</p>
+          <details class="ltracker-details">
+            <summary>View Sample Snapshot Data</summary>
+            <pre class="ltracker-json ltracker-compact-pre">${escapeHtml(JSON.stringify(stagedSampleSnapshot, null, 2))}</pre>
           </details>
-
-          ${sampleHtmlPreview}
-
-          <div class="ltracker-actions" style="margin-top: 8px;">
+          <div class="ltracker-actions ltracker-panel-spaced">
             <button class="ltracker-button" type="button" data-action="copy-sample-snapshot">
               Copy Sample Snapshot JSON
             </button>
@@ -5048,11 +5134,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           ${renderLabHtml}
           ${validationReportHtml}
           ${sampleSnapshotHtml}
-          <details class="ltracker-details">
-            <summary>Latest sanitized preview</summary>
-            <div class="ltracker-card-body">Latest chat snapshot previews stay collapsed here. Render Lab sample previews open in the fullscreen overlay.</div>
-            ${renderHtmlPreview}
-          </details>
         </section>
         ` : ""}
 
@@ -5910,6 +5991,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const lab = buildRenderLabPreview();
       recordRenderLabDiagnostics(lab);
       void copyText(renderLabReportText(), "Render Lab lint report");
+    }
+    if (action === "copy-validation-report") {
+      void copyText(stagedValidationReport ? validationReportText(stagedValidationReport) : null, "validation report");
     }
     if (action === "open-render-lab-preview") {
       openRenderLabPreview(false);

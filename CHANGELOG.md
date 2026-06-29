@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23 - Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup
+- Fixed preset import false positives so fictional tracker schema/template fields such as secrets, tokens, credentials, and private knowledge are allowed.
+- Stripped real credential-like recommended connection settings during import without echoing secret values in warnings.
+- Kept exported `.ltracker.json` preset packs free of selected connection ids, selected connection names, and credential-like fields.
+- Tightened the drawer shell theme around the graphite/teal command-center style and removed remaining old purple/Google-style fragments from import and validation panels.
+- Kept Render Lab previews out of the normal drawer scroll; previews open through the floating overlay actions.
+- Reworked validation output into a compact summary with grouped detail sections and clearer pack/model/template/schema/rendered size labels.
+- Added a dedicated Copy Validation Report action.
+- Preserved Trusted renderer behavior, display surfaces, preset render locks, selected tracker profile workflow, tracker memory, prompt injection, and import/export compatibility.
+
 ## 0.22 - Drawer Shell Polish + True Panel Navigation
 - Added true active-panel drawer navigation so only the selected panel renders instead of one long all-settings scroll.
 - Added a sticky command shell with separate header, primary nav, and scrollable active panel area.
