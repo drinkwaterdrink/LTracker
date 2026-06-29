@@ -228,7 +228,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.21";
+var EXTENSION_VERSION = "0.22";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -4227,7 +4227,7 @@ function repairSettings(value) {
       showEditButton: typeof messageDisplaySource.showEditButton === "boolean" ? messageDisplaySource.showEditButton : DEFAULT_SETTINGS.messageDisplay.showEditButton,
       showDeleteButton: typeof messageDisplaySource.showDeleteButton === "boolean" ? messageDisplaySource.showDeleteButton : DEFAULT_SETTINGS.messageDisplay.showDeleteButton,
       showNoTrackerForSwipe: typeof messageDisplaySource.showNoTrackerForSwipe === "boolean" ? messageDisplaySource.showNoTrackerForSwipe : DEFAULT_SETTINGS.messageDisplay.showNoTrackerForSwipe,
-      showGenerationDuration: typeof messageDisplaySource.showGenerationDuration === "boolean" ? messageDisplaySource.showGenerationDuration : DEFAULT_SETTINGS.messageDisplay.showGenerationDuration,
+      showGenerationDuration: true,
       minimizedMaxHeightPx: clampNumber(
         messageDisplaySource.minimizedMaxHeightPx,
         SETTINGS_LIMITS.minimizedMaxHeightPx.default,
@@ -8275,7 +8275,7 @@ async function importPresetPackHandler(chatId, userId, importText, options, requ
       if (disp.renderMode) settings.messageDisplay.renderMode = disp.renderMode;
       if (typeof disp.showTimestamp === "boolean") settings.messageDisplay.showTimestamp = disp.showTimestamp;
       if (typeof disp.showPresetName === "boolean") settings.messageDisplay.showPresetName = disp.showPresetName;
-      if (typeof disp.showGenerationDuration === "boolean") settings.messageDisplay.showGenerationDuration = disp.showGenerationDuration;
+      settings.messageDisplay.showGenerationDuration = true;
       if (typeof disp.maxRenderedChars === "number") settings.messageDisplay.maxRenderedChars = disp.maxRenderedChars;
     }
     if (rec.expandedWidth) {

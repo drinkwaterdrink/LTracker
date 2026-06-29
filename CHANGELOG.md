@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.22 - Drawer Shell Polish + True Panel Navigation
+- Added true active-panel drawer navigation so only the selected panel renders instead of one long all-settings scroll.
+- Added a sticky command shell with separate header, primary nav, and scrollable active panel area.
+- Added a fullscreen Render Lab preview overlay with large fixed close control, normal close action, safe mobile spacing, and real preview metadata.
+- Kept Preset Authoring Studio collapsed by default inside Presets.
+- Added a More launcher panel for Generation, Connection, Memory / Context, Diagnostics, and Advanced.
+- Applied a graphite/glass command-center visual polish pass with teal actions and real status chips only.
+- Reduced drawer density and removed the giant inline Render Lab preview from the normal drawer scroll.
+- Preserved preset import/export, render locks, display surfaces, tracker memory, prompt injection, selected tracker profiles, inline controls, and existing migrations.
+
 ## 0.21 - Drawer Command Center / Settings UX Overhaul
 - Redesigned the drawer as a mobile-first LTracker Command Center with Home, Presets, Render Lab, Display, Generation, Connection, Memory / Context, Diagnostics, and Advanced sections.
 - Added Home status cards for active preset, tracker profile, display surface, auto mode, last generation, errors, and recommended next action.

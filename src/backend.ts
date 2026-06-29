@@ -4396,7 +4396,7 @@ async function importPresetPackHandler(
       if (disp.renderMode) settings.messageDisplay.renderMode = disp.renderMode;
       if (typeof disp.showTimestamp === "boolean") settings.messageDisplay.showTimestamp = disp.showTimestamp;
       if (typeof disp.showPresetName === "boolean") settings.messageDisplay.showPresetName = disp.showPresetName;
-      if (typeof disp.showGenerationDuration === "boolean") settings.messageDisplay.showGenerationDuration = disp.showGenerationDuration;
+      settings.messageDisplay.showGenerationDuration = true;
       if (typeof disp.maxRenderedChars === "number") settings.messageDisplay.maxRenderedChars = disp.maxRenderedChars;
     }
     if (rec.expandedWidth) {

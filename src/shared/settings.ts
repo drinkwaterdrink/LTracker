@@ -686,9 +686,7 @@ export function repairSettings(value: unknown): LTrackerSettings {
       showNoTrackerForSwipe: typeof messageDisplaySource.showNoTrackerForSwipe === "boolean"
         ? messageDisplaySource.showNoTrackerForSwipe
         : DEFAULT_SETTINGS.messageDisplay.showNoTrackerForSwipe,
-      showGenerationDuration: typeof messageDisplaySource.showGenerationDuration === "boolean"
-        ? messageDisplaySource.showGenerationDuration
-        : DEFAULT_SETTINGS.messageDisplay.showGenerationDuration,
+      showGenerationDuration: true,
       minimizedMaxHeightPx: clampNumber(
         messageDisplaySource.minimizedMaxHeightPx,
         SETTINGS_LIMITS.minimizedMaxHeightPx.default,

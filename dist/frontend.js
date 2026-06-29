@@ -239,7 +239,7 @@ function estimatePresetStats(preset) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.21";
+var EXTENSION_VERSION = "0.22";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -3907,6 +3907,358 @@ var STYLES = `
   justify-content: flex-end;
   gap: 10px;
 }
+.ltracker-root {
+  --lt-bg: #071017;
+  --lt-shell: rgba(8, 16, 24, 0.94);
+  --lt-panel: rgba(12, 22, 32, 0.92);
+  --lt-card: rgba(16, 27, 39, 0.86);
+  --lt-card2: rgba(23, 37, 52, 0.72);
+  --lt-line: rgba(148, 181, 202, 0.18);
+  --lt-text: #f4f7fb;
+  --lt-muted: #a5b3c2;
+  --lt-accent: #75f4e8;
+  --lt-accent2: #8f7bff;
+  --lt-success: #72e49a;
+  --lt-warning: #ffd166;
+  --lt-danger: #ff7b7b;
+  --lt-radius: 18px;
+  --lt-shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
+  background:
+    radial-gradient(circle at 12% 8%, rgba(117, 244, 232, 0.10), transparent 28%),
+    radial-gradient(circle at 86% 12%, rgba(143, 123, 255, 0.12), transparent 30%),
+    linear-gradient(145deg, #060b11, #0a121b 52%, #080d13);
+  color: var(--lt-text);
+}
+.ltracker-drawer-shell {
+  box-sizing: border-box;
+  color: var(--lt-text);
+  display: grid;
+  gap: 12px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: min(100%, 100vh);
+  max-height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  position: relative;
+}
+.ltracker-drawer-shell::before {
+  background:
+    linear-gradient(120deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(60deg, rgba(117, 244, 232, 0.055) 1px, transparent 1px);
+  background-size: 92px 92px, 118px 118px;
+  content: "";
+  inset: 0;
+  opacity: 0.28;
+  pointer-events: none;
+  position: absolute;
+}
+.ltracker-drawer-shell > * {
+  position: relative;
+  z-index: 1;
+}
+.ltracker-command-header,
+.ltracker-command-nav,
+.ltracker-panel {
+  backdrop-filter: blur(18px);
+  background: linear-gradient(180deg, rgba(17, 29, 42, 0.92), rgba(8, 16, 24, 0.82));
+  border: 1px solid var(--lt-line);
+  box-shadow: var(--lt-shadow);
+}
+.ltracker-command-header {
+  border-radius: calc(var(--lt-radius) + 4px);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  position: static;
+  top: auto;
+}
+.ltracker-brand-icon {
+  background: rgba(117, 244, 232, 0.10);
+  border-color: rgba(117, 244, 232, 0.34);
+  color: var(--lt-accent);
+}
+.ltracker-title {
+  color: var(--lt-text);
+  font-size: clamp(1.35rem, 3.8vw, 1.8rem);
+}
+.ltracker-version {
+  color: var(--lt-muted);
+  font-size: 0.92rem;
+  opacity: 1;
+}
+.ltracker-command-nav {
+  align-items: center;
+  border-radius: var(--lt-radius);
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0;
+  overflow: hidden;
+  padding: 5px;
+  position: static;
+  top: auto;
+  z-index: 2;
+}
+.ltracker-nav-chip {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 12px;
+  color: var(--lt-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: clamp(0.72rem, 2.8vw, 0.82rem);
+  font-weight: 800;
+  justify-content: center;
+  min-height: 42px;
+  min-width: 0;
+  padding: 8px 3px 9px;
+  text-transform: uppercase;
+}
+.ltracker-nav-chip:hover,
+.ltracker-nav-chip[data-active="true"] {
+  background: rgba(117, 244, 232, 0.08);
+  border-bottom-color: var(--lt-accent);
+  color: var(--lt-accent);
+}
+.ltracker-panel-scroll {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  scrollbar-width: thin;
+}
+.ltracker-panel {
+  border-radius: var(--lt-radius);
+  padding: 16px;
+}
+.ltracker-section-title {
+  margin-bottom: 14px;
+}
+.ltracker-section-title h3 {
+  color: var(--lt-text);
+  font-size: clamp(1.25rem, 4vw, 1.65rem);
+  margin: 0;
+}
+.ltracker-section-title .ltracker-label {
+  color: var(--lt-muted);
+}
+.ltracker-command-card,
+.ltracker-display-card,
+.ltracker-setup-card,
+.ltracker-subtle-panel {
+  background: linear-gradient(180deg, var(--lt-card), rgba(8, 16, 24, 0.64));
+  border: 1px solid var(--lt-line);
+  border-radius: 16px;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.24);
+  padding: 14px;
+}
+.ltracker-command-card-header,
+.ltracker-display-card-header {
+  margin-bottom: 10px;
+}
+.ltracker-card-title {
+  color: var(--lt-accent);
+  font-size: 0.82rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+.ltracker-card-body {
+  color: var(--lt-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  opacity: 1;
+}
+.ltracker-button {
+  background: linear-gradient(180deg, rgba(117, 244, 232, 0.22), rgba(38, 159, 166, 0.26));
+  border: 1px solid rgba(117, 244, 232, 0.44);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  color: var(--lt-text);
+  font-weight: 760;
+  letter-spacing: 0;
+  min-height: 40px;
+}
+.ltracker-button:hover {
+  background: linear-gradient(180deg, rgba(117, 244, 232, 0.32), rgba(38, 159, 166, 0.34));
+}
+.ltracker-status-chip {
+  border-color: var(--lt-line);
+  font-size: 0.76rem;
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 11px;
+}
+.ltracker-status-chip::before {
+  background: currentColor;
+  border-radius: 999px;
+  content: "";
+  height: 7px;
+  width: 7px;
+}
+.ltracker-status-chip[data-tone="success"] {
+  background: rgba(114, 228, 154, 0.11);
+  border-color: rgba(114, 228, 154, 0.36);
+  color: var(--lt-success);
+}
+.ltracker-status-chip[data-tone="warning"] {
+  background: rgba(255, 209, 102, 0.12);
+  border-color: rgba(255, 209, 102, 0.32);
+  color: var(--lt-warning);
+}
+.ltracker-status-chip[data-tone="error"] {
+  background: rgba(255, 123, 123, 0.13);
+  border-color: rgba(255, 123, 123, 0.36);
+  color: var(--lt-danger);
+}
+.ltracker-status-chip[data-tone="active"] {
+  background: rgba(143, 123, 255, 0.15);
+  border-color: rgba(143, 123, 255, 0.40);
+  color: #c5bbff;
+}
+.ltracker-field input[type="number"],
+.ltracker-field input[type="text"],
+.ltracker-field input[type="search"],
+.ltracker-field select,
+.ltracker-field textarea,
+.ltracker-editor-textarea {
+  background: rgba(4, 10, 16, 0.66);
+  border-color: var(--lt-line);
+  color: var(--lt-text);
+}
+.ltracker-field textarea {
+  min-height: 150px;
+}
+.ltracker-details {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(148, 181, 202, 0.12);
+  border-radius: 14px;
+  margin-top: 10px;
+  padding: 10px;
+}
+.ltracker-details summary {
+  color: var(--lt-text);
+}
+.ltracker-render-lab {
+  border: 0;
+  margin-top: 0;
+  padding: 0;
+}
+.ltracker-render-lab-overlay {
+  align-items: stretch;
+  background: rgba(0, 0, 0, 0.62);
+  box-sizing: border-box;
+  color: var(--lt-text);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: max(12px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  position: fixed;
+  z-index: 1000000;
+}
+.ltracker-render-lab-window {
+  background: linear-gradient(180deg, rgba(15, 26, 38, 0.98), rgba(6, 12, 18, 0.98));
+  border: 1px solid rgba(117, 244, 232, 0.22);
+  border-radius: 18px;
+  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.62);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: 100%;
+  max-width: min(1180px, 100%);
+  min-height: 0;
+  overflow: hidden;
+  width: 100%;
+}
+.ltracker-render-lab-overlay.is-fullscreen .ltracker-render-lab-window {
+  border-radius: 14px;
+  max-width: 100%;
+}
+.ltracker-render-lab-overlay-header {
+  align-items: center;
+  border-bottom: 1px solid var(--lt-line);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 14px 64px 14px 16px;
+}
+.ltracker-render-lab-overlay-header h3 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ltracker-render-lab-overlay-meta {
+  color: var(--lt-muted);
+  font-size: 0.82rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ltracker-render-lab-overlay-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+.ltracker-render-lab-overlay-stage {
+  border: 1px dashed rgba(117, 244, 232, 0.24);
+  border-radius: 14px;
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 100%;
+  overflow: auto;
+  padding: 10px;
+}
+.ltracker-render-lab-close {
+  align-items: center;
+  background: #e24f5d;
+  border: 1px solid #ff9aa4;
+  border-radius: 999px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  font: 800 22px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  height: 44px;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0;
+  position: fixed;
+  right: max(10px, env(safe-area-inset-right));
+  top: max(10px, env(safe-area-inset-top));
+  width: 44px;
+  z-index: 1000002;
+}
+.ltracker-more-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+@media (max-width: 520px) {
+  .ltracker-drawer-shell {
+    gap: 10px;
+    padding: 10px;
+  }
+  .ltracker-command-header {
+    padding: 15px;
+  }
+  .ltracker-command-nav {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .ltracker-nav-chip {
+    min-height: 40px;
+  }
+  .ltracker-render-lab-overlay-header {
+    align-items: flex-start;
+    flex-direction: column;
+    padding-right: 64px;
+  }
+}
 .ltd-danger {
   background: #ef4444 !important;
   color: #fff !important;
@@ -4261,6 +4613,22 @@ function budgetHint(tokens) {
 function requestId(prefix) {
   return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
+var PRIMARY_DRAWER_PANELS = [
+  { id: "home", label: "Home" },
+  { id: "presets", label: "Presets" },
+  { id: "renderLab", label: "Render Lab" },
+  { id: "display", label: "Display" },
+  { id: "more", label: "More" }
+];
+function normalizeDrawerPanel(value) {
+  if (value === "home" || value === "presets" || value === "renderLab" || value === "display" || value === "more" || value === "generation" || value === "connection" || value === "memory" || value === "diagnostics" || value === "advanced") {
+    return value;
+  }
+  return null;
+}
+function drawerPanelPrimaryId(panel) {
+  return panel === "generation" || panel === "connection" || panel === "memory" || panel === "diagnostics" || panel === "advanced" ? "more" : panel;
+}
 function setup(ctx) {
   const cleanups = [];
   let state = emptyState();
@@ -4282,6 +4650,7 @@ function setup(ctx) {
   let currentHistoryLimit = 25;
   let recentlyDeletedBanner = null;
   let diagnosticsSearchText = "";
+  let activePanel = "home";
   let stagedImportPack = null;
   let stagedImportRawText = "";
   let stagedValidationReport = null;
@@ -4296,6 +4665,7 @@ function setup(ctx) {
   let activePopoverEntry = null;
   let activeReaderElement = null;
   let activeDisplayPreviewElement = null;
+  let activeRenderLabPreviewElement = null;
   const removeStyle = ctx.dom.addStyle(STYLES);
   cleanups.push(removeStyle);
   if (!document.getElementById("ltracker-dom-style")) {
@@ -4315,6 +4685,9 @@ function setup(ctx) {
         }
         if (activeDisplayPreviewElement) {
           closeDisplayPreview();
+        }
+        if (activeRenderLabPreviewElement) {
+          closeRenderLabPreview();
         }
       }
     }
@@ -5002,6 +5375,70 @@ function setup(ctx) {
       activeDisplayPreviewElement.remove();
       activeDisplayPreviewElement = null;
     }
+  }
+  function openRenderLabPreview(fullscreen = false) {
+    closeRenderLabPreview();
+    const lab = buildRenderLabPreview();
+    const width = renderLabWidthPx();
+    const presetName2 = lab.preset.name ?? "Render Lab Preset";
+    const warningCount = lab.warnings.length;
+    const mobileRiskCount = lab.report.mobileRiskWarnings.length + lab.report.verticalTextRiskWarnings.length;
+    const doc = document;
+    const overlay = doc.createElement("div");
+    overlay.className = `ltracker-render-lab-overlay${fullscreen ? " is-fullscreen" : ""}`;
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.innerHTML = `
+      <button class="ltracker-render-lab-close" type="button" data-render-lab-preview-close title="Close Render Lab Preview" aria-label="Close Render Lab Preview">&times;</button>
+      <section class="ltracker-render-lab-window">
+        <header class="ltracker-render-lab-overlay-header">
+          <div style="min-width: 0;">
+            <h3>${escapeHtml2(fullscreen ? "Fullscreen Render Lab Preview" : "Render Lab Preview")}</h3>
+            <div class="ltracker-render-lab-overlay-meta">
+              ${escapeHtml2(`${presetName2} / ${renderLabSampleMode} / ${width}px / ${lab.html.length.toLocaleString()} chars`)}
+            </div>
+          </div>
+          <div class="ltracker-actions">
+            <span class="ltracker-status-chip" data-tone="${warningCount > 0 ? "warning" : "success"}">${escapeHtml2(warningCount > 0 ? `${warningCount} warning(s)` : "Preview ready")}</span>
+            <span class="ltracker-status-chip" data-tone="${mobileRiskCount > 0 ? "warning" : "success"}">${escapeHtml2(mobileRiskCount > 0 ? `${mobileRiskCount} mobile risk(s)` : "Mobile QA clear")}</span>
+            <button class="ltracker-button" type="button" data-render-lab-preview-close>Close</button>
+          </div>
+        </header>
+        <main class="ltracker-render-lab-overlay-body">
+          <div class="ltracker-render-lab-overlay-stage ltd-bg-${escapeHtml2(renderLabBackground)}" style="width: ${escapeHtml2(String(width))}px;">
+            <div class="ltracker-render-lab-preview ltd-lab-${escapeHtml2(renderLabSurface)}" data-render-lab-preview>
+              ${lab.html}
+            </div>
+          </div>
+        </main>
+      </section>
+    `;
+    overlay.addEventListener("click", (event) => {
+      const closeTarget = event.target instanceof HTMLElement ? event.target.closest("[data-render-lab-preview-close]") : null;
+      if (closeTarget) {
+        closeRenderLabPreview();
+        return;
+      }
+      if (state.settings.expandedWidth.closeOnBackdropClick && event.target === overlay) {
+        closeRenderLabPreview();
+      }
+    });
+    doc.body.appendChild(overlay);
+    activeRenderLabPreviewElement = overlay;
+    recordRenderLabDiagnostics(lab);
+    localDiagnostics({
+      lastPresetRenderLabResult: fullscreen ? "fullscreen_preview_opened" : "preview_overlay_opened",
+      lastPresetRenderLabRenderedChars: lab.html.length,
+      lastPresetRenderLabWarnings: lab.warnings.slice(0, 20)
+    });
+  }
+  function closeRenderLabPreview() {
+    if (!activeRenderLabPreviewElement) return;
+    activeRenderLabPreviewElement.remove();
+    activeRenderLabPreviewElement = null;
+    localDiagnostics({
+      lastPresetRenderLabResult: "preview_closed"
+    });
   }
   function renderEntryForSurface(entry, surface) {
     const chatId = entry.snapshot?.chatId ?? state.chatId ?? activeChatId() ?? "";
@@ -5754,7 +6191,7 @@ function setup(ctx) {
         showEditButton: messageDisplayBooleanValue("showEditButton"),
         showDeleteButton: messageDisplayBooleanValue("showDeleteButton"),
         showNoTrackerForSwipe: messageDisplayBooleanValue("showNoTrackerForSwipe"),
-        showGenerationDuration: messageDisplayBooleanValue("showGenerationDuration"),
+        showGenerationDuration: true,
         minimizedMaxHeightPx: messageDisplayNumberValue("minimizedMaxHeightPx"),
         maxRenderedChars: messageDisplayNumberValue("maxRenderedChars")
       },
@@ -6777,23 +7214,14 @@ function setup(ctx) {
       recommendedConnection.max_tokens !== void 0 ? `max_tokens ${recommendedConnection.max_tokens}` : null,
       recommendedConnection.reasoning?.source ? `reasoning ${recommendedConnection.reasoning.source}` : null
     ].filter((item) => Boolean(item)).join(" / ") : null;
+    const statusTone = (tone, label) => `<span class="ltracker-status-chip" data-tone="${tone}">${escapeHtml2(label)}</span>`;
     const renderLab = buildRenderLabPreview();
     const renderLabWidth = renderLabWidthPx();
-    const renderLabWarningsHtml = renderLab.warnings.length > 0 ? `
-        <details class="ltracker-details" style="margin-top: 8px;" open>
-          <summary>Render warnings (${renderLab.warnings.length})</summary>
-          <ul style="font-size: 10px; margin: 6px 0 0 16px; padding: 0;">
-            ${renderLab.warnings.slice(0, 30).map((warning) => `<li>${escapeHtml2(warning)}</li>`).join("")}
-          </ul>
-        </details>
-      ` : `<p class="ltracker-note">No Render Lab warnings for this sample.</p>`;
     const renderLabRequirements = renderLab.report.rendererRequirements.features.length > 0 ? renderLab.report.rendererRequirements.features.join(", ") : "Basic HTML";
+    const renderLabMobileRiskCount = renderLab.report.mobileRiskWarnings.length + renderLab.report.verticalTextRiskWarnings.length;
+    const renderLabStatusTone = renderLab.report.errorCount > 0 ? "error" : renderLab.warnings.length > 0 ? "warning" : "success";
     const renderLabHtml = `
       <div class="ltracker-render-lab" data-render-lab-root>
-        <div class="ltracker-section-title">
-          <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; font-weight: bold;">Preset Render Lab</span>
-          <span class="ltracker-chip">Preview only</span>
-        </div>
         <div class="ltracker-settings">
           <label class="ltracker-field">
             Sample data
@@ -6838,31 +7266,32 @@ function setup(ctx) {
             </select>
           </label>
         </div>
-        <div class="ltracker-grid ltracker-details" style="margin-top: 8px;">
-          ${renderRow("Preset under test", renderLab.preset.name ?? "Unnamed")}
-          ${renderRow("Viewport width", `${renderLabWidth}px`)}
-          ${renderRow("Renderer requirements", renderLabRequirements)}
-          ${renderRow("Recommended mode", renderLab.report.rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : renderLab.report.rendererRequirements.recommendedMode)}
-          ${renderRow("Raw array paths", renderLab.report.rawArrayInterpolationPaths.join(", ") || null)}
-          ${renderRow("Raw object paths", renderLab.report.rawObjectInterpolationPaths.join(", ") || null)}
-          ${renderRow("Mobile QA", `${renderLab.report.mobileRiskWarnings.length + renderLab.report.verticalTextRiskWarnings.length} warning(s)`)}
-          ${renderRow("Estimated prompt tokens", `~${renderLab.report.estimatedPromptTokens.toLocaleString()}`)}
-          ${renderRow("Rendered chars", renderLab.html.length.toLocaleString())}
-        </div>
-        <div class="ltracker-render-lab-stage ltd-bg-${escapeHtml2(renderLabBackground)}" style="width: ${escapeHtml2(String(renderLabWidth))}px;">
-          <div class="ltracker-render-lab-preview ltd-lab-${escapeHtml2(renderLabSurface)}" data-render-lab-preview>
-            ${renderLab.html}
+        <div class="ltracker-command-card" style="margin-top: 12px;">
+          <div class="ltracker-command-card-header">
+            <span class="ltracker-card-title">Result summary</span>
+            ${statusTone(renderLabStatusTone, renderLab.report.errorCount > 0 ? "Errors" : renderLab.warnings.length > 0 ? "Review" : "Ready")}
           </div>
-        </div>
-        ${renderLabWarningsHtml}
-        <details class="ltracker-details" style="margin-top: 8px;">
-          <summary>Sanitized HTML</summary>
-          <pre class="ltracker-json" style="max-height: 180px; font-size: 10px;">${escapeHtml2(renderLab.html)}</pre>
-        </details>
-        <div class="ltracker-actions" style="margin-top: 8px;">
-          <button class="ltracker-button" type="button" data-action="copy-render-lab-html">Copy sanitized HTML</button>
-          <button class="ltracker-button" type="button" data-action="copy-render-lab-sample">Copy sample JSON</button>
-          <button class="ltracker-button" type="button" data-action="copy-render-lab-report">Copy lint report</button>
+          <div class="ltracker-grid">
+            ${renderRow("Preset under test", renderLab.preset.name ?? "Unnamed")}
+            ${renderRow("Viewport width", `${renderLabWidth}px`)}
+            ${renderRow("Display shell", renderLabSurface)}
+            ${renderRow("Renderer requirements", renderLabRequirements)}
+            ${renderRow("Recommended mode", renderLab.report.rendererRequirements.recommendedMode === "dev" ? "Trusted now; future Dev Mode for JavaScript-like content" : renderLab.report.rendererRequirements.recommendedMode)}
+            ${renderRow("Estimated prompt tokens", `~${renderLab.report.estimatedPromptTokens.toLocaleString()}`)}
+            ${renderRow("Rendered chars", renderLab.html.length.toLocaleString())}
+            ${renderRow("Sanitizer/render warnings", renderLab.warnings.length)}
+            ${renderRow("Overflow/mobile risks", renderLabMobileRiskCount)}
+            ${renderRow("Raw array paths", renderLab.report.rawArrayInterpolationPaths.join(", ") || null)}
+            ${renderRow("Raw object paths", renderLab.report.rawObjectInterpolationPaths.join(", ") || null)}
+          </div>
+          ${renderLab.warnings.length > 0 ? `<details class="ltracker-details"><summary>Preview warnings (${renderLab.warnings.length})</summary><ul style="margin: 6px 0 0 18px; padding: 0;">${renderLab.warnings.slice(0, 30).map((warning) => `<li>${escapeHtml2(warning)}</li>`).join("")}</ul></details>` : `<p class="ltracker-note">No Render Lab warnings for this sample.</p>`}
+          <div class="ltracker-actions" style="margin-top: 10px;">
+            <button class="ltracker-button" type="button" data-action="open-render-lab-preview">Open Preview</button>
+            <button class="ltracker-button" type="button" data-action="open-render-lab-fullscreen-preview">Open Fullscreen Preview</button>
+            <button class="ltracker-button" type="button" data-action="copy-render-lab-html">Copy sanitized HTML</button>
+            <button class="ltracker-button" type="button" data-action="copy-render-lab-sample">Copy sample JSON</button>
+            <button class="ltracker-button" type="button" data-action="copy-render-lab-report">Copy validation report</button>
+          </div>
         </div>
       </div>
     `;
@@ -7083,7 +7512,6 @@ function setup(ctx) {
         </div>
       `;
     }
-    const statusTone = (tone, label) => `<span class="ltracker-status-chip" data-tone="${tone}">${escapeHtml2(label)}</span>`;
     const card = (title, badge, body, actionHtml = "") => `
       <article class="ltracker-command-card">
         <div class="ltracker-command-card-header">
@@ -7170,7 +7598,7 @@ function setup(ctx) {
       <button class="ltracker-button" type="button" data-action="copy-raw" ${disabled(!rawOutput)}>Copy last raw model output</button>
     `;
     const commandCenterHtml = `
-      <section class="ltracker-shell ltracker-command-center">
+      <section class="ltracker-drawer-shell ltracker-command-center" data-active-panel="${escapeHtml2(activePanel)}">
         <header class="ltracker-header ltracker-command-header">
           <div class="ltracker-brand">
             <span class="ltracker-brand-icon">${ICON}</span>
@@ -7183,33 +7611,29 @@ function setup(ctx) {
             ${statusTone(state.status === "error" ? "error" : state.status === "generating" ? "active" : "success", labelForStatus(state.status))}
             ${state.settings.auto.autoModeEnabled ? statusTone("active", "Auto on") : statusTone("warning", "Auto off")}
             ${connectionWarning ? statusTone("warning", "Fallback") : statusTone("success", "Ready")}
+            ${error ? statusTone("error", "Last error") : ""}
           </div>
         </header>
 
-        <nav class="ltracker-section-nav ltracker-command-nav" aria-label="LTracker sections">
-          ${[
-      ["Home", "home"],
-      ["Presets", "presets"],
-      ["Render Lab", "render-lab"],
-      ["Display", "display"],
-      ["Generation", "generation"],
-      ["Connection", "connection"],
-      ["Memory / Context", "memory-context"],
-      ["Diagnostics", "diagnostics"],
-      ["Advanced", "advanced"]
-    ].map(([label, id]) => `<a class="ltracker-nav-chip" data-drawer-section="${escapeHtml2(id)}" href="#ltracker-section-${escapeHtml2(id)}">${escapeHtml2(label)}</a>`).join("")}
+        <nav class="ltracker-section-nav ltracker-command-nav" aria-label="LTracker primary panels">
+          ${PRIMARY_DRAWER_PANELS.map(({ id, label }) => {
+      const active = drawerPanelPrimaryId(activePanel) === id;
+      return `<button class="ltracker-nav-chip" type="button" data-panel-target="${escapeHtml2(id)}" data-active="${active ? "true" : "false"}" aria-current="${active ? "page" : "false"}">${escapeHtml2(label)}</button>`;
+    }).join("")}
         </nav>
 
+        <div class="ltracker-panel-scroll" data-panel-scroll data-active-panel="${escapeHtml2(activePanel)}">
+        ${activePanel === "home" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-home">
           <div class="ltracker-section-title">
             <span class="ltracker-label">Home</span>
             ${error ? statusTone("error", "Needs attention") : statusTone("success", "Command ready")}
           </div>
           <div class="ltracker-card-grid">
-            ${card("Active preset", statusTone("active", activePreset.origin), escapeHtml2(`${activePreset.name} v${activePreset.version}`), `<a class="ltracker-button" href="#ltracker-section-presets" data-drawer-section="presets">Manage presets</a>`)}
-            ${card("Tracker profile", connectionWarning ? statusTone("warning", "Fallback") : statusTone(selectedConnection ? "success" : "warning", selectedConnection ? "Selected" : "Active chat"), escapeHtml2(selectedConnection?.name ?? connectionSettings.selectedConnectionName ?? "Active roleplay connection fallback"), `<a class="ltracker-button" href="#ltracker-section-connection" data-drawer-section="connection">Open connection</a>`)}
-            ${card("Display mode", statusTone(currentDisplaySurface === "inline_wide" ? "success" : "active", displaySurfaceLabel(currentDisplaySurface)), escapeHtml2(displaySurfaceNote), `<a class="ltracker-button" href="#ltracker-section-display" data-drawer-section="display">Tune display</a>`)}
-            ${card("Auto mode", state.settings.auto.autoModeEnabled ? statusTone("active", "Armed") : statusTone("warning", "Manual"), escapeHtml2(autoStatus), `<a class="ltracker-button" href="#ltracker-section-generation" data-drawer-section="generation">Generation</a>`)}
+            ${card("Active preset", statusTone("active", activePreset.origin), escapeHtml2(`${activePreset.name} v${activePreset.version}`), `<button class="ltracker-button" type="button" data-panel-target="presets">Manage presets</button>`)}
+            ${card("Tracker profile", connectionWarning ? statusTone("warning", "Fallback") : statusTone(selectedConnection ? "success" : "warning", selectedConnection ? "Selected" : "Active chat"), escapeHtml2(selectedConnection?.name ?? connectionSettings.selectedConnectionName ?? "Active roleplay connection fallback"), `<button class="ltracker-button" type="button" data-panel-target="connection">Open connection</button>`)}
+            ${card("Display mode", statusTone(currentDisplaySurface === "inline_wide" ? "success" : "active", displaySurfaceLabel(currentDisplaySurface)), escapeHtml2(displaySurfaceNote), `<button class="ltracker-button" type="button" data-panel-target="display">Tune display</button>`)}
+            ${card("Auto mode", state.settings.auto.autoModeEnabled ? statusTone("active", "Armed") : statusTone("warning", "Manual"), escapeHtml2(autoStatus), `<button class="ltracker-button" type="button" data-panel-target="generation">Generation</button>`)}
             ${card("Last generation", state.status === "generating" ? statusTone("active", "Running") : statusTone(lastGenerationSummary ? "success" : "warning", lastGenerationSummary ? "Recorded" : "None"), escapeHtml2(lastGenerationSummary || "No generation completed in this drawer session."), "")}
             ${card("Recommended next action", error ? statusTone("error", "Error") : statusTone("active", "Next"), escapeHtml2(nextAction), "")}
           </div>
@@ -7218,12 +7642,14 @@ function setup(ctx) {
             <button class="ltracker-button" type="button" data-action="generate" ${disabled(!canGenerate)}>Generate Tracker</button>
             <button class="ltracker-button" type="button" data-action="regenerate-latest">Regenerate Selected / Latest</button>
             <button class="ltracker-button" type="button" data-action="import-file-pack">Import Preset</button>
-            <a class="ltracker-button" href="#ltracker-section-render-lab" data-drawer-section="render-lab">Open Render Lab</a>
+            <button class="ltracker-button" type="button" data-panel-target="renderLab">Open Render Lab</button>
             <button class="ltracker-button" type="button" data-action="test-connection" ${disabled(connectionTestRunning)}>Test Connection</button>
-            <a class="ltracker-button" href="#ltracker-section-diagnostics" data-drawer-section="diagnostics">Diagnostics</a>
+            <button class="ltracker-button" type="button" data-panel-target="diagnostics">Diagnostics</button>
           </div>
         </section>
+        ` : ""}
 
+        ${activePanel === "presets" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-presets">
           <div class="ltracker-section-title">
             <span class="ltracker-label">Presets</span>
@@ -7307,10 +7733,15 @@ function setup(ctx) {
           ${validationReportHtml}
           ${sampleSnapshotHtml}
         </section>
+        ` : ""}
 
+        ${activePanel === "renderLab" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-render-lab">
           <div class="ltracker-section-title">
-            <span class="ltracker-label">Render Lab</span>
+            <div>
+              <span class="ltracker-label">Render Lab</span>
+              <h3>Preset Render Lab</h3>
+            </div>
             ${statusTone("active", "Preview only")}
           </div>
           <div class="ltracker-toolbar">
@@ -7325,10 +7756,13 @@ function setup(ctx) {
           ${sampleSnapshotHtml}
           <details class="ltracker-details">
             <summary>Latest sanitized preview</summary>
+            <div class="ltracker-card-body">Latest chat snapshot previews stay collapsed here. Render Lab sample previews open in the fullscreen overlay.</div>
             ${renderHtmlPreview}
           </details>
         </section>
+        ` : ""}
 
+        ${activePanel === "display" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-display">
           <div class="ltracker-section-title">
             <span class="ltracker-label">Display</span>
@@ -7413,7 +7847,28 @@ function setup(ctx) {
           </div>
           ${placementWarning}
         </section>
+        ` : ""}
 
+        ${activePanel === "more" ? `
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-more">
+          <div class="ltracker-section-title">
+            <div>
+              <span class="ltracker-label">More</span>
+              <h3>Command Panels</h3>
+            </div>
+            ${statusTone("active", "Launcher")}
+          </div>
+          <div class="ltracker-more-grid">
+            ${card("Generation", state.settings.auto.autoModeEnabled ? statusTone("active", "Auto on") : statusTone("warning", "Manual"), escapeHtml2("Auto mode, trigger timing, swipe stability, message budgets, and prompt/raw output saving."), `<button class="ltracker-button" type="button" data-panel-target="generation">Open Generation</button>`)}
+            ${card("Connection", connectionWarning ? statusTone("warning", "Fallback") : statusTone(selectedConnection ? "success" : "warning", selectedConnection ? "Selected" : "Profile"), escapeHtml2("Tracker profile, refresh/test actions, fallback status, and advanced model parameters."), `<button class="ltracker-button" type="button" data-panel-target="connection">Open Connection</button>`)}
+            ${card("Memory / Context", state.settings.memory.enabled ? statusTone("active", "Memory on") : statusTone("warning", "Memory off"), escapeHtml2("Tracker Memory for generation consistency and Prompt Injection for roleplay context."), `<button class="ltracker-button" type="button" data-panel-target="memory">Open Memory</button>`)}
+            ${card("Diagnostics", error ? statusTone("error", "Error") : statusTone("success", "Clear"), escapeHtml2("Searchable status, generation, renderer, display, connection, storage, and import diagnostics."), `<button class="ltracker-button" type="button" data-panel-target="diagnostics">Open Diagnostics</button>`)}
+            ${card("Advanced", statusTone("warning", "Power tools"), escapeHtml2("Quick setup profiles, budgets, maintenance, legacy compatibility, and future Dev Mode placeholder."), `<button class="ltracker-button" type="button" data-panel-target="advanced">Open Advanced</button>`)}
+          </div>
+        </section>
+        ` : ""}
+
+        ${activePanel === "generation" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-generation">
           <div class="ltracker-section-title">
             <span class="ltracker-label">Generation</span>
@@ -7501,7 +7956,9 @@ function setup(ctx) {
             </div>
           </details>
         </section>
+        ` : ""}
 
+        ${activePanel === "connection" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-connection">
           <div class="ltracker-section-title">
             <span class="ltracker-label">Connection</span>
@@ -7586,7 +8043,9 @@ function setup(ctx) {
             <pre class="ltracker-text">${escapeHtml2(diagnostics.lastConnectionTestOutputPreview ?? "None")}</pre>
           </details>
         </section>
+        ` : ""}
 
+        ${activePanel === "memory" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-memory-context">
           <div class="ltracker-section-title">
             <span class="ltracker-label">Memory / Context</span>
@@ -7685,7 +8144,9 @@ function setup(ctx) {
             <pre class="ltracker-text">${escapeHtml2(injectionPreviewText)}</pre>
           </details>
         </section>
+        ` : ""}
 
+        ${activePanel === "diagnostics" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-diagnostics">
           <div class="ltracker-section-title">
             <span class="ltracker-label">Diagnostics</span>
@@ -7821,7 +8282,9 @@ function setup(ctx) {
             <pre class="ltracker-text">${escapeHtml2(prompt ?? "None")}</pre>
           </details>
         </section>
+        ` : ""}
 
+        ${activePanel === "advanced" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-advanced">
           <div class="ltracker-section-title">
             <span class="ltracker-label">Advanced</span>
@@ -7983,6 +8446,8 @@ function setup(ctx) {
             <pre class="ltracker-json" style="margin-top: 10px;">${escapeHtml2(snapshotText)}</pre>
           </details>
         </section>
+        ` : ""}
+        </div>
       </section>
     `;
     tab.root.innerHTML = commandCenterHtml;
@@ -7991,9 +8456,16 @@ function setup(ctx) {
     return;
   }
   const onClick = (event) => {
-    const sectionTarget = event.target instanceof HTMLElement ? event.target.closest("[data-drawer-section]") : null;
-    if (sectionTarget?.dataset.drawerSection) {
-      localDiagnostics({ drawerActiveSection: sectionTarget.dataset.drawerSection });
+    const panelTarget = event.target instanceof HTMLElement ? event.target.closest("[data-panel-target]") : null;
+    if (panelTarget?.dataset.panelTarget) {
+      const panel = normalizeDrawerPanel(panelTarget.dataset.panelTarget);
+      if (panel) {
+        event.preventDefault();
+        activePanel = panel;
+        localDiagnostics({ drawerActiveSection: panel });
+        render();
+        return;
+      }
     }
     const target = event.target instanceof HTMLElement ? event.target.closest("[data-action]") : null;
     const action = target?.dataset.action;
@@ -8137,6 +8609,12 @@ function setup(ctx) {
       const lab = buildRenderLabPreview();
       recordRenderLabDiagnostics(lab);
       void copyText(renderLabReportText(), "Render Lab lint report");
+    }
+    if (action === "open-render-lab-preview") {
+      openRenderLabPreview(false);
+    }
+    if (action === "open-render-lab-fullscreen-preview") {
+      openRenderLabPreview(true);
     }
     if (action === "undo-delete" && recentlyDeletedBanner) {
       send({
@@ -8357,6 +8835,7 @@ Detail: ${err.detail}` : ""}` : "No error recorded.";
   cleanups.push(() => cleanupMessageWidgets());
   cleanups.push(() => cleanupDomInjections());
   cleanups.push(() => closeDisplayPreview());
+  cleanups.push(() => closeRenderLabPreview());
   cleanups.push(() => closePopover());
   cleanups.push(() => closeFullscreenReader());
   cleanups.push(() => inputAction.destroy());

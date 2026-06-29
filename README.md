@@ -1,14 +1,15 @@
 # LTracker
 
-Version: `0.21`
+Version: `0.22`
 
-Current release: `0.21 Drawer Command Center / Settings UX Overhaul`
+Current release: `0.22 Drawer Shell Polish + True Panel Navigation`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
 ## Current Features
 
 - Drawer tab, input-bar `Generate Tracker` action, per-message tracker controls, and drawer history.
+- True active-panel drawer shell with sticky command header, sticky primary nav, and a scrollable active panel.
 - Manual, auto, and exact message/swipe tracker generation.
 - Swipe-aware sidecar snapshots and optional embedded `<ltracker type="state">` tags.
 - Tracker Memory for prior snapshot baseline context.
@@ -17,7 +18,7 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Display surfaces for inline contained, inline wide, anchored popover, fullscreen reader, and drawer-only use.
 - Preset-locked snapshot rendering so existing trackers keep the preset/template they were generated with.
 - Trusted renderer support for scoped CSS, safe inline styles, safe inline SVG, details/summary drawers, conditionals, loops, and helpers.
-- Preset Render Lab for phone/tablet/desktop viewport previews with stress sample data.
+- Preset Render Lab for phone/tablet/desktop viewport previews with stress sample data and fullscreen overlay preview.
 - Template Helper Pack for chip lists, joins, field plucking, fallbacks, clamped meter widths, and mobile-safe class names.
 - Preset QA warnings for raw array/object interpolation, mobile overflow risk, and vertical text risk.
 - Safe Mode for shared or unknown presets, with full style-block removal so raw CSS is not shown as text.
@@ -25,25 +26,29 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 
 ## Drawer Command Center
 
-Version `0.21` reorganizes the drawer into a mobile-first command center instead of a long settings dump.
+Version `0.22` turns the drawer into a true mobile-first app shell:
 
-Top-level drawer navigation:
+```text
+Sticky Command Header
+Sticky Primary Nav
+Scrollable Active Panel
+```
+
+Only the active panel renders at a time. The primary mobile navigation is:
 
 1. Home
 2. Presets
 3. Render Lab
 4. Display
-5. Generation
-6. Connection
-7. Memory / Context
-8. Diagnostics
-9. Advanced
+5. More
+
+The More panel launches Generation, Connection, Memory / Context, Diagnostics, and Advanced. The UI follows a dark graphite/glass command-center style with real LTracker status only: ready/warning/error state, auto on/off, generation status, selected tracker profile, active preset, display surface, last generation duration when recorded, and real errors/fallbacks. It does not invent fake metrics or fake telemetry.
 
 Home shows the active preset, selected tracker profile, display surface, auto-mode state, last generation status, last error, and the recommended next action. Quick actions cover Generate Tracker, Regenerate Selected / Latest, Import Preset, Open Render Lab, Test Connection, and Diagnostics.
 
 Presets keeps everyday preset selection, import/export, validation, duplicate/delete/reset, and compatibility warnings visible. The large JSON Schema, HTML Template, Prompt Instructions, Description, and Notes authoring fields are collapsed behind Authoring mode.
 
-Render Lab remains storage-free and chat-safe. It previews the active or staged preset with phone narrow, phone large, tablet, desktop, or custom widths; minimal, normal, stress, mobile torture, cast-heavy, or world-heavy samples; and inline contained, inline wide, popover, or fullscreen shells. It can copy sample JSON, sanitized HTML, and the lint report.
+Render Lab remains storage-free and chat-safe. The drawer panel shows controls plus a compact result summary. The rendered tracker preview opens in a floating fullscreen-style overlay with a large fixed close button, normal Close button, mobile safe-area spacing, optional Escape close, and backdrop-close behavior that follows the current display setting. It previews the active or staged preset with phone narrow, phone large, tablet, desktop, or custom widths; minimal, normal, stress, mobile torture, cast-heavy, or world-heavy samples; and inline contained, inline wide, popover, or fullscreen shells. It can copy sample JSON, sanitized HTML, and the lint report.
 
 Display uses visual cards instead of raw mode selectors:
 
@@ -207,7 +212,7 @@ class, aria-hidden, role
 
 ### Dev Mode
 
-Dev Mode is a future explicit opt-in sandbox experiment. Imported presets cannot enable Dev Mode automatically. JavaScript remains disabled in v0.21; if script-like content is detected, LTracker strips it and warns:
+Dev Mode is a future explicit opt-in sandbox experiment. Imported presets cannot enable Dev Mode automatically. JavaScript remains disabled in v0.22; if script-like content is detected, LTracker strips it and warns:
 
 ```text
 JavaScript requires Dev Mode and was not executed.
@@ -456,7 +461,7 @@ Common settings are repaired back to safe defaults if missing or malformed.
 | `messageDisplay.showEditButton` | `true` | Edit/view icon. |
 | `messageDisplay.showDeleteButton` | `true` | Delete icon. |
 | `messageDisplay.showNoTrackerForSwipe` | `false` | Reserved missing-swipe display. |
-| `messageDisplay.showGenerationDuration` | `true` | Shows live/completed timing. |
+| `messageDisplay.showGenerationDuration` | `true` | Internal always-on live/completed timing; old false values are repaired to true. |
 | `messageDisplay.minimizedMaxHeightPx` | `0` | Legacy iframe minimized height. |
 | `messageDisplay.maxRenderedChars` | `250000` | Message render cap. |
 | `expandedWidth.expandedWidthMode` | `wide` | Inline sizing behavior. |
@@ -509,12 +514,12 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 ## Roadmap
 
-1. `0.22 Sequential + Partial Regeneration`
-2. `0.23 Cleanup / Repair / Pending Fields`
-3. `0.24 World Books, Character Exclusions, and Context Filters`
-4. `0.25 Dev Mode JS Sandbox Experiments`
-5. `0.26 Preset Marketplace / Pack Collections / Advanced Export Polish`
+1. `0.23 Sequential + Partial Regeneration`
+2. `0.24 Cleanup / Repair / Pending Fields`
+3. `0.25 World Books, Character Exclusions, and Context Filters`
+4. `0.26 Dev Mode JS Sandbox Experiments`
+5. `0.27 Preset Marketplace / Pack Collections / Advanced Export Polish`
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.21`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.22`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
