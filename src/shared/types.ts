@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.24";
+export const EXTENSION_VERSION = "0.25";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -413,6 +413,35 @@ export interface LTrackerStorageMaintenanceSettings {
   cleanupDuplicatesOnly: boolean;
 }
 
+export interface LTrackerContextFiltersSettings {
+  enabled: boolean;
+  includeChatMessages: boolean;
+  includeTrackerMemory: boolean;
+  includeEmbeddedTrackerTags: boolean;
+  includeWorldLoreContext: boolean;
+  includeCharacterContext: boolean;
+  includePersonaContext: boolean;
+  excludeUserMessages: boolean;
+  excludeAssistantMessages: boolean;
+  excludeSystemLikeMessages: boolean;
+  maxWorldLoreChars: number;
+  maxCharacterContextChars: number;
+  maxPersonaContextChars: number;
+  excludedCharacterNames: string[];
+  excludedMessageNamePatterns: string[];
+  excludedLoreKeywords: string[];
+  loreAllowlistKeywords: string[];
+  requireExactCharacterNameMatch: boolean;
+  caseSensitiveExclusions: boolean;
+  showContextFilterDiagnostics: boolean;
+  disableAutoForExcludedNames: boolean;
+  disableAutoWhenSourceFiltered: boolean;
+  includeOnlyMatchedLore: boolean;
+  manualWorldLoreContext: string;
+  manualCharacterContext: string;
+  manualPersonaContext: string;
+}
+
 export interface LTrackerSettings {
   schemaVersion: typeof SETTINGS_SCHEMA_VERSION;
   recentMessageLimit: number;
@@ -429,6 +458,7 @@ export interface LTrackerSettings {
   messageDisplay: LTrackerMessageDisplaySettings;
   expandedWidth: LTrackerExpandedWidthSettings;
   connection: LTrackerConnectionSettings;
+  contextFilters: LTrackerContextFiltersSettings;
   history: LTrackerHistorySettings;
   storageMaintenance: LTrackerStorageMaintenanceSettings;
 }
@@ -548,6 +578,35 @@ export interface LTrackerDiagnostics {
   lastMemorySourceSummary: string | null;
   lastMemorySkippedReason: string | null;
   lastPromptIncludedMemory: boolean;
+  lastContextFilterMessageCount: number;
+  lastContextFilterIncludedCount: number;
+  lastContextFilterExcludedCount: number;
+  lastContextFilterExcludedNames: string[];
+  lastContextFilterReasons: string[];
+  lastContextFilterWarning: string | null;
+  lastIncludedContextChars: number;
+  lastIncludedContextTokens: number;
+  lastContextIncludedSourceSummary: string | null;
+  lastIncludedContextPreview: string | null;
+  lastContextExclusionReport: string | null;
+  worldLoreApiAvailable: boolean;
+  worldLorePermissionDeclared: boolean;
+  lastWorldLoreReadStatus: string | null;
+  lastWorldLoreEntriesConsidered: number;
+  lastWorldLoreEntriesIncluded: number;
+  lastWorldLoreCharsIncluded: number;
+  lastWorldLoreSkippedReason: string | null;
+  lastWorldLoreContextPreview: string | null;
+  characterApiAvailable: boolean;
+  characterPermissionDeclared: boolean;
+  lastCharacterContextReadStatus: string | null;
+  lastCharacterContextCharsIncluded: number;
+  lastCharacterContextSkippedReason: string | null;
+  personaApiAvailable: boolean;
+  personaPermissionDeclared: boolean;
+  lastPersonaContextReadStatus: string | null;
+  lastPersonaContextCharsIncluded: number;
+  lastPersonaContextSkippedReason: string | null;
   interceptorRegistered: boolean;
   lastInterceptorAt: string | null;
   lastInterceptorInjectedCount: number;
@@ -748,6 +807,9 @@ export interface PermissionState {
   chatMutation: boolean;
   contextHandler: boolean;
   interceptor: boolean;
+  worldBooks: boolean;
+  characters: boolean;
+  personas: boolean;
 }
 
 export interface FrontendState {

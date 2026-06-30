@@ -239,7 +239,7 @@ function estimatePresetStats(preset) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.24";
+var EXTENSION_VERSION = "0.25";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -3165,7 +3165,10 @@ var SETTINGS_LIMITS = {
   presetImportMaxChars: { min: 1e4, max: 1e8 },
   maxExpandedWidthPx: { min: 320, max: 1800, default: 1100 },
   mobileHorizontalMarginPx: { min: 0, max: 32, default: 6 },
-  expandedContentMaxHeightVh: { min: 30, max: 95, default: 80 }
+  expandedContentMaxHeightVh: { min: 30, max: 95, default: 80 },
+  maxWorldLoreChars: { min: 0, max: 512e3, default: 12e3 },
+  maxCharacterContextChars: { min: 0, max: 512e3, default: 12e3 },
+  maxPersonaContextChars: { min: 0, max: 256e3, default: 6e3 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -3284,6 +3287,34 @@ var DEFAULT_SETTINGS = {
       thinkingDisplay: "auto"
     },
     testPrompt: TRACKER_CONNECTION_DEFAULT_TEST_PROMPT
+  },
+  contextFilters: {
+    enabled: false,
+    includeChatMessages: true,
+    includeTrackerMemory: true,
+    includeEmbeddedTrackerTags: true,
+    includeWorldLoreContext: false,
+    includeCharacterContext: false,
+    includePersonaContext: false,
+    excludeUserMessages: false,
+    excludeAssistantMessages: false,
+    excludeSystemLikeMessages: false,
+    maxWorldLoreChars: SETTINGS_LIMITS.maxWorldLoreChars.default,
+    maxCharacterContextChars: SETTINGS_LIMITS.maxCharacterContextChars.default,
+    maxPersonaContextChars: SETTINGS_LIMITS.maxPersonaContextChars.default,
+    excludedCharacterNames: [],
+    excludedMessageNamePatterns: [],
+    excludedLoreKeywords: [],
+    loreAllowlistKeywords: [],
+    requireExactCharacterNameMatch: true,
+    caseSensitiveExclusions: false,
+    showContextFilterDiagnostics: true,
+    disableAutoForExcludedNames: true,
+    disableAutoWhenSourceFiltered: true,
+    includeOnlyMatchedLore: false,
+    manualWorldLoreContext: "",
+    manualCharacterContext: "",
+    manualPersonaContext: ""
   },
   history: {
     pageSize: 25,
@@ -4376,7 +4407,10 @@ function emptyState() {
       chats: false,
       chatMutation: false,
       contextHandler: false,
-      interceptor: false
+      interceptor: false,
+      worldBooks: false,
+      characters: false,
+      personas: false
     },
     settings: DEFAULT_SETTINGS,
     diagnostics: {
@@ -4443,6 +4477,35 @@ function emptyState() {
       lastMemorySourceSummary: null,
       lastMemorySkippedReason: null,
       lastPromptIncludedMemory: false,
+      lastContextFilterMessageCount: 0,
+      lastContextFilterIncludedCount: 0,
+      lastContextFilterExcludedCount: 0,
+      lastContextFilterExcludedNames: [],
+      lastContextFilterReasons: [],
+      lastContextFilterWarning: null,
+      lastIncludedContextChars: 0,
+      lastIncludedContextTokens: 0,
+      lastContextIncludedSourceSummary: null,
+      lastIncludedContextPreview: null,
+      lastContextExclusionReport: null,
+      worldLoreApiAvailable: false,
+      worldLorePermissionDeclared: false,
+      lastWorldLoreReadStatus: null,
+      lastWorldLoreEntriesConsidered: 0,
+      lastWorldLoreEntriesIncluded: 0,
+      lastWorldLoreCharsIncluded: 0,
+      lastWorldLoreSkippedReason: null,
+      lastWorldLoreContextPreview: null,
+      characterApiAvailable: false,
+      characterPermissionDeclared: false,
+      lastCharacterContextReadStatus: null,
+      lastCharacterContextCharsIncluded: 0,
+      lastCharacterContextSkippedReason: null,
+      personaApiAvailable: false,
+      personaPermissionDeclared: false,
+      lastPersonaContextReadStatus: null,
+      lastPersonaContextCharsIncluded: 0,
+      lastPersonaContextSkippedReason: null,
       interceptorRegistered: false,
       lastInterceptorAt: null,
       lastInterceptorInjectedCount: 0,
@@ -4683,6 +4746,9 @@ function renderRow(label, value) {
 }
 function numberInputValue(value) {
   return value === null ? "" : String(value);
+}
+function listTextareaValue(values) {
+  return values.join("\n");
 }
 function renderError(error) {
   if (!error) return "None";
@@ -4954,7 +5020,7 @@ function setup(ctx) {
   }
   function isSettingsControl(target) {
     if (!(target instanceof HTMLElement)) return false;
-    return Boolean(target.closest("[data-setting], [data-auto-timing-setting], [data-budget-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-expanded-width-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning]"));
+    return Boolean(target.closest("[data-setting], [data-auto-timing-setting], [data-budget-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-expanded-width-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning], [data-context-filter-setting]"));
   }
   function isDisplaySurfaceControl(target) {
     if (!(target instanceof HTMLElement)) return false;
@@ -6170,6 +6236,23 @@ function setup(ctx) {
       const input = tab.root.querySelector(`[data-memory-setting="${name}"]`);
       return input ? input.value : fallback;
     };
+    const contextFilterBooleanValue = (name) => {
+      const input = tab.root.querySelector(`[data-context-filter-setting="${name}"]`);
+      return input ? input.checked : state.settings.contextFilters[name];
+    };
+    const contextFilterNumberValue = (name) => {
+      const input = tab.root.querySelector(`[data-context-filter-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.contextFilters[name];
+    };
+    const contextFilterTextValue = (name) => {
+      const input = tab.root.querySelector(`[data-context-filter-setting="${name}"]`);
+      return input ? input.value : state.settings.contextFilters[name];
+    };
+    const contextFilterListValue = (name) => {
+      const input = tab.root.querySelector(`[data-context-filter-setting="${name}"]`);
+      if (!input) return state.settings.contextFilters[name];
+      return input.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
+    };
     const injectionNumberValue = (name) => {
       const input = tab.root.querySelector(`[data-injection-setting="${name}"]`);
       return input ? Number(input.value) : state.settings.injection[name];
@@ -6380,6 +6463,34 @@ function setup(ctx) {
           thinkingDisplay: connectionSelectValue("thinkingDisplay", state.settings.connection.reasoning.thinkingDisplay)
         },
         testPrompt: connectionTextValue("testPrompt")
+      },
+      contextFilters: {
+        enabled: contextFilterBooleanValue("enabled"),
+        includeChatMessages: contextFilterBooleanValue("includeChatMessages"),
+        includeTrackerMemory: contextFilterBooleanValue("includeTrackerMemory"),
+        includeEmbeddedTrackerTags: contextFilterBooleanValue("includeEmbeddedTrackerTags"),
+        includeWorldLoreContext: contextFilterBooleanValue("includeWorldLoreContext"),
+        includeCharacterContext: contextFilterBooleanValue("includeCharacterContext"),
+        includePersonaContext: contextFilterBooleanValue("includePersonaContext"),
+        excludeUserMessages: contextFilterBooleanValue("excludeUserMessages"),
+        excludeAssistantMessages: contextFilterBooleanValue("excludeAssistantMessages"),
+        excludeSystemLikeMessages: contextFilterBooleanValue("excludeSystemLikeMessages"),
+        maxWorldLoreChars: contextFilterNumberValue("maxWorldLoreChars"),
+        maxCharacterContextChars: contextFilterNumberValue("maxCharacterContextChars"),
+        maxPersonaContextChars: contextFilterNumberValue("maxPersonaContextChars"),
+        excludedCharacterNames: contextFilterListValue("excludedCharacterNames"),
+        excludedMessageNamePatterns: contextFilterListValue("excludedMessageNamePatterns"),
+        excludedLoreKeywords: contextFilterListValue("excludedLoreKeywords"),
+        loreAllowlistKeywords: contextFilterListValue("loreAllowlistKeywords"),
+        requireExactCharacterNameMatch: contextFilterBooleanValue("requireExactCharacterNameMatch"),
+        caseSensitiveExclusions: contextFilterBooleanValue("caseSensitiveExclusions"),
+        showContextFilterDiagnostics: contextFilterBooleanValue("showContextFilterDiagnostics"),
+        disableAutoForExcludedNames: contextFilterBooleanValue("disableAutoForExcludedNames"),
+        disableAutoWhenSourceFiltered: contextFilterBooleanValue("disableAutoWhenSourceFiltered"),
+        includeOnlyMatchedLore: contextFilterBooleanValue("includeOnlyMatchedLore"),
+        manualWorldLoreContext: contextFilterTextValue("manualWorldLoreContext"),
+        manualCharacterContext: contextFilterTextValue("manualCharacterContext"),
+        manualPersonaContext: contextFilterTextValue("manualPersonaContext")
       },
       history: {
         pageSize: state.settings.history?.pageSize ?? 25,
@@ -7310,6 +7421,10 @@ function setup(ctx) {
     const latestMessageSnapshotText = state.latestMessageSnapshot ? JSON.stringify(state.latestMessageSnapshot, null, 2) : "No message-attached tracker snapshot saved yet.";
     const memoryPreviewText = state.memoryPreview ?? "No tracker memory block available yet.";
     const injectionPreviewText = state.injectionPreview ?? "No injection preview available yet.";
+    const contextFilters = state.settings.contextFilters;
+    const contextFilterReportText = diagnostics.lastContextExclusionReport ?? "No context filter report yet. Generate a tracker to populate this.";
+    const contextBudgetPreviewText = diagnostics.lastContextIncludedSourceSummary ?? "No context budget preview yet. Generate a tracker to populate this.";
+    const includedContextPreviewText = diagnostics.lastIncludedContextPreview ?? "No additional world/character/persona context was included in the last tracker prompt.";
     const messageHistoryHtml = renderMessageHistory();
     const placementWarning = state.settings.messageDisplay.placement === "top" && diagnostics.messageWidgetPlacementReason && diagnostics.messageDisplayRenderer === "iframe_widget" ? `<p class="ltracker-note">${escapeHtml2("Current Lumiverse widget API renders below messages.")}</p>` : "";
     const currentDisplaySurface = resolveDisplaySurface(state.settings);
@@ -7800,6 +7915,8 @@ function setup(ctx) {
       <button class="ltracker-button" type="button" data-action="copy-maintenance-report" ${disabled(!maintenanceReport)}>Copy maintenance report</button>
       <button class="ltracker-button" type="button" data-action="copy-prompt" ${disabled(!prompt)}>Copy last prompt preview</button>
       <button class="ltracker-button" type="button" data-action="copy-raw" ${disabled(!rawOutput)}>Copy last raw model output</button>
+      <button class="ltracker-button" type="button" data-action="copy-included-context" ${disabled(!diagnostics.lastIncludedContextPreview)}>Copy included context</button>
+      <button class="ltracker-button" type="button" data-action="copy-exclusion-report" ${disabled(!diagnostics.lastContextExclusionReport)}>Copy exclusion report</button>
     `;
     const commandCenterHtml = `
       <section class="ltracker-drawer-shell ltracker-command-center" data-active-panel="${escapeHtml2(activePanel)}">
@@ -8060,7 +8177,7 @@ function setup(ctx) {
           <div class="ltracker-more-grid">
             ${card("Generation", state.settings.auto.autoModeEnabled ? statusTone("active", "Auto on") : statusTone("warning", "Manual"), escapeHtml2("Auto mode, trigger timing, swipe stability, message budgets, and prompt/raw output saving."), `<button class="ltracker-button" type="button" data-panel-target="generation">Open Generation</button>`)}
             ${card("Connection", connectionWarning ? statusTone("warning", "Fallback") : statusTone(selectedConnection ? "success" : "warning", selectedConnection ? "Selected" : "Profile"), escapeHtml2("Tracker profile, refresh/test actions, fallback status, and advanced model parameters."), `<button class="ltracker-button" type="button" data-panel-target="connection">Open Connection</button>`)}
-            ${card("Memory / Context", state.settings.memory.enabled ? statusTone("active", "Memory on") : statusTone("warning", "Memory off"), escapeHtml2("Tracker Memory for generation consistency and Prompt Injection for roleplay context."), `<button class="ltracker-button" type="button" data-panel-target="memory">Open Memory</button>`)}
+            ${card("Memory & Context Filters", contextFilters.enabled ? statusTone("active", "Filters on") : state.settings.memory.enabled ? statusTone("active", "Memory on") : statusTone("warning", "Memory off"), escapeHtml2("Tracker memory, prompt injection, generation context sources, and character/lore exclusions."), `<button class="ltracker-button" type="button" data-panel-target="memory">Open Context Filters</button>`)}
             ${card("Maintenance & Repair", maintenanceTone, escapeHtml2(maintenanceSummary), `<button class="ltracker-button" type="button" data-panel-target="maintenance">Open Maintenance</button>`)}
             ${card("Diagnostics", error ? statusTone("error", "Error") : statusTone("success", "Clear"), escapeHtml2("Searchable status, generation, renderer, display, connection, storage, and import diagnostics."), `<button class="ltracker-button" type="button" data-panel-target="diagnostics">Open Diagnostics</button>`)}
             ${card("Advanced", statusTone("warning", "Power tools"), escapeHtml2("Quick setup profiles, budgets, maintenance, legacy compatibility, and future Dev Mode placeholder."), `<button class="ltracker-button" type="button" data-panel-target="advanced">Open Advanced</button>`)}
@@ -8248,14 +8365,147 @@ function setup(ctx) {
         ${activePanel === "memory" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-memory-context">
           <div class="ltracker-section-title">
-            <span class="ltracker-label">Memory / Context</span>
-            ${statusTone(state.settings.memory.enabled ? "active" : "warning", state.settings.memory.enabled ? "Memory on" : "Memory off")}
+            <div>
+              <span class="ltracker-label">Memory & Context Filters</span>
+              <h3>Prompt context control</h3>
+            </div>
+            ${statusTone(contextFilters.enabled ? "active" : "warning", contextFilters.enabled ? "Filters on" : "Filters off")}
           </div>
+          <p class="ltracker-note">Generation context controls what LTracker reads before building tracker prompts. Tracker Memory helps tracker continuity. Prompt Injection gives the roleplay model tracker state.</p>
           <div class="ltracker-card-grid">
             ${card("Tracker Memory", state.settings.memory.includeInTrackerGeneration ? statusTone("active", "Generator") : statusTone("warning", "Stored only"), escapeHtml2("Tracker Memory helps the tracker generator stay consistent by showing recent tracker snapshots while extracting the next state."), "")}
             ${card("Prompt Injection", state.settings.injection.enabled ? statusTone("active", "Roleplay context") : statusTone("warning", "Off"), escapeHtml2("Prompt Injection gives the roleplay model recent tracker state. It is related to memory, but it is not the same feature."), "")}
+            ${card("Context Filters", contextFilters.enabled ? statusTone("active", `${diagnostics.lastContextFilterIncludedCount}/${diagnostics.lastContextFilterMessageCount} included`) : statusTone("warning", "Default"), escapeHtml2(contextFilters.enabled ? "Filters apply before tracker prompt construction and auto-mode scheduling." : "Current behavior is preserved until filters are enabled."), "")}
+            ${card("World / Character APIs", diagnostics.worldLoreApiAvailable || diagnostics.characterApiAvailable || diagnostics.personaApiAvailable ? statusTone("success", "Typed API") : statusTone("warning", "Unavailable"), escapeHtml2("Read-only world/lore, character, and persona context is used only when enabled and permission is granted."), "")}
           </div>
           <div class="ltracker-settings" style="margin-top: 10px;">
+            <details class="ltracker-details" open>
+              <summary>Tracker Generation Context</summary>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="enabled"${checked(contextFilters.enabled)}>
+                Enable context filters
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="includeChatMessages"${checked(contextFilters.includeChatMessages)}>
+                Include chat messages
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="includeTrackerMemory"${checked(contextFilters.includeTrackerMemory)}>
+                Include tracker memory in generation
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="includeEmbeddedTrackerTags"${checked(contextFilters.includeEmbeddedTrackerTags)}>
+                Allow embedded tracker tags as memory source
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="includeWorldLoreContext"${checked(contextFilters.includeWorldLoreContext)}>
+                Include world/lore context
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="includeCharacterContext"${checked(contextFilters.includeCharacterContext)}>
+                Include active character context
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="includePersonaContext"${checked(contextFilters.includePersonaContext)}>
+                Include active persona/manual notes
+              </label>
+            </details>
+
+            <details class="ltracker-details">
+              <summary>Message / Name Exclusions</summary>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="excludeUserMessages"${checked(contextFilters.excludeUserMessages)}>
+                Exclude user messages
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="excludeAssistantMessages"${checked(contextFilters.excludeAssistantMessages)}>
+                Exclude assistant messages
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="excludeSystemLikeMessages"${checked(contextFilters.excludeSystemLikeMessages)}>
+                Exclude OOC/system-like messages
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="requireExactCharacterNameMatch"${checked(contextFilters.requireExactCharacterNameMatch)}>
+                Require exact excluded-name match
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="caseSensitiveExclusions"${checked(contextFilters.caseSensitiveExclusions)}>
+                Case-sensitive exclusions
+              </label>
+              <label class="ltracker-field">
+                Excluded character/chat names
+                <textarea rows="3" data-context-filter-setting="excludedCharacterNames" placeholder="One name per line">${escapeHtml2(listTextareaValue(contextFilters.excludedCharacterNames))}</textarea>
+              </label>
+              <label class="ltracker-field">
+                Excluded message text/name patterns
+                <textarea rows="3" data-context-filter-setting="excludedMessageNamePatterns" placeholder="OOC, system, narrator, etc.">${escapeHtml2(listTextareaValue(contextFilters.excludedMessageNamePatterns))}</textarea>
+              </label>
+            </details>
+
+            <details class="ltracker-details">
+              <summary>Auto-Mode Exclusions</summary>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="disableAutoForExcludedNames"${checked(contextFilters.disableAutoForExcludedNames)}>
+                Disable auto tracking for excluded names
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="disableAutoWhenSourceFiltered"${checked(contextFilters.disableAutoWhenSourceFiltered)}>
+                Disable auto tracking when source message is filtered
+              </label>
+              <p class="ltracker-note">Manual Generate Tracker remains available even when auto mode skips an excluded message.</p>
+            </details>
+
+            <details class="ltracker-details">
+              <summary>World / Lore Context</summary>
+              ${renderRow("Native world/lore API", diagnostics.worldLoreApiAvailable ? "available" : "unavailable")}
+              ${renderRow("world_books permission", diagnostics.worldLorePermissionDeclared ? "granted" : "missing")}
+              <label class="ltracker-field">
+                Max lore context chars
+                <input type="number" min="0" max="512000" step="500" data-context-filter-setting="maxWorldLoreChars" value="${escapeHtml2(String(contextFilters.maxWorldLoreChars))}">
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-context-filter-setting="includeOnlyMatchedLore"${checked(contextFilters.includeOnlyMatchedLore)}>
+                Include only allowlisted lore entries
+              </label>
+              <label class="ltracker-field">
+                Lore allowlist keywords
+                <textarea rows="2" data-context-filter-setting="loreAllowlistKeywords">${escapeHtml2(listTextareaValue(contextFilters.loreAllowlistKeywords))}</textarea>
+              </label>
+              <label class="ltracker-field">
+                Lore exclusion keywords
+                <textarea rows="2" data-context-filter-setting="excludedLoreKeywords">${escapeHtml2(listTextareaValue(contextFilters.excludedLoreKeywords))}</textarea>
+              </label>
+              <label class="ltracker-field">
+                Extra Lore Context
+                <textarea rows="4" data-context-filter-setting="manualWorldLoreContext" placeholder="Optional manual lore notes used only in tracker generation.">${escapeHtml2(contextFilters.manualWorldLoreContext)}</textarea>
+              </label>
+            </details>
+
+            <details class="ltracker-details">
+              <summary>Character / Persona Context</summary>
+              ${renderRow("Native character API", diagnostics.characterApiAvailable ? "available" : "unavailable")}
+              ${renderRow("characters permission", diagnostics.characterPermissionDeclared ? "granted" : "missing")}
+              ${renderRow("Native persona API", diagnostics.personaApiAvailable ? "available" : "unavailable")}
+              ${renderRow("personas permission", diagnostics.personaPermissionDeclared ? "granted" : "missing")}
+              <label class="ltracker-field">
+                Max character context chars
+                <input type="number" min="0" max="512000" step="500" data-context-filter-setting="maxCharacterContextChars" value="${escapeHtml2(String(contextFilters.maxCharacterContextChars))}">
+              </label>
+              <label class="ltracker-field">
+                Max persona/manual notes chars
+                <input type="number" min="0" max="256000" step="500" data-context-filter-setting="maxPersonaContextChars" value="${escapeHtml2(String(contextFilters.maxPersonaContextChars))}">
+              </label>
+              <label class="ltracker-field">
+                Manual Character Notes
+                <textarea rows="4" data-context-filter-setting="manualCharacterContext" placeholder="Optional notes used only in tracker generation.">${escapeHtml2(contextFilters.manualCharacterContext)}</textarea>
+              </label>
+              <label class="ltracker-field">
+                Manual Persona Notes
+                <textarea rows="3" data-context-filter-setting="manualPersonaContext" placeholder="Optional persona notes used only in tracker generation.">${escapeHtml2(contextFilters.manualPersonaContext)}</textarea>
+              </label>
+            </details>
+
             <label class="ltracker-check">
               <input type="checkbox" data-memory-setting="enabled"${checked(state.settings.memory.enabled)}>
               Tracker memory enabled
@@ -8334,7 +8584,22 @@ function setup(ctx) {
           <div class="ltracker-toolbar" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="copy-memory-preview" ${disabled(!state.memoryPreview)}>Copy memory preview</button>
             <button class="ltracker-button" type="button" data-action="copy-injection-preview" ${disabled(!state.injectionPreview)}>Copy injection preview</button>
+            <button class="ltracker-button" type="button" data-action="copy-included-context" ${disabled(!diagnostics.lastIncludedContextPreview)}>Copy included context</button>
+            <button class="ltracker-button" type="button" data-action="copy-exclusion-report" ${disabled(!diagnostics.lastContextExclusionReport)}>Copy exclusion report</button>
+            <button class="ltracker-button" type="button" data-action="copy-lore-context" ${disabled(!diagnostics.lastWorldLoreContextPreview)}>Copy last lore context</button>
           </div>
+          <details class="ltracker-details" open>
+            <summary>Context budget preview</summary>
+            <pre class="ltracker-text">${escapeHtml2(contextBudgetPreviewText)}</pre>
+          </details>
+          <details class="ltracker-details">
+            <summary>Last context filter report</summary>
+            <pre class="ltracker-text">${escapeHtml2(contextFilterReportText)}</pre>
+          </details>
+          <details class="ltracker-details">
+            <summary>Included world/character/persona context</summary>
+            <pre class="ltracker-text">${escapeHtml2(includedContextPreviewText)}</pre>
+          </details>
           <details class="ltracker-details">
             <summary>Tracker memory preview</summary>
             <pre class="ltracker-text">${escapeHtml2(memoryPreviewText)}</pre>
@@ -8453,6 +8718,33 @@ function setup(ctx) {
               ${renderRow("Last memory chars", diagnostics.lastMemoryChars)}
               ${renderRow("Last memory sources", diagnostics.lastMemorySourceSummary)}
               ${renderRow("Estimated memory tokens", diagnostics.estimatedMemoryTokensLastRun)}
+            </div>
+          </details>
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Context Filters</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Filters enabled", contextFilters.enabled ? "yes" : "no")}
+              ${renderRow("Messages considered", diagnostics.lastContextFilterMessageCount)}
+              ${renderRow("Messages included", diagnostics.lastContextFilterIncludedCount)}
+              ${renderRow("Messages excluded", diagnostics.lastContextFilterExcludedCount)}
+              ${renderRow("Excluded names", diagnostics.lastContextFilterExcludedNames.join(", "))}
+              ${renderRow("Excluded reasons", diagnostics.lastContextFilterReasons.join("; "))}
+              ${renderRow("Filter warning", diagnostics.lastContextFilterWarning)}
+              ${renderRow("Included context chars", diagnostics.lastIncludedContextChars)}
+              ${renderRow("Included context tokens", diagnostics.lastIncludedContextTokens)}
+              ${renderRow("World/lore API", diagnostics.worldLoreApiAvailable ? "available" : "unavailable")}
+              ${renderRow("world_books permission", diagnostics.worldLorePermissionDeclared ? "granted" : "missing")}
+              ${renderRow("World/lore status", diagnostics.lastWorldLoreReadStatus)}
+              ${renderRow("World/lore skipped", diagnostics.lastWorldLoreSkippedReason)}
+              ${renderRow("World/lore included entries", diagnostics.lastWorldLoreEntriesIncluded)}
+              ${renderRow("Character API", diagnostics.characterApiAvailable ? "available" : "unavailable")}
+              ${renderRow("characters permission", diagnostics.characterPermissionDeclared ? "granted" : "missing")}
+              ${renderRow("Character status", diagnostics.lastCharacterContextReadStatus)}
+              ${renderRow("Character skipped", diagnostics.lastCharacterContextSkippedReason)}
+              ${renderRow("Persona API", diagnostics.personaApiAvailable ? "available" : "unavailable")}
+              ${renderRow("personas permission", diagnostics.personaPermissionDeclared ? "granted" : "missing")}
+              ${renderRow("Persona status", diagnostics.lastPersonaContextReadStatus)}
+              ${renderRow("Persona skipped", diagnostics.lastPersonaContextSkippedReason)}
             </div>
           </details>
           <details class="ltracker-details" data-diagnostics-group>
@@ -8828,6 +9120,9 @@ function setup(ctx) {
     }
     if (action === "copy-memory-preview") void copyText(state.memoryPreview, "tracker memory block");
     if (action === "copy-injection-preview") void copyText(state.injectionPreview, "injection preview");
+    if (action === "copy-included-context") void copyText(state.diagnostics.lastIncludedContextPreview, "included context");
+    if (action === "copy-exclusion-report") void copyText(state.diagnostics.lastContextExclusionReport, "context exclusion report");
+    if (action === "copy-lore-context") void copyText(state.diagnostics.lastWorldLoreContextPreview, "world lore context");
     if (action === "copy-storage-report") {
       const report = [
         `Storage key: ${state.diagnostics.storageKey}`,

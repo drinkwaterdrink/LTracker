@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.25 - Context Filters, World/Lore Integration Prep, and Character Exclusions
+- Added Memory & Context Filters controls for tracker generation context, tracker memory, prompt injection, and source-specific diagnostics.
+- Added message/name exclusions for tracker prompts with exact/case-insensitive matching, text/name pattern matching, OOC/system-like filtering, and role-based exclusions.
+- Added auto-mode skip behavior for excluded source messages and excluded names while preserving manual generation.
+- Added read-only world/lore integration prep using verified `world_books.getActivated()` metadata when permission is granted, plus manual Extra Lore Context.
+- Added read-only active character and persona context support using verified `characters.get()` and `personas.getActive()` when permissions are granted, plus manual notes fallbacks.
+- Added context budget previews, included-context diagnostics, exclusion reports, and copy actions for included context, lore context, and filter reports.
+- Added Health Check warnings for risky context filter combinations and unavailable enabled native context sources.
+- Added `world_books`, `characters`, and `personas` permissions after verifying the installed Lumiverse Spindle type surface.
+- Preserved v0.24 maintenance/repair behavior, preset render locks, display surfaces, Render Lab overlays, Trusted renderer behavior, prompt injection, selected tracker profiles, and the always-on generation timer.
+
 ## 0.24 - Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes
 - Added a Maintenance & Repair panel with health checks, settings repair, snapshot index repair, preset render-lock repair, orphan sidecar scans, duplicate cleanup, broken embedded tag cleanup, and copyable reports.
 - Added structured maintenance diagnostics with severity, category, suggested fix, repair action id, storage/history counts, preset-lock counts, embedded-tag counts, and scan limitation notes.

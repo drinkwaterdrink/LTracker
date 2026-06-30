@@ -18,6 +18,14 @@ import {
   toContextHandlerResult,
 } from "./shared/contextInjection";
 import {
+  applyContextFiltersToTranscript,
+  autoSkipReasonForContextFilters,
+  contextBudgetPreview,
+  formatContextBudgetPreview,
+  formatContextFilterReport,
+  type ContextFilterResult,
+} from "./shared/contextFilters";
+import {
   CONTEXT_HANDLER_DISABLED_REASON,
   CONTEXT_HANDLER_EXPERIMENTAL_ENABLED,
   runContextHandlerFailSafe,
@@ -110,6 +118,7 @@ import {
 import {
   buildCompactTranscript,
   buildTrackerPrompt,
+  type TrackerPromptContextBlock,
 } from "./shared/trackerPrompt";
 import {
   buildTrackerMemoryResult,
@@ -494,6 +503,9 @@ function permissionState(): PermissionState {
     chatMutation: spindle.permissions.has("chat_mutation"),
     contextHandler: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED && spindle.permissions.has("context_handler"),
     interceptor: spindle.permissions.has("interceptor"),
+    worldBooks: spindle.permissions.has("world_books"),
+    characters: spindle.permissions.has("characters"),
+    personas: spindle.permissions.has("personas"),
   };
 }
 
@@ -560,6 +572,35 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastMemorySourceSummary: null,
     lastMemorySkippedReason: null,
     lastPromptIncludedMemory: false,
+    lastContextFilterMessageCount: 0,
+    lastContextFilterIncludedCount: 0,
+    lastContextFilterExcludedCount: 0,
+    lastContextFilterExcludedNames: [],
+    lastContextFilterReasons: [],
+    lastContextFilterWarning: null,
+    lastIncludedContextChars: 0,
+    lastIncludedContextTokens: 0,
+    lastContextIncludedSourceSummary: null,
+    lastIncludedContextPreview: null,
+    lastContextExclusionReport: null,
+    worldLoreApiAvailable: Boolean(spindle.world_books?.getActivated),
+    worldLorePermissionDeclared: spindle.permissions.has("world_books"),
+    lastWorldLoreReadStatus: null,
+    lastWorldLoreEntriesConsidered: 0,
+    lastWorldLoreEntriesIncluded: 0,
+    lastWorldLoreCharsIncluded: 0,
+    lastWorldLoreSkippedReason: null,
+    lastWorldLoreContextPreview: null,
+    characterApiAvailable: Boolean(spindle.characters?.get),
+    characterPermissionDeclared: spindle.permissions.has("characters"),
+    lastCharacterContextReadStatus: null,
+    lastCharacterContextCharsIncluded: 0,
+    lastCharacterContextSkippedReason: null,
+    personaApiAvailable: Boolean(spindle.personas?.getActive),
+    personaPermissionDeclared: spindle.permissions.has("personas"),
+    lastPersonaContextReadStatus: null,
+    lastPersonaContextCharsIncluded: 0,
+    lastPersonaContextSkippedReason: null,
     interceptorRegistered,
     lastInterceptorAt: null,
     lastInterceptorInjectedCount: 0,
@@ -1033,6 +1074,35 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastMemorySourceSummary: stringOrNull(value.lastMemorySourceSummary),
     lastMemorySkippedReason: stringOrNull(value.lastMemorySkippedReason),
     lastPromptIncludedMemory: typeof value.lastPromptIncludedMemory === "boolean" ? value.lastPromptIncludedMemory : false,
+    lastContextFilterMessageCount: typeof value.lastContextFilterMessageCount === "number" && Number.isFinite(value.lastContextFilterMessageCount) ? Math.max(0, Math.round(value.lastContextFilterMessageCount)) : 0,
+    lastContextFilterIncludedCount: typeof value.lastContextFilterIncludedCount === "number" && Number.isFinite(value.lastContextFilterIncludedCount) ? Math.max(0, Math.round(value.lastContextFilterIncludedCount)) : 0,
+    lastContextFilterExcludedCount: typeof value.lastContextFilterExcludedCount === "number" && Number.isFinite(value.lastContextFilterExcludedCount) ? Math.max(0, Math.round(value.lastContextFilterExcludedCount)) : 0,
+    lastContextFilterExcludedNames: stringArray(value.lastContextFilterExcludedNames),
+    lastContextFilterReasons: stringArray(value.lastContextFilterReasons),
+    lastContextFilterWarning: stringOrNull(value.lastContextFilterWarning),
+    lastIncludedContextChars: typeof value.lastIncludedContextChars === "number" && Number.isFinite(value.lastIncludedContextChars) ? Math.max(0, Math.round(value.lastIncludedContextChars)) : 0,
+    lastIncludedContextTokens: typeof value.lastIncludedContextTokens === "number" && Number.isFinite(value.lastIncludedContextTokens) ? Math.max(0, Math.round(value.lastIncludedContextTokens)) : 0,
+    lastContextIncludedSourceSummary: stringOrNull(value.lastContextIncludedSourceSummary),
+    lastIncludedContextPreview: stringOrNull(value.lastIncludedContextPreview),
+    lastContextExclusionReport: stringOrNull(value.lastContextExclusionReport),
+    worldLoreApiAvailable: Boolean(spindle.world_books?.getActivated),
+    worldLorePermissionDeclared: spindle.permissions.has("world_books"),
+    lastWorldLoreReadStatus: stringOrNull(value.lastWorldLoreReadStatus),
+    lastWorldLoreEntriesConsidered: typeof value.lastWorldLoreEntriesConsidered === "number" && Number.isFinite(value.lastWorldLoreEntriesConsidered) ? Math.max(0, Math.round(value.lastWorldLoreEntriesConsidered)) : 0,
+    lastWorldLoreEntriesIncluded: typeof value.lastWorldLoreEntriesIncluded === "number" && Number.isFinite(value.lastWorldLoreEntriesIncluded) ? Math.max(0, Math.round(value.lastWorldLoreEntriesIncluded)) : 0,
+    lastWorldLoreCharsIncluded: typeof value.lastWorldLoreCharsIncluded === "number" && Number.isFinite(value.lastWorldLoreCharsIncluded) ? Math.max(0, Math.round(value.lastWorldLoreCharsIncluded)) : 0,
+    lastWorldLoreSkippedReason: stringOrNull(value.lastWorldLoreSkippedReason),
+    lastWorldLoreContextPreview: stringOrNull(value.lastWorldLoreContextPreview),
+    characterApiAvailable: Boolean(spindle.characters?.get),
+    characterPermissionDeclared: spindle.permissions.has("characters"),
+    lastCharacterContextReadStatus: stringOrNull(value.lastCharacterContextReadStatus),
+    lastCharacterContextCharsIncluded: typeof value.lastCharacterContextCharsIncluded === "number" && Number.isFinite(value.lastCharacterContextCharsIncluded) ? Math.max(0, Math.round(value.lastCharacterContextCharsIncluded)) : 0,
+    lastCharacterContextSkippedReason: stringOrNull(value.lastCharacterContextSkippedReason),
+    personaApiAvailable: Boolean(spindle.personas?.getActive),
+    personaPermissionDeclared: spindle.permissions.has("personas"),
+    lastPersonaContextReadStatus: stringOrNull(value.lastPersonaContextReadStatus),
+    lastPersonaContextCharsIncluded: typeof value.lastPersonaContextCharsIncluded === "number" && Number.isFinite(value.lastPersonaContextCharsIncluded) ? Math.max(0, Math.round(value.lastPersonaContextCharsIncluded)) : 0,
+    lastPersonaContextSkippedReason: stringOrNull(value.lastPersonaContextSkippedReason),
     interceptorRegistered,
     lastInterceptorAt: stringOrNull(value.lastInterceptorAt),
     lastInterceptorInjectedCount: typeof value.lastInterceptorInjectedCount === "number" && Number.isFinite(value.lastInterceptorInjectedCount)
@@ -2202,6 +2272,273 @@ function normalizeMessages(messages: ChatMessageDTO[]): TranscriptMessage[] {
     }));
 }
 
+function limitContextText(value: string, maxChars: number): string {
+  const normalized = value.trim();
+  if (maxChars <= 0) return "";
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 24)).trimEnd()}\n[context truncated]`;
+}
+
+function keywordMatches(text: string, keywords: string[], caseSensitive: boolean): boolean {
+  if (keywords.length === 0) return false;
+  const haystack = caseSensitive ? text : text.toLowerCase();
+  return keywords.some((keyword) => {
+    const needle = caseSensitive ? keyword : keyword.toLowerCase();
+    return needle.trim() ? haystack.includes(needle.trim()) : false;
+  });
+}
+
+function contextObjectString(value: unknown, key: string): string {
+  return isRecord(value) && typeof value[key] === "string" ? value[key].trim() : "";
+}
+
+function contextObjectStringArray(value: unknown, key: string): string[] {
+  if (!isRecord(value) || !Array.isArray(value[key])) return [];
+  return value[key].filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+interface CollectedContextSource {
+  block: TrackerPromptContextBlock | null;
+  status: string | null;
+  skippedReason: string | null;
+  considered: number;
+  included: number;
+  chars: number;
+  preview: string | null;
+}
+
+async function collectWorldLoreContext(
+  chatId: string,
+  userId: string,
+  settings: LTrackerSettings,
+): Promise<CollectedContextSource> {
+  const filters = settings.contextFilters;
+  const apiAvailable = Boolean(spindle.world_books?.getActivated);
+  const permission = spindle.permissions.has("world_books");
+  const lines: string[] = [];
+  let considered = 0;
+  let included = 0;
+  let status: string | null = null;
+  let skippedReason: string | null = null;
+
+  if (!filters.enabled || !filters.includeWorldLoreContext) {
+    skippedReason = "World/lore context is disabled.";
+  } else {
+    const manual = limitContextText(filters.manualWorldLoreContext, filters.maxWorldLoreChars);
+    if (manual) {
+      lines.push("[Manual extra lore context]", manual);
+      included += 1;
+    }
+  }
+
+  if (filters.enabled && filters.includeWorldLoreContext) {
+    if (!apiAvailable) {
+      skippedReason = "Lumiverse world/lore API is unavailable in this runtime.";
+    } else if (!permission) {
+      skippedReason = "world_books permission is not granted.";
+    } else {
+    try {
+      const entries = await spindle.world_books.getActivated(chatId, userId);
+      considered = Array.isArray(entries) ? entries.length : 0;
+      const nativeLines: string[] = [];
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        const comment = contextObjectString(entry, "comment");
+        const keys = contextObjectStringArray(entry, "keys");
+        const source = contextObjectString(entry, "source");
+        const score = isRecord(entry) && typeof entry.score === "number" ? ` score=${entry.score}` : "";
+        const rendered = [
+          comment ? `Entry: ${comment}` : "Entry: activated world/lore item",
+          keys.length ? `Keys: ${keys.join(", ")}` : null,
+          source ? `Source: ${source}${score}` : null,
+        ].filter(Boolean).join(" | ");
+        if (filters.excludedLoreKeywords.length > 0 && keywordMatches(rendered, filters.excludedLoreKeywords, filters.caseSensitiveExclusions)) continue;
+        if (filters.includeOnlyMatchedLore && filters.loreAllowlistKeywords.length > 0 && !keywordMatches(rendered, filters.loreAllowlistKeywords, filters.caseSensitiveExclusions)) continue;
+        nativeLines.push(rendered);
+      }
+      if (nativeLines.length > 0) {
+        lines.push("[Activated world/lore entries]", nativeLines.join("\n"));
+        included += nativeLines.length;
+      }
+      status = `read ${nativeLines.length}/${considered} activated world/lore entries`;
+    } catch (error) {
+      skippedReason = `World/lore read failed: ${errorMessage(error)}`;
+    }
+    }
+  }
+
+  const text = limitContextText(lines.join("\n"), filters.maxWorldLoreChars);
+  return {
+    block: text ? { title: "World / Lore Context", text } : null,
+    status,
+    skippedReason: text ? skippedReason : skippedReason ?? (filters.includeWorldLoreContext ? "No world/lore context matched filters." : "World/lore context is disabled."),
+    considered,
+    included,
+    chars: text.length,
+    preview: text || null,
+  };
+}
+
+async function collectCharacterContext(
+  chatId: string,
+  userId: string,
+  settings: LTrackerSettings,
+): Promise<CollectedContextSource> {
+  const filters = settings.contextFilters;
+  const apiAvailable = Boolean(spindle.characters?.get);
+  const permission = spindle.permissions.has("characters");
+  const lines: string[] = [];
+  let status: string | null = null;
+  let skippedReason: string | null = null;
+
+  if (!filters.enabled || !filters.includeCharacterContext) {
+    skippedReason = "Character context is disabled.";
+  } else {
+    const manual = limitContextText(filters.manualCharacterContext, filters.maxCharacterContextChars);
+    if (manual) lines.push("[Manual character notes]", manual);
+  }
+
+  if (filters.enabled && filters.includeCharacterContext) {
+    if (!apiAvailable) {
+      skippedReason = "Lumiverse character API is unavailable in this runtime.";
+    } else if (!permission) {
+      skippedReason = "characters permission is not granted.";
+    } else {
+    try {
+      const chat = await spindle.chats?.get?.(chatId, userId);
+      const characterId = isRecord(chat) && typeof chat.character_id === "string" ? chat.character_id : null;
+      if (!characterId) {
+        skippedReason = "Active chat has no character id.";
+      } else {
+        const character = await spindle.characters.get(characterId, userId);
+        const name = contextObjectString(character, "name");
+        const excluded = name && settings.contextFilters.excludedCharacterNames.some((item) => (
+          settings.contextFilters.caseSensitiveExclusions
+            ? item === name
+            : item.toLowerCase() === name.toLowerCase()
+        ));
+        if (excluded) {
+          skippedReason = `Active character "${name}" is excluded.`;
+        } else if (character) {
+          const parts = [
+            name ? `Name: ${name}` : null,
+            contextObjectString(character, "description") ? `Description: ${contextObjectString(character, "description")}` : null,
+            contextObjectString(character, "personality") ? `Personality: ${contextObjectString(character, "personality")}` : null,
+            contextObjectString(character, "scenario") ? `Scenario: ${contextObjectString(character, "scenario")}` : null,
+            contextObjectString(character, "creator_notes") ? `Creator notes: ${contextObjectString(character, "creator_notes")}` : null,
+            contextObjectString(character, "system_prompt") ? `System prompt: ${contextObjectString(character, "system_prompt")}` : null,
+            contextObjectString(character, "post_history_instructions") ? `Post-history instructions: ${contextObjectString(character, "post_history_instructions")}` : null,
+          ].filter(Boolean).join("\n");
+          if (parts) lines.push("[Active character card]", parts);
+          status = `read active character${name ? `: ${name}` : ""}`;
+        }
+      }
+    } catch (error) {
+      skippedReason = `Character read failed: ${errorMessage(error)}`;
+    }
+    }
+  }
+
+  const text = limitContextText(lines.join("\n"), filters.maxCharacterContextChars);
+  return {
+    block: text ? { title: "Character Context", text } : null,
+    status,
+    skippedReason: text ? skippedReason : skippedReason ?? (filters.includeCharacterContext ? "No character context was available." : "Character context is disabled."),
+    considered: status ? 1 : 0,
+    included: text ? 1 : 0,
+    chars: text.length,
+    preview: text || null,
+  };
+}
+
+async function collectPersonaContext(
+  userId: string,
+  settings: LTrackerSettings,
+): Promise<CollectedContextSource> {
+  const filters = settings.contextFilters;
+  const apiAvailable = Boolean(spindle.personas?.getActive);
+  const permission = spindle.permissions.has("personas");
+  const lines: string[] = [];
+  let status: string | null = null;
+  let skippedReason: string | null = null;
+
+  if (!filters.enabled || !filters.includePersonaContext) {
+    skippedReason = "Persona context is disabled.";
+  } else {
+    const manual = limitContextText(filters.manualPersonaContext, filters.maxPersonaContextChars);
+    if (manual) lines.push("[Manual persona notes]", manual);
+  }
+
+  if (filters.enabled && filters.includePersonaContext) {
+    if (!apiAvailable) {
+      skippedReason = "Lumiverse persona API is unavailable in this runtime.";
+    } else if (!permission) {
+      skippedReason = "personas permission is not granted.";
+    } else {
+    try {
+      const persona = await spindle.personas.getActive(userId);
+      const name = contextObjectString(persona, "name");
+      const title = contextObjectString(persona, "title");
+      const description = contextObjectString(persona, "description");
+      const text = [
+        name ? `Name: ${name}` : null,
+        title ? `Title: ${title}` : null,
+        description ? `Description: ${description}` : null,
+      ].filter(Boolean).join("\n");
+      if (text) lines.push("[Active persona]", text);
+      status = persona ? `read active persona${name ? `: ${name}` : ""}` : "no active persona";
+    } catch (error) {
+      skippedReason = `Persona read failed: ${errorMessage(error)}`;
+    }
+    }
+  }
+
+  const text = limitContextText(lines.join("\n"), filters.maxPersonaContextChars);
+  return {
+    block: text ? { title: "Persona Context", text } : null,
+    status,
+    skippedReason: text ? skippedReason : skippedReason ?? (filters.includePersonaContext ? "No persona context was available." : "Persona context is disabled."),
+    considered: status ? 1 : 0,
+    included: text ? 1 : 0,
+    chars: text.length,
+    preview: text || null,
+  };
+}
+
+function memorySettingsForContextFilters(settings: LTrackerSettings): LTrackerSettings {
+  if (!settings.contextFilters.enabled) return settings;
+  return {
+    ...settings,
+    memory: {
+      ...settings.memory,
+      includeInTrackerGeneration: settings.memory.includeInTrackerGeneration && settings.contextFilters.includeTrackerMemory,
+      source: settings.contextFilters.includeEmbeddedTrackerTags
+        ? settings.memory.source
+        : settings.memory.source === "embedded_tags" ? "sidecar_index" : settings.memory.source === "hybrid" ? "sidecar_index" : settings.memory.source,
+    },
+  };
+}
+
+function contextFilterDiagnostics(result: ContextFilterResult): Pick<
+  LTrackerDiagnostics,
+  | "lastContextFilterMessageCount"
+  | "lastContextFilterIncludedCount"
+  | "lastContextFilterExcludedCount"
+  | "lastContextFilterExcludedNames"
+  | "lastContextFilterReasons"
+  | "lastContextFilterWarning"
+  | "lastContextExclusionReport"
+> {
+  return {
+    lastContextFilterMessageCount: result.messageCount,
+    lastContextFilterIncludedCount: result.includedCount,
+    lastContextFilterExcludedCount: result.excludedCount,
+    lastContextFilterExcludedNames: result.excludedNames,
+    lastContextFilterReasons: result.reasons,
+    lastContextFilterWarning: result.warning,
+    lastContextExclusionReport: formatContextFilterReport(result),
+  };
+}
+
 function normalizeGenerationText(result: unknown): string {
   if (typeof result === "string" && result.trim()) return result;
   if (!isRecord(result)) {
@@ -2888,6 +3225,17 @@ async function scheduleAutoForMessage(input: {
     generationId: input.generationId,
     generationType: input.generationType,
   });
+
+  const contextSkipReason = autoSkipReasonForContextFilters({
+    settings,
+    role: messageRole(sourceMessage),
+    name: sourceMessage.name ?? "",
+    content: sourceMessage.content ?? "",
+  });
+  if (contextSkipReason) {
+    await markAutoSkipped(input.chatId, input.userId, trigger, contextSkipReason, input.eventAt);
+    return;
+  }
 
   const decision = shouldScheduleAutoTracker({
     settings,
@@ -3588,6 +3936,32 @@ async function generateTracker(
     if (transcriptMessages.length === 0) {
       throw new LTrackerStageError("read_messages", "This chat has no readable messages to track.");
     }
+    const filterResult = applyContextFiltersToTranscript(transcriptMessages, settings.contextFilters);
+    const filterExcludedEverything = settings.contextFilters.enabled
+      && settings.contextFilters.includeChatMessages
+      && filterResult.messageCount > 0
+      && filterResult.includedCount === 0;
+    if (filterExcludedEverything && trigger.kind === "auto") {
+      const skippedAt = nowIso();
+      diagnostics = {
+        ...diagnostics,
+        status: "idle",
+        lastGenerationCompletedAt: skippedAt,
+        lastGenerationDurationMs: Date.now() - startedAtMs,
+        lastAutoSkippedReason: "Context filters left no eligible chat messages.",
+        lastError: null,
+        ...contextFilterDiagnostics(filterResult),
+        activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId),
+      };
+      if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+      await persistDiagnostics(diagnostics, userId);
+      await sendState(resolvedChatId, userId, "idle", null, requestId);
+      return;
+    }
+    const promptTranscriptMessages = filterExcludedEverything ? transcriptMessages : filterResult.includedMessages;
+    const filterWarning = filterExcludedEverything
+      ? "Context filters excluded every message; manual generation used the unfiltered transcript fallback."
+      : filterResult.warning;
 
     const sourceMessageIds = rawMessages.map((message) => message.id);
     diagnostics = {
@@ -3595,30 +3969,62 @@ async function generateTracker(
       lastMessagesRead: rawMessages.length,
       lastSourceMessageIds: sourceMessageIds,
       lastSourceMessageRange: sourceRange(sourceMessageIds),
+      ...contextFilterDiagnostics({
+        ...filterResult,
+        warning: filterWarning,
+      }),
     };
 
     stage = "prompt";
     const transcript = buildCompactTranscript(
-      transcriptMessages,
+      promptTranscriptMessages,
       effectivePerMessageChars(settings),
       effectiveRecentTranscriptChars(settings),
     );
     const memDiags: any = {};
-    const memory = settings.memory.enabled && settings.memory.includeInTrackerGeneration
-      ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger, memDiags)
+    const contextAwareSettings = memorySettingsForContextFilters(settings);
+    const memory = contextAwareSettings.memory.enabled && contextAwareSettings.memory.includeInTrackerGeneration
+      ? await collectTrackerMemory(resolvedChatId, userId, contextAwareSettings, presetState.activePreset, trigger, memDiags)
       : {
           entries: [],
           renderedText: "",
           totalChars: 0,
           truncated: false,
-          skippedReason: settings.memory.enabled
+          skippedReason: contextAwareSettings.memory.enabled
             ? "Tracker memory is not included in tracker generation."
             : "Tracker memory is disabled.",
         } satisfies TrackerMemoryResult;
+    const worldLore = await collectWorldLoreContext(resolvedChatId, userId, settings);
+    const characterContext = await collectCharacterContext(resolvedChatId, userId, settings);
+    const personaContext = await collectPersonaContext(userId, settings);
+    const contextBlocks = [worldLore.block, characterContext.block, personaContext.block]
+      .filter((block): block is TrackerPromptContextBlock => Boolean(block));
+    const contextBudget = contextBudgetPreview([
+      { key: "messages", label: "Chat transcript", text: transcript },
+      { key: "memory", label: "Tracker memory", text: memory.renderedText },
+      { key: "lore", label: "World/lore", text: worldLore.preview ?? "" },
+      { key: "character", label: "Character context", text: characterContext.preview ?? "" },
+      { key: "persona", label: "Persona/manual notes", text: personaContext.preview ?? "" },
+    ]);
+    const contextSummary = [
+      formatContextFilterReport({ ...filterResult, warning: filterWarning }),
+      "",
+      "Context budget preview:",
+      formatContextBudgetPreview(contextBudget),
+      "",
+      "Skipped source summary:",
+      worldLore.skippedReason ? `World/lore: ${worldLore.skippedReason}` : null,
+      characterContext.skippedReason ? `Character: ${characterContext.skippedReason}` : null,
+      personaContext.skippedReason ? `Persona: ${personaContext.skippedReason}` : null,
+    ].filter((line): line is string => typeof line === "string").join("\n");
     const promptMessages: LlmMessageDTO[] = buildTrackerPrompt(
       transcript,
       presetState.activePreset,
       memory.renderedText ? memory : null,
+      {
+        contextBlocks,
+        filterSummary: contextSummary,
+      },
     );
     diagnostics = {
       ...diagnostics,
@@ -3636,6 +4042,28 @@ async function generateTracker(
       lastMemorySkippedReason: memory.skippedReason,
       lastPromptIncludedMemory: Boolean(memory.renderedText),
       estimatedMemoryTokensLastRun: estimateTokensFromChars(memory.totalChars),
+      lastIncludedContextChars: contextBudget.totalChars,
+      lastIncludedContextTokens: contextBudget.totalEstimatedTokens,
+      lastContextIncludedSourceSummary: contextSummary,
+      lastIncludedContextPreview: contextBlocks.map((block) => `[${block.title}]\n${block.text}`).join("\n\n") || null,
+      worldLoreApiAvailable: Boolean(spindle.world_books?.getActivated),
+      worldLorePermissionDeclared: spindle.permissions.has("world_books"),
+      lastWorldLoreReadStatus: worldLore.status,
+      lastWorldLoreEntriesConsidered: worldLore.considered,
+      lastWorldLoreEntriesIncluded: worldLore.included,
+      lastWorldLoreCharsIncluded: worldLore.chars,
+      lastWorldLoreSkippedReason: worldLore.skippedReason,
+      lastWorldLoreContextPreview: worldLore.preview,
+      characterApiAvailable: Boolean(spindle.characters?.get),
+      characterPermissionDeclared: spindle.permissions.has("characters"),
+      lastCharacterContextReadStatus: characterContext.status,
+      lastCharacterContextCharsIncluded: characterContext.chars,
+      lastCharacterContextSkippedReason: characterContext.skippedReason,
+      personaApiAvailable: Boolean(spindle.personas?.getActive),
+      personaPermissionDeclared: spindle.permissions.has("personas"),
+      lastPersonaContextReadStatus: personaContext.status,
+      lastPersonaContextCharsIncluded: personaContext.chars,
+      lastPersonaContextSkippedReason: personaContext.skippedReason,
       lastPromptPreview: settings.savePromptPreview
         ? promptPreview(promptMessages, effectivePromptPreviewChars(settings))
         : "[Prompt preview saving disabled]",
@@ -3726,7 +4154,7 @@ async function generateTracker(
       extensionVersion: EXTENSION_VERSION,
       chatId: resolvedChatId,
       createdAt: completedAt,
-      messageCount: transcriptMessages.length,
+      messageCount: promptTranscriptMessages.length,
       sourceMessageIds,
       presetId: presetState.activePreset.id,
       presetName: presetState.activePreset.name,
@@ -5113,6 +5541,74 @@ async function buildMaintenanceReport(
       category: "Connections",
       message: "No dedicated tracker profile is selected; LTracker will fall back to the active roleplay connection.",
       suggestedFix: "Open Connection and select a tracker profile.",
+      repairActionId: null,
+    });
+  }
+
+  if (settings.contextFilters.enabled) {
+    const anyGenerationSource = settings.contextFilters.includeChatMessages
+      || settings.contextFilters.includeTrackerMemory
+      || settings.contextFilters.includeWorldLoreContext
+      || settings.contextFilters.includeCharacterContext
+      || settings.contextFilters.includePersonaContext
+      || Boolean(settings.contextFilters.manualWorldLoreContext.trim())
+      || Boolean(settings.contextFilters.manualCharacterContext.trim())
+      || Boolean(settings.contextFilters.manualPersonaContext.trim());
+    if (!anyGenerationSource) {
+      items.push({
+        severity: "repairable",
+        category: "Context Filters",
+        message: "Context filters are enabled but every generation context source is disabled.",
+        suggestedFix: "Reset context filters to defaults or enable chat messages.",
+        repairActionId: "repair_settings",
+      });
+    }
+    if (settings.contextFilters.excludeUserMessages && settings.contextFilters.excludeAssistantMessages) {
+      items.push({
+        severity: "warning",
+        category: "Context Filters",
+        message: "Both user and assistant messages are excluded; recent chat context may become empty.",
+        suggestedFix: "Keep at least one message role enabled unless you are relying on manual notes only.",
+        repairActionId: null,
+      });
+    }
+  }
+  if (settings.contextFilters.includeWorldLoreContext && (!spindle.world_books?.getActivated || !spindle.permissions.has("world_books"))) {
+    items.push({
+      severity: "warning",
+      category: "Context Filters",
+      message: "World/lore context is enabled, but the read-only world_books API or permission is unavailable.",
+      suggestedFix: "Disable native world/lore context or use Extra Lore Context until Lumiverse grants the API.",
+      repairActionId: null,
+    });
+  }
+  if (settings.contextFilters.includeCharacterContext && (!spindle.characters?.get || !spindle.permissions.has("characters"))) {
+    items.push({
+      severity: "warning",
+      category: "Context Filters",
+      message: "Character context is enabled, but the read-only characters API or permission is unavailable.",
+      suggestedFix: "Disable native character context or use Manual Character Notes.",
+      repairActionId: null,
+    });
+  }
+  if (settings.contextFilters.includePersonaContext && (!spindle.personas?.getActive || !spindle.permissions.has("personas"))) {
+    items.push({
+      severity: "warning",
+      category: "Context Filters",
+      message: "Persona context is enabled, but the read-only personas API or permission is unavailable.",
+      suggestedFix: "Disable native persona context or use Manual Persona Notes.",
+      repairActionId: null,
+    });
+  }
+  const addedContextBudget = settings.contextFilters.maxWorldLoreChars
+    + settings.contextFilters.maxCharacterContextChars
+    + settings.contextFilters.maxPersonaContextChars;
+  if (settings.contextFilters.enabled && addedContextBudget > Math.max(64_000, settings.maxMessageChars * 3)) {
+    items.push({
+      severity: "warning",
+      category: "Context Filters",
+      message: "Additional context budgets are high compared with the recent chat budget.",
+      suggestedFix: "Reduce lore/character/persona budgets if tracker generations become slow or unfocused.",
       repairActionId: null,
     });
   }

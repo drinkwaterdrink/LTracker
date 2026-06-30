@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.24`
+Version: `0.25`
 
-Current release: `0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes`
+Current release: `0.25 Context Filters, World/Lore Integration Prep, and Character Exclusions`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -26,6 +26,7 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Preset import credential guardrails that allow fictional schema/template words like secrets, tokens, and credentials while stripping real connection credentials from recommended settings.
 - Compact validation UX with grouped reports, clear pack/template/rendered character labels, and reliable copyable validation reports.
 - Maintenance & Repair tools for health checks, settings repair, snapshot index cleanup, preset render-lock diagnostics, orphan scans, broken embedded tag cleanup, and copyable maintenance reports.
+- Context Filters for tracker generation, auto-mode exclusions, manual lore/character/persona notes, and read-only native world/character/persona context when Lumiverse permissions are granted.
 
 ## Drawer Command Center
 
@@ -45,7 +46,7 @@ Only the active panel renders at a time. The primary mobile navigation is:
 4. Display
 5. More
 
-The More panel launches Generation, Connection, Memory / Context, Diagnostics, and Advanced. The UI follows a dark graphite/glass command-center style with real LTracker status only: ready/warning/error state, auto on/off, generation status, selected tracker profile, active preset, display surface, last generation duration when recorded, and real errors/fallbacks. It does not invent fake metrics or fake telemetry.
+The More panel launches Generation, Connection, Memory & Context Filters, Diagnostics, and Advanced. The UI follows a dark graphite/glass command-center style with real LTracker status only: ready/warning/error state, auto on/off, generation status, selected tracker profile, active preset, display surface, last generation duration when recorded, and real errors/fallbacks. It does not invent fake metrics or fake telemetry.
 
 Home shows the active preset, selected tracker profile, display surface, auto-mode state, last generation status, last error, and the recommended next action. Quick actions cover Generate Tracker, Regenerate Selected / Latest, Import Preset, Open Render Lab, Test Connection, and Diagnostics.
 
@@ -85,7 +86,7 @@ Generation exposes everyday auto controls, trigger roles, skip count, message li
 
 Connection shows only the tracker profile dropdown, refresh profiles, test connection, fallback status, selected profile identity, and last test result. Low-level `connection.mode` and model parameters live under Advanced Connection.
 
-Memory / Context separates two related features: Tracker Memory helps tracker generation stay consistent, while Prompt Injection gives the roleplay model recent tracker state. Both have their own controls and previews.
+Memory & Context Filters separates three related features: Tracker Generation Context controls what LTracker reads before building tracker prompts, Tracker Memory helps tracker generation stay consistent, and Prompt Injection gives the roleplay model recent tracker state. These features have separate controls, previews, and diagnostics.
 
 Diagnostics is collapsed and searchable. Groups cover Status, Last error, Generation jobs, Auto timing, Memory, Prompt injection, Display / DOM, Renderer / sanitizer, Presets / import, Connections, and Storage / history. Copy buttons include all diagnostics, last error, last prompt preview, and last raw model output.
 
@@ -119,7 +120,21 @@ Quick setup profiles show a confirmation preview before applying changes:
 
 ### Visible, Advanced, And Legacy Settings
 
-Visible settings are task-oriented and appear in Home, Presets, Render Lab, Display, Generation, Connection, and Memory / Context. Advanced settings remain reachable but collapsed. Legacy/migration-only fields such as `messageDisplay.displayMode`, iframe fallback, raw attachment mode, debug swipe key, debug history copy buttons, and low-level connection mode are hidden from the normal UI.
+Visible settings are task-oriented and appear in Home, Presets, Render Lab, Display, Generation, Connection, and Memory & Context Filters. Advanced settings remain reachable but collapsed. Legacy/migration-only fields such as `messageDisplay.displayMode`, iframe fallback, raw attachment mode, debug swipe key, debug history copy buttons, and low-level connection mode are hidden from the normal UI.
+
+## v0.25 Context Filters, World/Lore Integration Prep, and Character Exclusions
+
+v0.25 adds a clear context assembly layer before tracker prompt construction:
+
+- Tracker Generation Context controls whether chat messages, tracker memory, embedded tracker tags, world/lore metadata, active character context, persona context, and manual notes are included.
+- Message/name exclusions can skip exact character names, case-insensitive contains matches, text/name patterns, user messages, assistant messages, and OOC/system-like messages.
+- Auto-mode exclusions can skip tracker generation when the source message or active author matches filter rules. Manual Generate Tracker remains available and falls back safely if filters remove every message.
+- World/lore integration is read-only. The installed `lumiverse-spindle-types@0.5.21` exposes `world_books.getActivated()`, which currently provides activated entry metadata such as comment, keys, source, and score; full native lore body ingestion is deferred until Lumiverse exposes a verified read surface for it.
+- Character/persona integration is read-only through `characters.get()` and `personas.getActive()` when permissions are granted. Manual Character Notes, Persona Notes, and Extra Lore Context work even if native APIs are unavailable.
+- Context Budget Preview breaks down recent chat messages, tracker memory, world/lore context, character context, persona/manual notes, and total estimated tokens/chars.
+- Prompt preview diagnostics now include included context sections and an exclusion report, with copy actions for full prompt preview, included context, lore context, and filter reports.
+
+Health Check now warns when context filters remove all normal sources, native world/character/persona context is enabled without an available API/permission, or additional context budgets are unusually high.
 
 ## Preset-Locked Snapshot Rendering
 
@@ -508,6 +523,20 @@ Common settings are repaired back to safe defaults if missing or malformed.
 | `expandedWidth.popoverBackdrop` | `true` | Dark overlay behind popover. |
 | `expandedWidth.closeOnBackdropClick` | `true` | Clicking backdrop closes popover. |
 | `expandedWidth.closeOnEscape` | `true` | Desktop keyboard shortcut. |
+| `contextFilters.enabled` | `false` | Enables generation context filtering. |
+| `contextFilters.includeChatMessages` | `true` | Includes recent chat messages in tracker generation. |
+| `contextFilters.includeTrackerMemory` | `true` | Allows tracker memory in tracker generation. |
+| `contextFilters.includeEmbeddedTrackerTags` | `true` | Allows embedded tags as a tracker memory source. |
+| `contextFilters.includeWorldLoreContext` | `false` | Includes read-only activated world/lore metadata when available. |
+| `contextFilters.includeCharacterContext` | `false` | Includes read-only active character card context when available. |
+| `contextFilters.includePersonaContext` | `false` | Includes read-only active persona/manual notes when available. |
+| `contextFilters.excludedCharacterNames` | empty | Names excluded from tracker context and optional auto tracking. |
+| `contextFilters.excludedMessageNamePatterns` | empty | Simple contains patterns for message name/content exclusions. |
+| `contextFilters.excludedLoreKeywords` | empty | Lore metadata/manual lore exclusion keywords. |
+| `contextFilters.loreAllowlistKeywords` | empty | Optional allowlist keywords for lore metadata. |
+| `contextFilters.manualWorldLoreContext` | empty | Manual extra lore text for tracker generation only. |
+| `contextFilters.manualCharacterContext` | empty | Manual character notes for tracker generation only. |
+| `contextFilters.manualPersonaContext` | empty | Manual persona notes for tracker generation only. |
 
 ## Install And Development
 
@@ -526,6 +555,9 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 | `chats` | Active chat resolution and chat data reads. | Falls back to supplied chat id or errors clearly. |
 | `chat_mutation` | Embedded tracker tag writes/removals only. | Sidecar mode still works; embedded tag updates cannot run. |
 | `interceptor` | Optional normal prompt injection. | Tracker Memory still works; prompt injection is unavailable. |
+| `world_books` | Read-only activated world/lore metadata for tracker generation context. | Extra Lore Context still works manually. |
+| `characters` | Read-only active character card context when enabled. | Manual Character Notes still work. |
+| `personas` | Read-only active persona context when enabled. | Manual Persona Notes still work. |
 
 ## Troubleshooting
 
@@ -541,7 +573,8 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 - JavaScript remains disabled outside future explicit Dev Mode.
 - Sequential generation, partial regeneration, and Preset Authoring Studio 2.0 are lower-priority optional future items rather than active roadmap work.
-- World Books, character exclusions, context filters, and advanced import/export polish are future phases.
+- Full native World Book entry body ingestion is deferred until Lumiverse exposes a verified read API beyond activated entry metadata.
+- Full native Character API integration remains read-only and depends on granted `characters` permission; manual notes are the fallback.
 - DOM injection can only attach to mounted messages; drawer history covers unavailable messages.
 - Some host themes may still constrain inline content. Inline wide records diagnostics for mount strategy and width constraints, and popover/fullscreen remain the reliable detached alternatives.
 - Mobile QA warnings are heuristic and should be confirmed in the Render Lab at `360px` and `430px`.
@@ -551,17 +584,18 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 ## Roadmap
 
-1. `0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes`
-2. `0.25 World Books, Character Exclusions, and Context Filters`
-3. `0.26 Dev Mode JS Sandbox Experiments`
-4. `0.27 Preset Marketplace / Pack Collections / Advanced Export Polish`
-5. `0.28 Final UX Polish / Stabilization`
+1. `0.25 Context Filters, World/Lore Integration Prep, and Character Exclusions`
+2. `0.26 Dev Mode JS Sandbox Experiments`
+3. `0.27 Preset Marketplace / Pack Collections / Advanced Export Polish`
+4. `0.28 Final UX Polish / Stabilization`
 
 ### Optional Future / Backlog
 
 - Sequential + Partial Regeneration
 - Preset Authoring Studio 2.0
+- Native World Book body integration pending verified Spindle support
+- Native Character write/update integration remains out of scope
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.24`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.25`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

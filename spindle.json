@@ -1,5 +1,5 @@
 {
-  "version": "0.24",
+  "version": "0.25",
   "name": "LTracker",
   "identifier": "ltracker",
   "author": "tjo626262",
@@ -10,7 +10,10 @@
     "generation",
     "chats",
     "chat_mutation",
-    "interceptor"
+    "interceptor",
+    "world_books",
+    "characters",
+    "personas"
   ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js"

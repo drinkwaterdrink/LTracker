@@ -12,6 +12,12 @@ import {
   runContextHandlerFailSafe,
 } from "../src/shared/contextHandlerRuntime";
 import {
+  applyContextFiltersToTranscript,
+  autoSkipReasonForContextFilters,
+  contextBudgetPreview,
+  formatContextFilterReport,
+} from "../src/shared/contextFilters";
+import {
   detectTemplateRendererRequirements,
   formatTemplateTextFallback,
   renderHtmlTemplate,
@@ -1122,6 +1128,141 @@ test("buildTrackerPrompt includes prior memory and baseline instructions", () =>
   assert.match(joined, /Use the most recent prior tracker state as the baseline/);
   assert.match(joined, /current transcript wins/i);
   assert.match(joined, /Recent conversation:/);
+});
+
+test("repairSettings adds context filter defaults without changing existing prompt behavior", () => {
+  const settings = repairSettings({});
+  assert.equal(settings.contextFilters.enabled, false);
+  assert.equal(settings.contextFilters.includeChatMessages, true);
+  assert.equal(settings.contextFilters.includeTrackerMemory, true);
+  assert.equal(settings.contextFilters.includeWorldLoreContext, false);
+  assert.equal(settings.contextFilters.includeCharacterContext, false);
+  assert.equal(settings.contextFilters.includePersonaContext, false);
+});
+
+test("repairSettings repairs context filters, clamps budgets, and normalizes lists", () => {
+  const settings = repairSettings({
+    contextFilters: {
+      enabled: true,
+      maxWorldLoreChars: 999_999_999,
+      maxCharacterContextChars: -10,
+      maxPersonaContextChars: "12000",
+      excludedCharacterNames: ["Ari", " ari ", "", 22],
+      excludedMessageNamePatterns: "OOC, narrator\nsystem",
+      manualWorldLoreContext: "x".repeat(600_000),
+    },
+  });
+  assert.equal(settings.contextFilters.enabled, true);
+  assert.equal(settings.contextFilters.maxWorldLoreChars, 512_000);
+  assert.equal(settings.contextFilters.maxCharacterContextChars, 0);
+  assert.equal(settings.contextFilters.maxPersonaContextChars, 12_000);
+  assert.deepEqual(settings.contextFilters.excludedCharacterNames, ["Ari"]);
+  assert.deepEqual(settings.contextFilters.excludedMessageNamePatterns, ["OOC", "narrator", "system"]);
+  assert.equal(settings.contextFilters.manualWorldLoreContext.length, 512_000);
+});
+
+test("context filters exclude matching names without mutating original transcript", () => {
+  const messages = [
+    { index: 0, role: "user" as const, name: "Trent", content: "hello" },
+    { index: 1, role: "assistant" as const, name: "Narrator", content: "OOC: pause" },
+    { index: 2, role: "assistant" as const, name: "Cecelia Voss", content: "scene text" },
+  ];
+  const original = JSON.stringify(messages);
+  const settings = repairSettings({
+    contextFilters: {
+      enabled: true,
+      excludedCharacterNames: ["cecelia voss"],
+      excludedMessageNamePatterns: ["OOC"],
+      requireExactCharacterNameMatch: true,
+      caseSensitiveExclusions: false,
+    },
+  });
+  const result = applyContextFiltersToTranscript(messages, settings.contextFilters);
+  assert.equal(JSON.stringify(messages), original);
+  assert.equal(result.messageCount, 3);
+  assert.equal(result.includedCount, 1);
+  assert.equal(result.excludedCount, 2);
+  assert.deepEqual(result.excludedNames.sort(), ["Cecelia Voss", "Narrator"]);
+  assert.match(formatContextFilterReport(result), /Messages included: 1/);
+});
+
+test("context filters support exact and contains matching modes", () => {
+  const messages = [
+    { index: 0, role: "assistant" as const, name: "Cecelia Voss Prime", content: "hello" },
+  ];
+  const exact = repairSettings({
+    contextFilters: {
+      enabled: true,
+      excludedCharacterNames: ["Cecelia Voss"],
+      requireExactCharacterNameMatch: true,
+    },
+  });
+  assert.equal(applyContextFiltersToTranscript(messages, exact.contextFilters).includedCount, 1);
+  const contains = repairSettings({
+    contextFilters: {
+      enabled: true,
+      excludedCharacterNames: ["Cecelia Voss"],
+      requireExactCharacterNameMatch: false,
+    },
+  });
+  assert.equal(applyContextFiltersToTranscript(messages, contains.contextFilters).includedCount, 0);
+});
+
+test("context filters warn when they remove every chat message", () => {
+  const settings = repairSettings({
+    contextFilters: {
+      enabled: true,
+      excludeUserMessages: true,
+      excludeAssistantMessages: true,
+    },
+  });
+  const result = applyContextFiltersToTranscript([
+    { index: 0, role: "user" as const, name: "Trent", content: "hello" },
+    { index: 1, role: "assistant" as const, name: "Ari", content: "reply" },
+  ], settings.contextFilters);
+  assert.equal(result.includedCount, 0);
+  assert.match(result.warning ?? "", /excluded every chat message/);
+});
+
+test("auto context filter skip reason applies only to auto generation", () => {
+  const settings = repairSettings({
+    contextFilters: {
+      enabled: true,
+      excludedCharacterNames: ["Ari"],
+      disableAutoForExcludedNames: true,
+    },
+  });
+  const reason = autoSkipReasonForContextFilters({
+    settings,
+    role: "assistant",
+    name: "Ari",
+    content: "reply",
+  });
+  assert.match(reason ?? "", /Auto skipped by context filters/);
+  assert.equal(settings.contextFilters.enabled, true);
+});
+
+test("context budget preview includes chat, memory, lore, character, and persona buckets", () => {
+  const preview = contextBudgetPreview([
+    { key: "messages", label: "Chat transcript", text: "hello" },
+    { key: "memory", label: "Tracker memory", text: "old state" },
+    { key: "lore", label: "World/lore", text: "lore" },
+    { key: "character", label: "Character context", text: "char" },
+    { key: "persona", label: "Persona/manual notes", text: "persona" },
+  ]);
+  assert.deepEqual(preview.buckets.map((bucket) => bucket.key), ["messages", "memory", "lore", "character", "persona"]);
+  assert.ok(preview.totalEstimatedTokens > 0);
+});
+
+test("buildTrackerPrompt includes additional context sections and filter summary", () => {
+  const prompt = buildTrackerPrompt("[0 USER Trent]\nHello", DEFAULT_TRACKER_PRESET, null, {
+    contextBlocks: [{ title: "World / Lore Context", text: "Activated entry: tower" }],
+    filterSummary: "Messages included: 1",
+  });
+  const joined = prompt.map((message) => message.content).join("\n");
+  assert.match(joined, /Additional context sources/);
+  assert.match(joined, /\[World \/ Lore Context\]/);
+  assert.match(joined, /Context filter summary/);
 });
 
 test("prompt interceptor disabled returns the original frozen messages unchanged", () => {
@@ -2621,8 +2762,9 @@ test("backend tracker generation uses the shared connection helper", () => {
 
 test("backend tracker generation uses tracker memory before prompt building", () => {
   const backend = readFileSync("src/backend.ts", "utf8");
-  assert.match(backend, /async function generateTracker[\s\S]*const memory = settings\.memory\.enabled/);
-  assert.match(backend, /async function generateTracker[\s\S]*collectTrackerMemory\(resolvedChatId, userId, settings, presetState\.activePreset, trigger(?:, memDiags)?\)/);
+  assert.match(backend, /async function generateTracker[\s\S]*const contextAwareSettings = memorySettingsForContextFilters\(settings\)/);
+  assert.match(backend, /async function generateTracker[\s\S]*const memory = contextAwareSettings\.memory\.enabled/);
+  assert.match(backend, /async function generateTracker[\s\S]*collectTrackerMemory\(resolvedChatId, userId, contextAwareSettings, presetState\.activePreset, trigger(?:, memDiags)?\)/);
   assert.match(backend, /async function generateTracker[\s\S]*buildTrackerPrompt\([\s\S]*memory\.renderedText \? memory : null/);
 });
 
@@ -2816,8 +2958,8 @@ test("frontend exposes a storage-free Preset Render Lab", () => {
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
-    "Version: `0.24`",
-    "Current release: `0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes`",
+    "Version: `0.25`",
+    "Current release: `0.25 Context Filters, World/Lore Integration Prep, and Character Exclusions`",
     "Drawer Command Center",
     "Sticky Command Header",
     "Scrollable Active Panel",
@@ -2828,7 +2970,12 @@ test("README settings reference covers the major setting groups", () => {
     "More",
     "Generation",
     "Connection",
-    "Memory / Context",
+    "Memory & Context Filters",
+    "Tracker Generation Context controls",
+    "Context Budget Preview",
+    "world_books.getActivated",
+    "characters.get()",
+    "personas.getActive()",
     "Diagnostics",
     "Advanced",
     "Quick Setup Profiles",
@@ -2963,8 +3110,7 @@ test("README settings reference covers the major setting groups", () => {
     "template CSS stripped",
     "tracker generated for wrong swipe",
     "old tracker changed appearance",
-    "0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes",
-    "0.25 World Books, Character Exclusions, and Context Filters",
+    "0.25 Context Filters, World/Lore Integration Prep, and Character Exclusions",
     "0.26 Dev Mode JS Sandbox Experiments",
     "0.27 Preset Marketplace / Pack Collections / Advanced Export Polish",
     "0.28 Final UX Polish / Stabilization",
@@ -3429,16 +3575,20 @@ test("exported preset packs never include connection ids or credential-like fiel
   assert.doesNotMatch(serialized, /apiKey|secretKey|password|privateKey|accessKey|bearer/i);
 });
 
-test("v0.24 Release Completion Verification", () => {
+test("v0.25 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.24");
-  assert.equal(spindleJson.version, "0.24");
-  assert.equal(EXTENSION_VERSION, "0.24");
+  assert.equal(packageJson.version, "0.25");
+  assert.equal(spindleJson.version, "0.25");
+  assert.equal(EXTENSION_VERSION, "0.25");
+  assert.ok(spindleJson.permissions.includes("world_books"));
+  assert.ok(spindleJson.permissions.includes("characters"));
+  assert.ok(spindleJson.permissions.includes("personas"));
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.25 - Context Filters, World\/Lore Integration Prep, and Character Exclusions/);
   assert.match(changelog, /## 0\.24 - Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes/);
   assert.match(changelog, /## 0\.23 - Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup/);
   assert.match(changelog, /## 0\.22 - Drawer Shell Polish \+ True Panel Navigation/);
@@ -3450,9 +3600,16 @@ test("v0.24 Release Completion Verification", () => {
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.24`/);
-  assert.match(readme, /Current release: `0\.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes`/);
+  assert.match(readme, /Version: `0\.25`/);
+  assert.match(readme, /Current release: `0\.25 Context Filters, World\/Lore Integration Prep, and Character Exclusions`/);
   assert.match(readme, /Drawer Command Center/);
+  assert.match(readme, /v0\.25 Context Filters, World\/Lore Integration Prep, and Character Exclusions/);
+  assert.match(readme, /Memory & Context Filters/);
+  assert.match(readme, /Tracker Generation Context controls/);
+  assert.match(readme, /world_books\.getActivated/);
+  assert.match(readme, /characters\.get\(\)/);
+  assert.match(readme, /personas\.getActive\(\)/);
+  assert.match(readme, /Full native World Book entry body ingestion is deferred/);
   assert.match(readme, /v0\.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes/);
   assert.match(readme, /Maintenance & Repair/);
   assert.match(readme, /Run Health Check/);
@@ -3481,9 +3638,24 @@ test("v0.24 Release Completion Verification", () => {
   const frontendSource = readFileSync("src/frontend.ts", "utf8");
   assert.match(frontendSource, /ltracker-dom-style/);
   assert.match(frontendSource, /LTRACKER_DOM_TRACKER_CSS/);
+  assert.match(frontendSource, /Memory & Context Filters/);
+  assert.match(frontendSource, /data-context-filter-setting="enabled"/);
+  assert.match(frontendSource, /data-context-filter-setting="excludedCharacterNames"/);
+  assert.match(frontendSource, /data-context-filter-setting="manualWorldLoreContext"/);
+  assert.match(frontendSource, /data-action="copy-included-context"/);
+  assert.match(frontendSource, /data-action="copy-exclusion-report"/);
 
   // 5. Check size guard validation in backend importPreset
   const backendSource = readFileSync("src/backend.ts", "utf8");
+  assert.match(backendSource, /applyContextFiltersToTranscript/);
+  assert.match(backendSource, /autoSkipReasonForContextFilters/);
+  assert.match(backendSource, /spindle\.world_books\.getActivated/);
+  assert.match(backendSource, /spindle\.characters\.get/);
+  assert.match(backendSource, /spindle\.personas\.getActive/);
+  assert.match(backendSource, /Context filters left no eligible chat messages/);
+  assert.match(backendSource, /World\/lore context is enabled/);
+  assert.match(backendSource, /Character context is enabled/);
+  assert.match(backendSource, /Persona context is enabled/);
   assert.match(backendSource, /presetImportMaxChars/);
   assert.match(backendSource, /JSON\.parse\(importText\)/);
   assert.match(backendSource, /capturePresetRenderLock\(presetState\.activePreset, completedAt\)/);

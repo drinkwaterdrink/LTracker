@@ -8,6 +8,16 @@ import type { TrackerMemoryResult } from "./trackerMemory";
 
 const DEFAULT_MAX_MESSAGE_CHARS = 8_000;
 
+export interface TrackerPromptContextBlock {
+  title: string;
+  text: string;
+}
+
+export interface TrackerPromptContextOptions {
+  contextBlocks?: TrackerPromptContextBlock[];
+  filterSummary?: string | null;
+}
+
 export function buildCompactTranscript(
   messages: TranscriptMessage[],
   maxMessageChars = DEFAULT_MAX_MESSAGE_CHARS,
@@ -35,8 +45,12 @@ export function buildTrackerPrompt(
   transcript: string,
   preset: TrackerSchemaPreset = DEFAULT_TRACKER_PRESET,
   memory: TrackerMemoryResult | null = null,
+  options: TrackerPromptContextOptions = {},
 ): PromptMessage[] {
   const hasMemory = Boolean(memory?.renderedText.trim());
+  const contextBlocks = (options.contextBlocks ?? []).filter((block) => block.text.trim());
+  const hasContextBlocks = contextBlocks.length > 0;
+  const filterSummary = options.filterSummary?.trim() ?? "";
   return [
     {
       role: "system",
@@ -46,6 +60,9 @@ export function buildTrackerPrompt(
         "Do not invent facts unsupported by the transcript.",
         "The current transcript has higher priority than any prior tracker memory.",
         "If prior tracker memory contradicts the current transcript, the current transcript wins.",
+        hasContextBlocks
+          ? "Additional context sections are background references only. The current transcript still wins if sources disagree."
+          : null,
         hasMemory
           ? "Use the most recent prior tracker state as the baseline. Mutate only fields that the new transcript actually changes. Preserve stable identity anchors, names, ongoing threads, counters, and continuity fields unless the current transcript clearly updates them."
           : null,
@@ -71,6 +88,15 @@ export function buildTrackerPrompt(
         "",
         hasMemory ? memory?.renderedText ?? "" : null,
         hasMemory ? "" : null,
+        hasContextBlocks ? "Additional context sources:" : null,
+        ...contextBlocks.flatMap((block) => [
+          hasContextBlocks ? `[${block.title}]` : null,
+          block.text.trim(),
+          "",
+        ]),
+        filterSummary ? "Context filter summary:" : null,
+        filterSummary || null,
+        filterSummary ? "" : null,
         "Recent conversation:",
         transcript,
         "",

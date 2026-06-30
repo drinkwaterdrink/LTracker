@@ -223,12 +223,254 @@ function stringAtPath(value, path) {
   return typeof current === "string" ? current : null;
 }
 
+// src/shared/budget.ts
+var CHARS_PER_ESTIMATED_TOKEN = 4;
+var NORMAL_BUDGET_DEFAULTS = {
+  recentMessageBudgetTokens: 16e3,
+  perMessageBudgetTokens: 12e3,
+  trackerMemoryBudgetTokens: 12e3,
+  promptInjectionBudgetTokens: 12e3,
+  maxTrackerOutputTokens: 8e3,
+  promptPreviewBudgetTokens: 16e3,
+  renderedHtmlMaxChars: 25e4,
+  rawOutputMaxChars: 25e4,
+  presetImportMaxChars: 1e7
+};
+var ULTRA_BUDGET_DEFAULTS = {
+  recentMessageBudgetTokens: 128e3,
+  perMessageBudgetTokens: 4e4,
+  trackerMemoryBudgetTokens: 64e3,
+  promptInjectionBudgetTokens: 64e3,
+  maxTrackerOutputTokens: 64e3,
+  promptPreviewBudgetTokens: 128e3,
+  renderedHtmlMaxChars: 2e6,
+  rawOutputMaxChars: 2e6,
+  presetImportMaxChars: 5e7
+};
+function estimateTokensFromChars(chars) {
+  if (!Number.isFinite(chars) || chars <= 0) return 0;
+  return Math.ceil(chars / CHARS_PER_ESTIMATED_TOKEN);
+}
+function estimateCharsFromTokens(tokens) {
+  if (!Number.isFinite(tokens) || tokens <= 0) return 0;
+  return Math.round(tokens * CHARS_PER_ESTIMATED_TOKEN);
+}
+function tokenBudgetToChars(tokens, fallbackChars) {
+  const chars = estimateCharsFromTokens(tokens);
+  return chars > 0 ? chars : fallbackChars;
+}
+function budgetDefaults(ultraModeEnabled) {
+  return ultraModeEnabled ? ULTRA_BUDGET_DEFAULTS : NORMAL_BUDGET_DEFAULTS;
+}
+function effectivePerMessageChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.perMessageBudgetTokens, settings.maxMessageChars);
+  }
+  return settings.maxMessageChars;
+}
+function effectiveRecentTranscriptChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.recentMessageBudgetTokens, settings.maxMessageChars * settings.recentMessageLimit);
+  }
+  return Math.max(settings.maxMessageChars, settings.maxMessageChars * settings.recentMessageLimit);
+}
+function effectiveTrackerMemoryChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.trackerMemoryBudgetTokens, settings.memory.maxMemoryChars);
+  }
+  return settings.memory.maxMemoryChars;
+}
+function effectivePromptInjectionChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.promptInjectionBudgetTokens, settings.injection.maxInjectedChars);
+  }
+  return settings.injection.maxInjectedChars;
+}
+function effectivePromptPreviewChars(settings) {
+  if (settings.budget.mode === "estimated_tokens") {
+    return tokenBudgetToChars(settings.budget.promptPreviewBudgetTokens, 64e3);
+  }
+  return 64e3;
+}
+function effectiveTrackerOutputTokens(settings) {
+  return Math.max(256, Math.round(settings.budget.maxTrackerOutputTokens));
+}
+
+// src/shared/contextFilters.ts
+function normalize(value, caseSensitive) {
+  return caseSensitive ? value : value.toLowerCase();
+}
+function listMatches(value, patterns, caseSensitive, exact) {
+  if (!value.trim() || patterns.length === 0) return null;
+  const compared = normalize(value.trim(), caseSensitive);
+  for (const pattern of patterns) {
+    const cleaned = pattern.trim();
+    if (!cleaned) continue;
+    const next = normalize(cleaned, caseSensitive);
+    if (exact ? compared === next : compared.includes(next) || next.includes(compared)) {
+      return cleaned;
+    }
+  }
+  return null;
+}
+function textPatternMatches(value, patterns, caseSensitive) {
+  if (!value.trim() || patterns.length === 0) return null;
+  const compared = normalize(value, caseSensitive);
+  for (const pattern of patterns) {
+    const cleaned = pattern.trim();
+    if (!cleaned) continue;
+    if (compared.includes(normalize(cleaned, caseSensitive))) return cleaned;
+  }
+  return null;
+}
+function looksSystemLikeMessage(message) {
+  const head = message.content.trim().slice(0, 80).toLowerCase();
+  const name = message.name.trim().toLowerCase();
+  return name === "system" || name === "narrator" || head.startsWith("system:") || head.startsWith("[system") || head.startsWith("<system") || head.startsWith("ooc:") || head.startsWith("(ooc") || head.startsWith("[ooc") || head.startsWith("meta:") || head.startsWith("[meta");
+}
+function exclusionReasonForMessage(message, filters) {
+  if (!filters.enabled) return null;
+  if (message.role === "user" && filters.excludeUserMessages) return "user messages disabled";
+  if (message.role === "assistant" && filters.excludeAssistantMessages) return "assistant messages disabled";
+  if (filters.excludeSystemLikeMessages && looksSystemLikeMessage(message)) return "system/OOC-like message";
+  const nameMatch = listMatches(
+    message.name,
+    filters.excludedCharacterNames,
+    filters.caseSensitiveExclusions,
+    filters.requireExactCharacterNameMatch
+  );
+  if (nameMatch) return `excluded name: ${nameMatch}`;
+  const patternMatch = textPatternMatches(
+    `${message.name}
+${message.content}`,
+    filters.excludedMessageNamePatterns,
+    filters.caseSensitiveExclusions
+  );
+  if (patternMatch) return `excluded text pattern: ${patternMatch}`;
+  return null;
+}
+function applyContextFiltersToTranscript(messages, filters) {
+  const originalMessages = messages.map((message) => ({ ...message }));
+  if (!filters.enabled) {
+    return {
+      enabled: false,
+      originalMessages,
+      includedMessages: originalMessages,
+      excludedMessages: [],
+      messageCount: originalMessages.length,
+      includedCount: originalMessages.length,
+      excludedCount: 0,
+      excludedNames: [],
+      reasons: [],
+      warning: null
+    };
+  }
+  if (!filters.includeChatMessages) {
+    return {
+      enabled: true,
+      originalMessages,
+      includedMessages: [],
+      excludedMessages: originalMessages.map((message) => ({
+        index: message.index,
+        role: message.role,
+        name: message.name,
+        reason: "chat messages disabled"
+      })),
+      messageCount: originalMessages.length,
+      includedCount: 0,
+      excludedCount: originalMessages.length,
+      excludedNames: Array.from(new Set(originalMessages.map((message) => message.name).filter(Boolean))),
+      reasons: ["chat messages disabled"],
+      warning: "Context filters excluded every chat message."
+    };
+  }
+  const includedMessages = [];
+  const excludedMessages = [];
+  const reasons = /* @__PURE__ */ new Set();
+  const excludedNames = /* @__PURE__ */ new Set();
+  for (const message of originalMessages) {
+    const reason = exclusionReasonForMessage(message, filters);
+    if (!reason) {
+      includedMessages.push({ ...message });
+      continue;
+    }
+    excludedMessages.push({
+      index: message.index,
+      role: message.role,
+      name: message.name,
+      reason
+    });
+    reasons.add(reason);
+    if (message.name.trim()) excludedNames.add(message.name.trim());
+  }
+  return {
+    enabled: true,
+    originalMessages,
+    includedMessages,
+    excludedMessages,
+    messageCount: originalMessages.length,
+    includedCount: includedMessages.length,
+    excludedCount: excludedMessages.length,
+    excludedNames: Array.from(excludedNames).sort((a, b) => a.localeCompare(b)),
+    reasons: Array.from(reasons).sort((a, b) => a.localeCompare(b)),
+    warning: originalMessages.length > 0 && includedMessages.length === 0 ? "Context filters excluded every chat message." : null
+  };
+}
+function autoSkipReasonForContextFilters(input) {
+  const filters = input.settings.contextFilters;
+  if (!filters.enabled) return null;
+  const synthetic = {
+    index: 0,
+    role: input.role,
+    name: input.name,
+    content: input.content
+  };
+  const reason = exclusionReasonForMessage(synthetic, filters);
+  if (!reason) return null;
+  if (reason.startsWith("excluded name") && !filters.disableAutoForExcludedNames) return null;
+  if (!filters.disableAutoWhenSourceFiltered && !reason.startsWith("excluded name")) return null;
+  return `Auto skipped by context filters: ${reason}.`;
+}
+function formatContextFilterReport(result) {
+  if (!result.enabled) return "Context filters disabled. All readable chat messages were eligible.";
+  const lines = [
+    `Messages considered: ${result.messageCount}`,
+    `Messages included: ${result.includedCount}`,
+    `Messages skipped: ${result.excludedCount}`
+  ];
+  if (result.excludedNames.length > 0) lines.push(`Skipped names: ${result.excludedNames.join(", ")}`);
+  if (result.reasons.length > 0) lines.push(`Skip reasons: ${result.reasons.join("; ")}`);
+  if (result.warning) lines.push(`Warning: ${result.warning}`);
+  return lines.join("\n");
+}
+function contextBudgetPreview(buckets) {
+  const normalized = buckets.map((bucket) => {
+    const chars = bucket.text.length;
+    return {
+      key: bucket.key,
+      label: bucket.label,
+      chars,
+      estimatedTokens: estimateTokensFromChars(chars)
+    };
+  });
+  return {
+    buckets: normalized,
+    totalChars: normalized.reduce((sum, bucket) => sum + bucket.chars, 0),
+    totalEstimatedTokens: normalized.reduce((sum, bucket) => sum + bucket.estimatedTokens, 0)
+  };
+}
+function formatContextBudgetPreview(preview) {
+  const lines = preview.buckets.map((bucket) => `${bucket.label}: ~${bucket.estimatedTokens} tokens (${bucket.chars} chars)`);
+  lines.push(`Total: ~${preview.totalEstimatedTokens} tokens (${preview.totalChars} chars)`);
+  return lines.join("\n");
+}
+
 // src/shared/contextHandlerRuntime.ts
 var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.24";
+var EXTENSION_VERSION = "0.25";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -2091,79 +2333,6 @@ function groupMessageTrackerHistory(entries, showDuplicates = false) {
   };
 }
 
-// src/shared/budget.ts
-var CHARS_PER_ESTIMATED_TOKEN = 4;
-var NORMAL_BUDGET_DEFAULTS = {
-  recentMessageBudgetTokens: 16e3,
-  perMessageBudgetTokens: 12e3,
-  trackerMemoryBudgetTokens: 12e3,
-  promptInjectionBudgetTokens: 12e3,
-  maxTrackerOutputTokens: 8e3,
-  promptPreviewBudgetTokens: 16e3,
-  renderedHtmlMaxChars: 25e4,
-  rawOutputMaxChars: 25e4,
-  presetImportMaxChars: 1e7
-};
-var ULTRA_BUDGET_DEFAULTS = {
-  recentMessageBudgetTokens: 128e3,
-  perMessageBudgetTokens: 4e4,
-  trackerMemoryBudgetTokens: 64e3,
-  promptInjectionBudgetTokens: 64e3,
-  maxTrackerOutputTokens: 64e3,
-  promptPreviewBudgetTokens: 128e3,
-  renderedHtmlMaxChars: 2e6,
-  rawOutputMaxChars: 2e6,
-  presetImportMaxChars: 5e7
-};
-function estimateTokensFromChars(chars) {
-  if (!Number.isFinite(chars) || chars <= 0) return 0;
-  return Math.ceil(chars / CHARS_PER_ESTIMATED_TOKEN);
-}
-function estimateCharsFromTokens(tokens) {
-  if (!Number.isFinite(tokens) || tokens <= 0) return 0;
-  return Math.round(tokens * CHARS_PER_ESTIMATED_TOKEN);
-}
-function tokenBudgetToChars(tokens, fallbackChars) {
-  const chars = estimateCharsFromTokens(tokens);
-  return chars > 0 ? chars : fallbackChars;
-}
-function budgetDefaults(ultraModeEnabled) {
-  return ultraModeEnabled ? ULTRA_BUDGET_DEFAULTS : NORMAL_BUDGET_DEFAULTS;
-}
-function effectivePerMessageChars(settings) {
-  if (settings.budget.mode === "estimated_tokens") {
-    return tokenBudgetToChars(settings.budget.perMessageBudgetTokens, settings.maxMessageChars);
-  }
-  return settings.maxMessageChars;
-}
-function effectiveRecentTranscriptChars(settings) {
-  if (settings.budget.mode === "estimated_tokens") {
-    return tokenBudgetToChars(settings.budget.recentMessageBudgetTokens, settings.maxMessageChars * settings.recentMessageLimit);
-  }
-  return Math.max(settings.maxMessageChars, settings.maxMessageChars * settings.recentMessageLimit);
-}
-function effectiveTrackerMemoryChars(settings) {
-  if (settings.budget.mode === "estimated_tokens") {
-    return tokenBudgetToChars(settings.budget.trackerMemoryBudgetTokens, settings.memory.maxMemoryChars);
-  }
-  return settings.memory.maxMemoryChars;
-}
-function effectivePromptInjectionChars(settings) {
-  if (settings.budget.mode === "estimated_tokens") {
-    return tokenBudgetToChars(settings.budget.promptInjectionBudgetTokens, settings.injection.maxInjectedChars);
-  }
-  return settings.injection.maxInjectedChars;
-}
-function effectivePromptPreviewChars(settings) {
-  if (settings.budget.mode === "estimated_tokens") {
-    return tokenBudgetToChars(settings.budget.promptPreviewBudgetTokens, 64e3);
-  }
-  return 64e3;
-}
-function effectiveTrackerOutputTokens(settings) {
-  return Math.max(256, Math.round(settings.budget.maxTrackerOutputTokens));
-}
-
 // src/shared/autoTiming.ts
 function stableContentHash(content) {
   let hash = 2166136261;
@@ -3849,7 +4018,10 @@ var SETTINGS_LIMITS = {
   presetImportMaxChars: { min: 1e4, max: 1e8 },
   maxExpandedWidthPx: { min: 320, max: 1800, default: 1100 },
   mobileHorizontalMarginPx: { min: 0, max: 32, default: 6 },
-  expandedContentMaxHeightVh: { min: 30, max: 95, default: 80 }
+  expandedContentMaxHeightVh: { min: 30, max: 95, default: 80 },
+  maxWorldLoreChars: { min: 0, max: 512e3, default: 12e3 },
+  maxCharacterContextChars: { min: 0, max: 512e3, default: 12e3 },
+  maxPersonaContextChars: { min: 0, max: 256e3, default: 6e3 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -3969,6 +4141,34 @@ var DEFAULT_SETTINGS = {
     },
     testPrompt: TRACKER_CONNECTION_DEFAULT_TEST_PROMPT
   },
+  contextFilters: {
+    enabled: false,
+    includeChatMessages: true,
+    includeTrackerMemory: true,
+    includeEmbeddedTrackerTags: true,
+    includeWorldLoreContext: false,
+    includeCharacterContext: false,
+    includePersonaContext: false,
+    excludeUserMessages: false,
+    excludeAssistantMessages: false,
+    excludeSystemLikeMessages: false,
+    maxWorldLoreChars: SETTINGS_LIMITS.maxWorldLoreChars.default,
+    maxCharacterContextChars: SETTINGS_LIMITS.maxCharacterContextChars.default,
+    maxPersonaContextChars: SETTINGS_LIMITS.maxPersonaContextChars.default,
+    excludedCharacterNames: [],
+    excludedMessageNamePatterns: [],
+    excludedLoreKeywords: [],
+    loreAllowlistKeywords: [],
+    requireExactCharacterNameMatch: true,
+    caseSensitiveExclusions: false,
+    showContextFilterDiagnostics: true,
+    disableAutoForExcludedNames: true,
+    disableAutoWhenSourceFiltered: true,
+    includeOnlyMatchedLore: false,
+    manualWorldLoreContext: "",
+    manualCharacterContext: "",
+    manualPersonaContext: ""
+  },
   history: {
     pageSize: 25,
     showDuplicates: false
@@ -4036,6 +4236,55 @@ function injectionRoleFallback(value) {
 function stringOrNull3(value) {
   return typeof value === "string" && value.trim() ? value : null;
 }
+function stringValue3(value, fallback = "", maxLength = 64e3) {
+  if (typeof value !== "string") return fallback;
+  return value.slice(0, maxLength);
+}
+function stringList(value, maxItems = 100) {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(/\r?\n|,/) : [];
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const item of values) {
+    if (typeof item !== "string") continue;
+    const cleaned = item.trim().slice(0, 200);
+    if (!cleaned || seen.has(cleaned.toLowerCase())) continue;
+    seen.add(cleaned.toLowerCase());
+    result.push(cleaned);
+    if (result.length >= maxItems) break;
+  }
+  return result;
+}
+function repairContextFilters(source) {
+  const defaults = DEFAULT_SETTINGS.contextFilters;
+  return {
+    enabled: typeof source.enabled === "boolean" ? source.enabled : defaults.enabled,
+    includeChatMessages: typeof source.includeChatMessages === "boolean" ? source.includeChatMessages : defaults.includeChatMessages,
+    includeTrackerMemory: typeof source.includeTrackerMemory === "boolean" ? source.includeTrackerMemory : defaults.includeTrackerMemory,
+    includeEmbeddedTrackerTags: typeof source.includeEmbeddedTrackerTags === "boolean" ? source.includeEmbeddedTrackerTags : defaults.includeEmbeddedTrackerTags,
+    includeWorldLoreContext: typeof source.includeWorldLoreContext === "boolean" ? source.includeWorldLoreContext : defaults.includeWorldLoreContext,
+    includeCharacterContext: typeof source.includeCharacterContext === "boolean" ? source.includeCharacterContext : defaults.includeCharacterContext,
+    includePersonaContext: typeof source.includePersonaContext === "boolean" ? source.includePersonaContext : defaults.includePersonaContext,
+    excludeUserMessages: typeof source.excludeUserMessages === "boolean" ? source.excludeUserMessages : defaults.excludeUserMessages,
+    excludeAssistantMessages: typeof source.excludeAssistantMessages === "boolean" ? source.excludeAssistantMessages : defaults.excludeAssistantMessages,
+    excludeSystemLikeMessages: typeof source.excludeSystemLikeMessages === "boolean" ? source.excludeSystemLikeMessages : defaults.excludeSystemLikeMessages,
+    maxWorldLoreChars: clampNumber(source.maxWorldLoreChars, defaults.maxWorldLoreChars, SETTINGS_LIMITS.maxWorldLoreChars.min, SETTINGS_LIMITS.maxWorldLoreChars.max),
+    maxCharacterContextChars: clampNumber(source.maxCharacterContextChars, defaults.maxCharacterContextChars, SETTINGS_LIMITS.maxCharacterContextChars.min, SETTINGS_LIMITS.maxCharacterContextChars.max),
+    maxPersonaContextChars: clampNumber(source.maxPersonaContextChars, defaults.maxPersonaContextChars, SETTINGS_LIMITS.maxPersonaContextChars.min, SETTINGS_LIMITS.maxPersonaContextChars.max),
+    excludedCharacterNames: stringList(source.excludedCharacterNames),
+    excludedMessageNamePatterns: stringList(source.excludedMessageNamePatterns),
+    excludedLoreKeywords: stringList(source.excludedLoreKeywords),
+    loreAllowlistKeywords: stringList(source.loreAllowlistKeywords),
+    requireExactCharacterNameMatch: typeof source.requireExactCharacterNameMatch === "boolean" ? source.requireExactCharacterNameMatch : defaults.requireExactCharacterNameMatch,
+    caseSensitiveExclusions: typeof source.caseSensitiveExclusions === "boolean" ? source.caseSensitiveExclusions : defaults.caseSensitiveExclusions,
+    showContextFilterDiagnostics: typeof source.showContextFilterDiagnostics === "boolean" ? source.showContextFilterDiagnostics : defaults.showContextFilterDiagnostics,
+    disableAutoForExcludedNames: typeof source.disableAutoForExcludedNames === "boolean" ? source.disableAutoForExcludedNames : defaults.disableAutoForExcludedNames,
+    disableAutoWhenSourceFiltered: typeof source.disableAutoWhenSourceFiltered === "boolean" ? source.disableAutoWhenSourceFiltered : defaults.disableAutoWhenSourceFiltered,
+    includeOnlyMatchedLore: typeof source.includeOnlyMatchedLore === "boolean" ? source.includeOnlyMatchedLore : defaults.includeOnlyMatchedLore,
+    manualWorldLoreContext: stringValue3(source.manualWorldLoreContext, defaults.manualWorldLoreContext, SETTINGS_LIMITS.maxWorldLoreChars.max),
+    manualCharacterContext: stringValue3(source.manualCharacterContext, defaults.manualCharacterContext, SETTINGS_LIMITS.maxCharacterContextChars.max),
+    manualPersonaContext: stringValue3(source.manualPersonaContext, defaults.manualPersonaContext, SETTINGS_LIMITS.maxPersonaContextChars.max)
+  };
+}
 function clampNullableNumber(source, key, fallback, min, max, integer = false) {
   if (!hasOwn(source, key)) return fallback;
   const value = source[key];
@@ -4076,6 +4325,7 @@ function repairSettings(value) {
   const messageDisplaySource = isRecord8(source.messageDisplay) ? source.messageDisplay : {};
   const expandedWidthSource = isRecord8(source.expandedWidth) ? source.expandedWidth : {};
   const connectionSource = isRecord8(source.connection) ? source.connection : {};
+  const contextFiltersSource = isRecord8(source.contextFilters) ? source.contextFilters : {};
   const connectionParameterSource = isRecord8(connectionSource.parameters) ? connectionSource.parameters : {};
   const connectionReasoningSource = isRecord8(connectionSource.reasoning) ? connectionSource.reasoning : {};
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot" ? rendererSource.previewSource : DEFAULT_SETTINGS.renderer.previewSource;
@@ -4385,6 +4635,7 @@ function repairSettings(value) {
       },
       testPrompt: typeof connectionSource.testPrompt === "string" && connectionSource.testPrompt.trim() ? connectionSource.testPrompt : TRACKER_CONNECTION_DEFAULT_TEST_PROMPT
     },
+    contextFilters: repairContextFilters(contextFiltersSource),
     history: {
       pageSize: clampNumber(
         historySource.pageSize,
@@ -4708,8 +4959,11 @@ ${content}`;
   }
   return blocks.join("\n\n");
 }
-function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET, memory = null) {
+function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET, memory = null, options = {}) {
   const hasMemory = Boolean(memory?.renderedText.trim());
+  const contextBlocks = (options.contextBlocks ?? []).filter((block) => block.text.trim());
+  const hasContextBlocks = contextBlocks.length > 0;
+  const filterSummary = options.filterSummary?.trim() ?? "";
   return [
     {
       role: "system",
@@ -4719,6 +4973,7 @@ function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET, memory 
         "Do not invent facts unsupported by the transcript.",
         "The current transcript has higher priority than any prior tracker memory.",
         "If prior tracker memory contradicts the current transcript, the current transcript wins.",
+        hasContextBlocks ? "Additional context sections are background references only. The current transcript still wins if sources disagree." : null,
         hasMemory ? "Use the most recent prior tracker state as the baseline. Mutate only fields that the new transcript actually changes. Preserve stable identity anchors, names, ongoing threads, counters, and continuity fields unless the current transcript clearly updates them." : null,
         hasMemory ? "Do not resurrect characters who left the immediate scene unless the current transcript brings them back. Preserve arrays/items by stable id/name where possible." : null,
         "Preset prompt instructions are lower priority than these safety and integrity requirements.",
@@ -4740,6 +4995,15 @@ function buildTrackerPrompt(transcript, preset = DEFAULT_TRACKER_PRESET, memory 
         "",
         hasMemory ? memory?.renderedText ?? "" : null,
         hasMemory ? "" : null,
+        hasContextBlocks ? "Additional context sources:" : null,
+        ...contextBlocks.flatMap((block) => [
+          hasContextBlocks ? `[${block.title}]` : null,
+          block.text.trim(),
+          ""
+        ]),
+        filterSummary ? "Context filter summary:" : null,
+        filterSummary || null,
+        filterSummary ? "" : null,
         "Recent conversation:",
         transcript,
         "",
@@ -5176,7 +5440,10 @@ function permissionState() {
     chats: spindle.permissions.has("chats"),
     chatMutation: spindle.permissions.has("chat_mutation"),
     contextHandler: CONTEXT_HANDLER_EXPERIMENTAL_ENABLED && spindle.permissions.has("context_handler"),
-    interceptor: spindle.permissions.has("interceptor")
+    interceptor: spindle.permissions.has("interceptor"),
+    worldBooks: spindle.permissions.has("world_books"),
+    characters: spindle.permissions.has("characters"),
+    personas: spindle.permissions.has("personas")
   };
 }
 function send(payload, userId) {
@@ -5241,6 +5508,35 @@ function defaultDiagnostics(chatId) {
     lastMemorySourceSummary: null,
     lastMemorySkippedReason: null,
     lastPromptIncludedMemory: false,
+    lastContextFilterMessageCount: 0,
+    lastContextFilterIncludedCount: 0,
+    lastContextFilterExcludedCount: 0,
+    lastContextFilterExcludedNames: [],
+    lastContextFilterReasons: [],
+    lastContextFilterWarning: null,
+    lastIncludedContextChars: 0,
+    lastIncludedContextTokens: 0,
+    lastContextIncludedSourceSummary: null,
+    lastIncludedContextPreview: null,
+    lastContextExclusionReport: null,
+    worldLoreApiAvailable: Boolean(spindle.world_books?.getActivated),
+    worldLorePermissionDeclared: spindle.permissions.has("world_books"),
+    lastWorldLoreReadStatus: null,
+    lastWorldLoreEntriesConsidered: 0,
+    lastWorldLoreEntriesIncluded: 0,
+    lastWorldLoreCharsIncluded: 0,
+    lastWorldLoreSkippedReason: null,
+    lastWorldLoreContextPreview: null,
+    characterApiAvailable: Boolean(spindle.characters?.get),
+    characterPermissionDeclared: spindle.permissions.has("characters"),
+    lastCharacterContextReadStatus: null,
+    lastCharacterContextCharsIncluded: 0,
+    lastCharacterContextSkippedReason: null,
+    personaApiAvailable: Boolean(spindle.personas?.getActive),
+    personaPermissionDeclared: spindle.permissions.has("personas"),
+    lastPersonaContextReadStatus: null,
+    lastPersonaContextCharsIncluded: 0,
+    lastPersonaContextSkippedReason: null,
     interceptorRegistered,
     lastInterceptorAt: null,
     lastInterceptorInjectedCount: 0,
@@ -5622,6 +5918,35 @@ function repairDiagnostics(value, chatId) {
     lastMemorySourceSummary: stringOrNull4(value.lastMemorySourceSummary),
     lastMemorySkippedReason: stringOrNull4(value.lastMemorySkippedReason),
     lastPromptIncludedMemory: typeof value.lastPromptIncludedMemory === "boolean" ? value.lastPromptIncludedMemory : false,
+    lastContextFilterMessageCount: typeof value.lastContextFilterMessageCount === "number" && Number.isFinite(value.lastContextFilterMessageCount) ? Math.max(0, Math.round(value.lastContextFilterMessageCount)) : 0,
+    lastContextFilterIncludedCount: typeof value.lastContextFilterIncludedCount === "number" && Number.isFinite(value.lastContextFilterIncludedCount) ? Math.max(0, Math.round(value.lastContextFilterIncludedCount)) : 0,
+    lastContextFilterExcludedCount: typeof value.lastContextFilterExcludedCount === "number" && Number.isFinite(value.lastContextFilterExcludedCount) ? Math.max(0, Math.round(value.lastContextFilterExcludedCount)) : 0,
+    lastContextFilterExcludedNames: stringArray(value.lastContextFilterExcludedNames),
+    lastContextFilterReasons: stringArray(value.lastContextFilterReasons),
+    lastContextFilterWarning: stringOrNull4(value.lastContextFilterWarning),
+    lastIncludedContextChars: typeof value.lastIncludedContextChars === "number" && Number.isFinite(value.lastIncludedContextChars) ? Math.max(0, Math.round(value.lastIncludedContextChars)) : 0,
+    lastIncludedContextTokens: typeof value.lastIncludedContextTokens === "number" && Number.isFinite(value.lastIncludedContextTokens) ? Math.max(0, Math.round(value.lastIncludedContextTokens)) : 0,
+    lastContextIncludedSourceSummary: stringOrNull4(value.lastContextIncludedSourceSummary),
+    lastIncludedContextPreview: stringOrNull4(value.lastIncludedContextPreview),
+    lastContextExclusionReport: stringOrNull4(value.lastContextExclusionReport),
+    worldLoreApiAvailable: Boolean(spindle.world_books?.getActivated),
+    worldLorePermissionDeclared: spindle.permissions.has("world_books"),
+    lastWorldLoreReadStatus: stringOrNull4(value.lastWorldLoreReadStatus),
+    lastWorldLoreEntriesConsidered: typeof value.lastWorldLoreEntriesConsidered === "number" && Number.isFinite(value.lastWorldLoreEntriesConsidered) ? Math.max(0, Math.round(value.lastWorldLoreEntriesConsidered)) : 0,
+    lastWorldLoreEntriesIncluded: typeof value.lastWorldLoreEntriesIncluded === "number" && Number.isFinite(value.lastWorldLoreEntriesIncluded) ? Math.max(0, Math.round(value.lastWorldLoreEntriesIncluded)) : 0,
+    lastWorldLoreCharsIncluded: typeof value.lastWorldLoreCharsIncluded === "number" && Number.isFinite(value.lastWorldLoreCharsIncluded) ? Math.max(0, Math.round(value.lastWorldLoreCharsIncluded)) : 0,
+    lastWorldLoreSkippedReason: stringOrNull4(value.lastWorldLoreSkippedReason),
+    lastWorldLoreContextPreview: stringOrNull4(value.lastWorldLoreContextPreview),
+    characterApiAvailable: Boolean(spindle.characters?.get),
+    characterPermissionDeclared: spindle.permissions.has("characters"),
+    lastCharacterContextReadStatus: stringOrNull4(value.lastCharacterContextReadStatus),
+    lastCharacterContextCharsIncluded: typeof value.lastCharacterContextCharsIncluded === "number" && Number.isFinite(value.lastCharacterContextCharsIncluded) ? Math.max(0, Math.round(value.lastCharacterContextCharsIncluded)) : 0,
+    lastCharacterContextSkippedReason: stringOrNull4(value.lastCharacterContextSkippedReason),
+    personaApiAvailable: Boolean(spindle.personas?.getActive),
+    personaPermissionDeclared: spindle.permissions.has("personas"),
+    lastPersonaContextReadStatus: stringOrNull4(value.lastPersonaContextReadStatus),
+    lastPersonaContextCharsIncluded: typeof value.lastPersonaContextCharsIncluded === "number" && Number.isFinite(value.lastPersonaContextCharsIncluded) ? Math.max(0, Math.round(value.lastPersonaContextCharsIncluded)) : 0,
+    lastPersonaContextSkippedReason: stringOrNull4(value.lastPersonaContextSkippedReason),
     interceptorRegistered,
     lastInterceptorAt: stringOrNull4(value.lastInterceptorAt),
     lastInterceptorInjectedCount: typeof value.lastInterceptorInjectedCount === "number" && Number.isFinite(value.lastInterceptorInjectedCount) ? Math.max(0, Math.round(value.lastInterceptorInjectedCount)) : 0,
@@ -6541,6 +6866,220 @@ function normalizeMessages(messages) {
     content: message.content
   }));
 }
+function limitContextText(value, maxChars) {
+  const normalized = value.trim();
+  if (maxChars <= 0) return "";
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 24)).trimEnd()}
+[context truncated]`;
+}
+function keywordMatches(text, keywords, caseSensitive) {
+  if (keywords.length === 0) return false;
+  const haystack = caseSensitive ? text : text.toLowerCase();
+  return keywords.some((keyword) => {
+    const needle = caseSensitive ? keyword : keyword.toLowerCase();
+    return needle.trim() ? haystack.includes(needle.trim()) : false;
+  });
+}
+function contextObjectString(value, key) {
+  return isRecord10(value) && typeof value[key] === "string" ? value[key].trim() : "";
+}
+function contextObjectStringArray(value, key) {
+  if (!isRecord10(value) || !Array.isArray(value[key])) return [];
+  return value[key].filter((item) => typeof item === "string" && item.trim().length > 0);
+}
+async function collectWorldLoreContext(chatId, userId, settings) {
+  const filters = settings.contextFilters;
+  const apiAvailable = Boolean(spindle.world_books?.getActivated);
+  const permission = spindle.permissions.has("world_books");
+  const lines = [];
+  let considered = 0;
+  let included = 0;
+  let status = null;
+  let skippedReason = null;
+  if (!filters.enabled || !filters.includeWorldLoreContext) {
+    skippedReason = "World/lore context is disabled.";
+  } else {
+    const manual = limitContextText(filters.manualWorldLoreContext, filters.maxWorldLoreChars);
+    if (manual) {
+      lines.push("[Manual extra lore context]", manual);
+      included += 1;
+    }
+  }
+  if (filters.enabled && filters.includeWorldLoreContext) {
+    if (!apiAvailable) {
+      skippedReason = "Lumiverse world/lore API is unavailable in this runtime.";
+    } else if (!permission) {
+      skippedReason = "world_books permission is not granted.";
+    } else {
+      try {
+        const entries = await spindle.world_books.getActivated(chatId, userId);
+        considered = Array.isArray(entries) ? entries.length : 0;
+        const nativeLines = [];
+        for (const entry of Array.isArray(entries) ? entries : []) {
+          const comment = contextObjectString(entry, "comment");
+          const keys = contextObjectStringArray(entry, "keys");
+          const source = contextObjectString(entry, "source");
+          const score = isRecord10(entry) && typeof entry.score === "number" ? ` score=${entry.score}` : "";
+          const rendered = [
+            comment ? `Entry: ${comment}` : "Entry: activated world/lore item",
+            keys.length ? `Keys: ${keys.join(", ")}` : null,
+            source ? `Source: ${source}${score}` : null
+          ].filter(Boolean).join(" | ");
+          if (filters.excludedLoreKeywords.length > 0 && keywordMatches(rendered, filters.excludedLoreKeywords, filters.caseSensitiveExclusions)) continue;
+          if (filters.includeOnlyMatchedLore && filters.loreAllowlistKeywords.length > 0 && !keywordMatches(rendered, filters.loreAllowlistKeywords, filters.caseSensitiveExclusions)) continue;
+          nativeLines.push(rendered);
+        }
+        if (nativeLines.length > 0) {
+          lines.push("[Activated world/lore entries]", nativeLines.join("\n"));
+          included += nativeLines.length;
+        }
+        status = `read ${nativeLines.length}/${considered} activated world/lore entries`;
+      } catch (error) {
+        skippedReason = `World/lore read failed: ${errorMessage2(error)}`;
+      }
+    }
+  }
+  const text = limitContextText(lines.join("\n"), filters.maxWorldLoreChars);
+  return {
+    block: text ? { title: "World / Lore Context", text } : null,
+    status,
+    skippedReason: text ? skippedReason : skippedReason ?? (filters.includeWorldLoreContext ? "No world/lore context matched filters." : "World/lore context is disabled."),
+    considered,
+    included,
+    chars: text.length,
+    preview: text || null
+  };
+}
+async function collectCharacterContext(chatId, userId, settings) {
+  const filters = settings.contextFilters;
+  const apiAvailable = Boolean(spindle.characters?.get);
+  const permission = spindle.permissions.has("characters");
+  const lines = [];
+  let status = null;
+  let skippedReason = null;
+  if (!filters.enabled || !filters.includeCharacterContext) {
+    skippedReason = "Character context is disabled.";
+  } else {
+    const manual = limitContextText(filters.manualCharacterContext, filters.maxCharacterContextChars);
+    if (manual) lines.push("[Manual character notes]", manual);
+  }
+  if (filters.enabled && filters.includeCharacterContext) {
+    if (!apiAvailable) {
+      skippedReason = "Lumiverse character API is unavailable in this runtime.";
+    } else if (!permission) {
+      skippedReason = "characters permission is not granted.";
+    } else {
+      try {
+        const chat = await spindle.chats?.get?.(chatId, userId);
+        const characterId = isRecord10(chat) && typeof chat.character_id === "string" ? chat.character_id : null;
+        if (!characterId) {
+          skippedReason = "Active chat has no character id.";
+        } else {
+          const character = await spindle.characters.get(characterId, userId);
+          const name = contextObjectString(character, "name");
+          const excluded = name && settings.contextFilters.excludedCharacterNames.some((item) => settings.contextFilters.caseSensitiveExclusions ? item === name : item.toLowerCase() === name.toLowerCase());
+          if (excluded) {
+            skippedReason = `Active character "${name}" is excluded.`;
+          } else if (character) {
+            const parts = [
+              name ? `Name: ${name}` : null,
+              contextObjectString(character, "description") ? `Description: ${contextObjectString(character, "description")}` : null,
+              contextObjectString(character, "personality") ? `Personality: ${contextObjectString(character, "personality")}` : null,
+              contextObjectString(character, "scenario") ? `Scenario: ${contextObjectString(character, "scenario")}` : null,
+              contextObjectString(character, "creator_notes") ? `Creator notes: ${contextObjectString(character, "creator_notes")}` : null,
+              contextObjectString(character, "system_prompt") ? `System prompt: ${contextObjectString(character, "system_prompt")}` : null,
+              contextObjectString(character, "post_history_instructions") ? `Post-history instructions: ${contextObjectString(character, "post_history_instructions")}` : null
+            ].filter(Boolean).join("\n");
+            if (parts) lines.push("[Active character card]", parts);
+            status = `read active character${name ? `: ${name}` : ""}`;
+          }
+        }
+      } catch (error) {
+        skippedReason = `Character read failed: ${errorMessage2(error)}`;
+      }
+    }
+  }
+  const text = limitContextText(lines.join("\n"), filters.maxCharacterContextChars);
+  return {
+    block: text ? { title: "Character Context", text } : null,
+    status,
+    skippedReason: text ? skippedReason : skippedReason ?? (filters.includeCharacterContext ? "No character context was available." : "Character context is disabled."),
+    considered: status ? 1 : 0,
+    included: text ? 1 : 0,
+    chars: text.length,
+    preview: text || null
+  };
+}
+async function collectPersonaContext(userId, settings) {
+  const filters = settings.contextFilters;
+  const apiAvailable = Boolean(spindle.personas?.getActive);
+  const permission = spindle.permissions.has("personas");
+  const lines = [];
+  let status = null;
+  let skippedReason = null;
+  if (!filters.enabled || !filters.includePersonaContext) {
+    skippedReason = "Persona context is disabled.";
+  } else {
+    const manual = limitContextText(filters.manualPersonaContext, filters.maxPersonaContextChars);
+    if (manual) lines.push("[Manual persona notes]", manual);
+  }
+  if (filters.enabled && filters.includePersonaContext) {
+    if (!apiAvailable) {
+      skippedReason = "Lumiverse persona API is unavailable in this runtime.";
+    } else if (!permission) {
+      skippedReason = "personas permission is not granted.";
+    } else {
+      try {
+        const persona = await spindle.personas.getActive(userId);
+        const name = contextObjectString(persona, "name");
+        const title = contextObjectString(persona, "title");
+        const description = contextObjectString(persona, "description");
+        const text2 = [
+          name ? `Name: ${name}` : null,
+          title ? `Title: ${title}` : null,
+          description ? `Description: ${description}` : null
+        ].filter(Boolean).join("\n");
+        if (text2) lines.push("[Active persona]", text2);
+        status = persona ? `read active persona${name ? `: ${name}` : ""}` : "no active persona";
+      } catch (error) {
+        skippedReason = `Persona read failed: ${errorMessage2(error)}`;
+      }
+    }
+  }
+  const text = limitContextText(lines.join("\n"), filters.maxPersonaContextChars);
+  return {
+    block: text ? { title: "Persona Context", text } : null,
+    status,
+    skippedReason: text ? skippedReason : skippedReason ?? (filters.includePersonaContext ? "No persona context was available." : "Persona context is disabled."),
+    considered: status ? 1 : 0,
+    included: text ? 1 : 0,
+    chars: text.length,
+    preview: text || null
+  };
+}
+function memorySettingsForContextFilters(settings) {
+  if (!settings.contextFilters.enabled) return settings;
+  return {
+    ...settings,
+    memory: {
+      ...settings.memory,
+      includeInTrackerGeneration: settings.memory.includeInTrackerGeneration && settings.contextFilters.includeTrackerMemory,
+      source: settings.contextFilters.includeEmbeddedTrackerTags ? settings.memory.source : settings.memory.source === "embedded_tags" ? "sidecar_index" : settings.memory.source === "hybrid" ? "sidecar_index" : settings.memory.source
+    }
+  };
+}
+function contextFilterDiagnostics(result) {
+  return {
+    lastContextFilterMessageCount: result.messageCount,
+    lastContextFilterIncludedCount: result.includedCount,
+    lastContextFilterExcludedCount: result.excludedCount,
+    lastContextFilterExcludedNames: result.excludedNames,
+    lastContextFilterReasons: result.reasons,
+    lastContextFilterWarning: result.warning,
+    lastContextExclusionReport: formatContextFilterReport(result)
+  };
+}
 function normalizeGenerationText(result) {
   if (typeof result === "string" && result.trim()) return result;
   if (!isRecord10(result)) {
@@ -7084,6 +7623,16 @@ async function scheduleAutoForMessage(input) {
     generationId: input.generationId,
     generationType: input.generationType
   });
+  const contextSkipReason = autoSkipReasonForContextFilters({
+    settings,
+    role: messageRole(sourceMessage),
+    name: sourceMessage.name ?? "",
+    content: sourceMessage.content ?? ""
+  });
+  if (contextSkipReason) {
+    await markAutoSkipped(input.chatId, input.userId, trigger, contextSkipReason, input.eventAt);
+    return;
+  }
   const decision = shouldScheduleAutoTracker({
     settings,
     role: messageRole(sourceMessage),
@@ -7634,31 +8183,83 @@ async function generateTracker(chatId, userId, trigger) {
     if (transcriptMessages.length === 0) {
       throw new LTrackerStageError("read_messages", "This chat has no readable messages to track.");
     }
+    const filterResult = applyContextFiltersToTranscript(transcriptMessages, settings.contextFilters);
+    const filterExcludedEverything = settings.contextFilters.enabled && settings.contextFilters.includeChatMessages && filterResult.messageCount > 0 && filterResult.includedCount === 0;
+    if (filterExcludedEverything && trigger.kind === "auto") {
+      const skippedAt = nowIso();
+      diagnostics = {
+        ...diagnostics,
+        status: "idle",
+        lastGenerationCompletedAt: skippedAt,
+        lastGenerationDurationMs: Date.now() - startedAtMs,
+        lastAutoSkippedReason: "Context filters left no eligible chat messages.",
+        lastError: null,
+        ...contextFilterDiagnostics(filterResult),
+        activeTrackerJobs: activeTrackerJobDiagnostics(resolvedChatId)
+      };
+      if (isCurrentJob(jobKey, job.jobId)) activeJobs.delete(jobKey);
+      await persistDiagnostics(diagnostics, userId);
+      await sendState(resolvedChatId, userId, "idle", null, requestId);
+      return;
+    }
+    const promptTranscriptMessages = filterExcludedEverything ? transcriptMessages : filterResult.includedMessages;
+    const filterWarning = filterExcludedEverything ? "Context filters excluded every message; manual generation used the unfiltered transcript fallback." : filterResult.warning;
     const sourceMessageIds = rawMessages.map((message) => message.id);
     diagnostics = {
       ...diagnostics,
       lastMessagesRead: rawMessages.length,
       lastSourceMessageIds: sourceMessageIds,
-      lastSourceMessageRange: sourceRange(sourceMessageIds)
+      lastSourceMessageRange: sourceRange(sourceMessageIds),
+      ...contextFilterDiagnostics({
+        ...filterResult,
+        warning: filterWarning
+      })
     };
     stage = "prompt";
     const transcript = buildCompactTranscript(
-      transcriptMessages,
+      promptTranscriptMessages,
       effectivePerMessageChars(settings),
       effectiveRecentTranscriptChars(settings)
     );
     const memDiags = {};
-    const memory = settings.memory.enabled && settings.memory.includeInTrackerGeneration ? await collectTrackerMemory(resolvedChatId, userId, settings, presetState.activePreset, trigger, memDiags) : {
+    const contextAwareSettings = memorySettingsForContextFilters(settings);
+    const memory = contextAwareSettings.memory.enabled && contextAwareSettings.memory.includeInTrackerGeneration ? await collectTrackerMemory(resolvedChatId, userId, contextAwareSettings, presetState.activePreset, trigger, memDiags) : {
       entries: [],
       renderedText: "",
       totalChars: 0,
       truncated: false,
-      skippedReason: settings.memory.enabled ? "Tracker memory is not included in tracker generation." : "Tracker memory is disabled."
+      skippedReason: contextAwareSettings.memory.enabled ? "Tracker memory is not included in tracker generation." : "Tracker memory is disabled."
     };
+    const worldLore = await collectWorldLoreContext(resolvedChatId, userId, settings);
+    const characterContext = await collectCharacterContext(resolvedChatId, userId, settings);
+    const personaContext = await collectPersonaContext(userId, settings);
+    const contextBlocks = [worldLore.block, characterContext.block, personaContext.block].filter((block) => Boolean(block));
+    const contextBudget = contextBudgetPreview([
+      { key: "messages", label: "Chat transcript", text: transcript },
+      { key: "memory", label: "Tracker memory", text: memory.renderedText },
+      { key: "lore", label: "World/lore", text: worldLore.preview ?? "" },
+      { key: "character", label: "Character context", text: characterContext.preview ?? "" },
+      { key: "persona", label: "Persona/manual notes", text: personaContext.preview ?? "" }
+    ]);
+    const contextSummary = [
+      formatContextFilterReport({ ...filterResult, warning: filterWarning }),
+      "",
+      "Context budget preview:",
+      formatContextBudgetPreview(contextBudget),
+      "",
+      "Skipped source summary:",
+      worldLore.skippedReason ? `World/lore: ${worldLore.skippedReason}` : null,
+      characterContext.skippedReason ? `Character: ${characterContext.skippedReason}` : null,
+      personaContext.skippedReason ? `Persona: ${personaContext.skippedReason}` : null
+    ].filter((line) => typeof line === "string").join("\n");
     const promptMessages = buildTrackerPrompt(
       transcript,
       presetState.activePreset,
-      memory.renderedText ? memory : null
+      memory.renderedText ? memory : null,
+      {
+        contextBlocks,
+        filterSummary: contextSummary
+      }
     );
     diagnostics = {
       ...diagnostics,
@@ -7676,6 +8277,29 @@ async function generateTracker(chatId, userId, trigger) {
       lastMemorySkippedReason: memory.skippedReason,
       lastPromptIncludedMemory: Boolean(memory.renderedText),
       estimatedMemoryTokensLastRun: estimateTokensFromChars(memory.totalChars),
+      lastIncludedContextChars: contextBudget.totalChars,
+      lastIncludedContextTokens: contextBudget.totalEstimatedTokens,
+      lastContextIncludedSourceSummary: contextSummary,
+      lastIncludedContextPreview: contextBlocks.map((block) => `[${block.title}]
+${block.text}`).join("\n\n") || null,
+      worldLoreApiAvailable: Boolean(spindle.world_books?.getActivated),
+      worldLorePermissionDeclared: spindle.permissions.has("world_books"),
+      lastWorldLoreReadStatus: worldLore.status,
+      lastWorldLoreEntriesConsidered: worldLore.considered,
+      lastWorldLoreEntriesIncluded: worldLore.included,
+      lastWorldLoreCharsIncluded: worldLore.chars,
+      lastWorldLoreSkippedReason: worldLore.skippedReason,
+      lastWorldLoreContextPreview: worldLore.preview,
+      characterApiAvailable: Boolean(spindle.characters?.get),
+      characterPermissionDeclared: spindle.permissions.has("characters"),
+      lastCharacterContextReadStatus: characterContext.status,
+      lastCharacterContextCharsIncluded: characterContext.chars,
+      lastCharacterContextSkippedReason: characterContext.skippedReason,
+      personaApiAvailable: Boolean(spindle.personas?.getActive),
+      personaPermissionDeclared: spindle.permissions.has("personas"),
+      lastPersonaContextReadStatus: personaContext.status,
+      lastPersonaContextCharsIncluded: personaContext.chars,
+      lastPersonaContextSkippedReason: personaContext.skippedReason,
       lastPromptPreview: settings.savePromptPreview ? promptPreview(promptMessages, effectivePromptPreviewChars(settings)) : "[Prompt preview saving disabled]"
     };
     diagnostics = {
@@ -7746,7 +8370,7 @@ async function generateTracker(chatId, userId, trigger) {
       extensionVersion: EXTENSION_VERSION,
       chatId: resolvedChatId,
       createdAt: completedAt,
-      messageCount: transcriptMessages.length,
+      messageCount: promptTranscriptMessages.length,
       sourceMessageIds,
       presetId: presetState.activePreset.id,
       presetName: presetState.activePreset.name,
@@ -8923,6 +9547,64 @@ async function buildMaintenanceReport(chatId, userId, options = {}) {
       category: "Connections",
       message: "No dedicated tracker profile is selected; LTracker will fall back to the active roleplay connection.",
       suggestedFix: "Open Connection and select a tracker profile.",
+      repairActionId: null
+    });
+  }
+  if (settings.contextFilters.enabled) {
+    const anyGenerationSource = settings.contextFilters.includeChatMessages || settings.contextFilters.includeTrackerMemory || settings.contextFilters.includeWorldLoreContext || settings.contextFilters.includeCharacterContext || settings.contextFilters.includePersonaContext || Boolean(settings.contextFilters.manualWorldLoreContext.trim()) || Boolean(settings.contextFilters.manualCharacterContext.trim()) || Boolean(settings.contextFilters.manualPersonaContext.trim());
+    if (!anyGenerationSource) {
+      items.push({
+        severity: "repairable",
+        category: "Context Filters",
+        message: "Context filters are enabled but every generation context source is disabled.",
+        suggestedFix: "Reset context filters to defaults or enable chat messages.",
+        repairActionId: "repair_settings"
+      });
+    }
+    if (settings.contextFilters.excludeUserMessages && settings.contextFilters.excludeAssistantMessages) {
+      items.push({
+        severity: "warning",
+        category: "Context Filters",
+        message: "Both user and assistant messages are excluded; recent chat context may become empty.",
+        suggestedFix: "Keep at least one message role enabled unless you are relying on manual notes only.",
+        repairActionId: null
+      });
+    }
+  }
+  if (settings.contextFilters.includeWorldLoreContext && (!spindle.world_books?.getActivated || !spindle.permissions.has("world_books"))) {
+    items.push({
+      severity: "warning",
+      category: "Context Filters",
+      message: "World/lore context is enabled, but the read-only world_books API or permission is unavailable.",
+      suggestedFix: "Disable native world/lore context or use Extra Lore Context until Lumiverse grants the API.",
+      repairActionId: null
+    });
+  }
+  if (settings.contextFilters.includeCharacterContext && (!spindle.characters?.get || !spindle.permissions.has("characters"))) {
+    items.push({
+      severity: "warning",
+      category: "Context Filters",
+      message: "Character context is enabled, but the read-only characters API or permission is unavailable.",
+      suggestedFix: "Disable native character context or use Manual Character Notes.",
+      repairActionId: null
+    });
+  }
+  if (settings.contextFilters.includePersonaContext && (!spindle.personas?.getActive || !spindle.permissions.has("personas"))) {
+    items.push({
+      severity: "warning",
+      category: "Context Filters",
+      message: "Persona context is enabled, but the read-only personas API or permission is unavailable.",
+      suggestedFix: "Disable native persona context or use Manual Persona Notes.",
+      repairActionId: null
+    });
+  }
+  const addedContextBudget = settings.contextFilters.maxWorldLoreChars + settings.contextFilters.maxCharacterContextChars + settings.contextFilters.maxPersonaContextChars;
+  if (settings.contextFilters.enabled && addedContextBudget > Math.max(64e3, settings.maxMessageChars * 3)) {
+    items.push({
+      severity: "warning",
+      category: "Context Filters",
+      message: "Additional context budgets are high compared with the recent chat budget.",
+      suggestedFix: "Reduce lore/character/persona budgets if tracker generations become slow or unfocused.",
       repairActionId: null
     });
   }

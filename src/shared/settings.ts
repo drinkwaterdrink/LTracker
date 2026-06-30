@@ -7,6 +7,7 @@ import {
   type LTrackerInjectionPlacement,
   type LTrackerInjectionRoleFallback,
   type LTrackerConnectionMode,
+  type LTrackerContextFiltersSettings,
   type LTrackerMessageDisplayDisplayMode,
   type LTrackerMemoryOrder,
   type LTrackerMemorySource,
@@ -52,6 +53,9 @@ export const SETTINGS_LIMITS = {
   maxExpandedWidthPx: { min: 320, max: 1_800, default: 1100 },
   mobileHorizontalMarginPx: { min: 0, max: 32, default: 6 },
   expandedContentMaxHeightVh: { min: 30, max: 95, default: 80 },
+  maxWorldLoreChars: { min: 0, max: 512_000, default: 12_000 },
+  maxCharacterContextChars: { min: 0, max: 512_000, default: 12_000 },
+  maxPersonaContextChars: { min: 0, max: 256_000, default: 6_000 },
 } as const;
 
 export const DEFAULT_SETTINGS: LTrackerSettings = {
@@ -172,6 +176,34 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     },
     testPrompt: TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
   },
+  contextFilters: {
+    enabled: false,
+    includeChatMessages: true,
+    includeTrackerMemory: true,
+    includeEmbeddedTrackerTags: true,
+    includeWorldLoreContext: false,
+    includeCharacterContext: false,
+    includePersonaContext: false,
+    excludeUserMessages: false,
+    excludeAssistantMessages: false,
+    excludeSystemLikeMessages: false,
+    maxWorldLoreChars: SETTINGS_LIMITS.maxWorldLoreChars.default,
+    maxCharacterContextChars: SETTINGS_LIMITS.maxCharacterContextChars.default,
+    maxPersonaContextChars: SETTINGS_LIMITS.maxPersonaContextChars.default,
+    excludedCharacterNames: [],
+    excludedMessageNamePatterns: [],
+    excludedLoreKeywords: [],
+    loreAllowlistKeywords: [],
+    requireExactCharacterNameMatch: true,
+    caseSensitiveExclusions: false,
+    showContextFilterDiagnostics: true,
+    disableAutoForExcludedNames: true,
+    disableAutoWhenSourceFiltered: true,
+    includeOnlyMatchedLore: false,
+    manualWorldLoreContext: "",
+    manualCharacterContext: "",
+    manualPersonaContext: "",
+  },
   history: {
     pageSize: 25,
     showDuplicates: false,
@@ -290,6 +322,62 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function stringValue(value: unknown, fallback = "", maxLength = 64_000): string {
+  if (typeof value !== "string") return fallback;
+  return value.slice(0, maxLength);
+}
+
+function stringList(value: unknown, maxItems = 100): string[] {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/\r?\n|,/)
+      : [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of values) {
+    if (typeof item !== "string") continue;
+    const cleaned = item.trim().slice(0, 200);
+    if (!cleaned || seen.has(cleaned.toLowerCase())) continue;
+    seen.add(cleaned.toLowerCase());
+    result.push(cleaned);
+    if (result.length >= maxItems) break;
+  }
+  return result;
+}
+
+function repairContextFilters(source: Record<string, unknown>): LTrackerContextFiltersSettings {
+  const defaults = DEFAULT_SETTINGS.contextFilters;
+  return {
+    enabled: typeof source.enabled === "boolean" ? source.enabled : defaults.enabled,
+    includeChatMessages: typeof source.includeChatMessages === "boolean" ? source.includeChatMessages : defaults.includeChatMessages,
+    includeTrackerMemory: typeof source.includeTrackerMemory === "boolean" ? source.includeTrackerMemory : defaults.includeTrackerMemory,
+    includeEmbeddedTrackerTags: typeof source.includeEmbeddedTrackerTags === "boolean" ? source.includeEmbeddedTrackerTags : defaults.includeEmbeddedTrackerTags,
+    includeWorldLoreContext: typeof source.includeWorldLoreContext === "boolean" ? source.includeWorldLoreContext : defaults.includeWorldLoreContext,
+    includeCharacterContext: typeof source.includeCharacterContext === "boolean" ? source.includeCharacterContext : defaults.includeCharacterContext,
+    includePersonaContext: typeof source.includePersonaContext === "boolean" ? source.includePersonaContext : defaults.includePersonaContext,
+    excludeUserMessages: typeof source.excludeUserMessages === "boolean" ? source.excludeUserMessages : defaults.excludeUserMessages,
+    excludeAssistantMessages: typeof source.excludeAssistantMessages === "boolean" ? source.excludeAssistantMessages : defaults.excludeAssistantMessages,
+    excludeSystemLikeMessages: typeof source.excludeSystemLikeMessages === "boolean" ? source.excludeSystemLikeMessages : defaults.excludeSystemLikeMessages,
+    maxWorldLoreChars: clampNumber(source.maxWorldLoreChars, defaults.maxWorldLoreChars, SETTINGS_LIMITS.maxWorldLoreChars.min, SETTINGS_LIMITS.maxWorldLoreChars.max),
+    maxCharacterContextChars: clampNumber(source.maxCharacterContextChars, defaults.maxCharacterContextChars, SETTINGS_LIMITS.maxCharacterContextChars.min, SETTINGS_LIMITS.maxCharacterContextChars.max),
+    maxPersonaContextChars: clampNumber(source.maxPersonaContextChars, defaults.maxPersonaContextChars, SETTINGS_LIMITS.maxPersonaContextChars.min, SETTINGS_LIMITS.maxPersonaContextChars.max),
+    excludedCharacterNames: stringList(source.excludedCharacterNames),
+    excludedMessageNamePatterns: stringList(source.excludedMessageNamePatterns),
+    excludedLoreKeywords: stringList(source.excludedLoreKeywords),
+    loreAllowlistKeywords: stringList(source.loreAllowlistKeywords),
+    requireExactCharacterNameMatch: typeof source.requireExactCharacterNameMatch === "boolean" ? source.requireExactCharacterNameMatch : defaults.requireExactCharacterNameMatch,
+    caseSensitiveExclusions: typeof source.caseSensitiveExclusions === "boolean" ? source.caseSensitiveExclusions : defaults.caseSensitiveExclusions,
+    showContextFilterDiagnostics: typeof source.showContextFilterDiagnostics === "boolean" ? source.showContextFilterDiagnostics : defaults.showContextFilterDiagnostics,
+    disableAutoForExcludedNames: typeof source.disableAutoForExcludedNames === "boolean" ? source.disableAutoForExcludedNames : defaults.disableAutoForExcludedNames,
+    disableAutoWhenSourceFiltered: typeof source.disableAutoWhenSourceFiltered === "boolean" ? source.disableAutoWhenSourceFiltered : defaults.disableAutoWhenSourceFiltered,
+    includeOnlyMatchedLore: typeof source.includeOnlyMatchedLore === "boolean" ? source.includeOnlyMatchedLore : defaults.includeOnlyMatchedLore,
+    manualWorldLoreContext: stringValue(source.manualWorldLoreContext, defaults.manualWorldLoreContext, SETTINGS_LIMITS.maxWorldLoreChars.max),
+    manualCharacterContext: stringValue(source.manualCharacterContext, defaults.manualCharacterContext, SETTINGS_LIMITS.maxCharacterContextChars.max),
+    manualPersonaContext: stringValue(source.manualPersonaContext, defaults.manualPersonaContext, SETTINGS_LIMITS.maxPersonaContextChars.max),
+  };
+}
+
 function clampNullableNumber(
   source: Record<string, unknown>,
   key: string,
@@ -363,6 +451,7 @@ export function repairSettings(value: unknown): LTrackerSettings {
   const messageDisplaySource = isRecord(source.messageDisplay) ? source.messageDisplay : {};
   const expandedWidthSource = isRecord(source.expandedWidth) ? source.expandedWidth : {};
   const connectionSource = isRecord(source.connection) ? source.connection : {};
+  const contextFiltersSource = isRecord(source.contextFilters) ? source.contextFilters : {};
   const connectionParameterSource = isRecord(connectionSource.parameters) ? connectionSource.parameters : {};
   const connectionReasoningSource = isRecord(connectionSource.reasoning) ? connectionSource.reasoning : {};
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot"
@@ -796,6 +885,7 @@ export function repairSettings(value: unknown): LTrackerSettings {
         ? connectionSource.testPrompt
         : TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
     },
+    contextFilters: repairContextFilters(contextFiltersSource),
     history: {
       pageSize: clampNumber(
         historySource.pageSize,
