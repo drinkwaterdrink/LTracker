@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.23`
+Version: `0.24`
 
-Current release: `0.23 Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup`
+Current release: `0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -25,10 +25,11 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Preset pack import/export, import review, validation reports, sample snapshot rendering, and Ultra Tracker Mode budgets.
 - Preset import credential guardrails that allow fictional schema/template words like secrets, tokens, and credentials while stripping real connection credentials from recommended settings.
 - Compact validation UX with grouped reports, clear pack/template/rendered character labels, and reliable copyable validation reports.
+- Maintenance & Repair tools for health checks, settings repair, snapshot index cleanup, preset render-lock diagnostics, orphan scans, broken embedded tag cleanup, and copyable maintenance reports.
 
 ## Drawer Command Center
 
-Version `0.22` turned the drawer into a true mobile-first app shell, and `0.23` tightens the shell, theme, import review, Render Lab, and validation report UX:
+Version `0.22` turned the drawer into a true mobile-first app shell, `0.23` tightened import/review UX, and `0.24` adds recovery tooling and mobile/runtime polish:
 
 ```text
 Sticky Command Header
@@ -89,6 +90,20 @@ Memory / Context separates two related features: Tracker Memory helps tracker ge
 Diagnostics is collapsed and searchable. Groups cover Status, Last error, Generation jobs, Auto timing, Memory, Prompt injection, Display / DOM, Renderer / sanitizer, Presets / import, Connections, and Storage / history. Copy buttons include all diagnostics, last error, last prompt preview, and last raw model output.
 
 Advanced contains Ultra Tracker Mode, budget limits, storage maintenance, duplicate/orphan cleanup, reset settings, clear current chat snapshot, legacy compatibility, hidden debug controls, and the future Dev Mode placeholder.
+
+## v0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes
+
+v0.24 focuses on day-to-day recovery instead of new generation features. The More panel now includes Maintenance & Repair with plain-language actions:
+
+- Run Health Check: inspects settings, presets, renderer mode, connection fallback, snapshot indexes, sidecar availability, preset render locks, and embedded tracker tags.
+- Repair Settings: rewrites repaired settings through the normal `repairSettings()` path, keeping migration compatibility.
+- Repair Snapshot Index: deduplicates message/swipe history rows, keeps the newest entry for each swipe identity, and removes rows that point to missing sidecar snapshots.
+- Repair Preset Render Locks: only backfills legacy locks when the original installed preset can be matched by id or name/version. It never silently rebinds old trackers to the current active preset.
+- Clean Orphan Snapshots: reindexes discoverable sidecar snapshots that are not referenced by the index. Full storage deletion is intentionally limited because Spindle storage does not expose broad listing.
+- Clean Broken Embedded Tags: removes complete LTracker-owned embedded tags whose JSON is broken. Malformed tag fragments are reported for manual review.
+- Copy Maintenance Report: copies a structured report with severity, category, suggested fix, repair action id, storage counts, preset-lock counts, and scan limitations.
+
+Diagnostics now includes a Maintenance / Repair group and copy actions for health check reports and maintenance reports. Raw prompt and model output remain collapsed by default.
 
 ### Quick Setup Profiles
 
@@ -525,21 +540,28 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 ## Known Limitations
 
 - JavaScript remains disabled outside future explicit Dev Mode.
-- Sequential generation, partial regeneration, cleanup/repair mode, World Books, character exclusions, and advanced import/export polish are future phases.
+- Sequential generation, partial regeneration, and Preset Authoring Studio 2.0 are lower-priority optional future items rather than active roadmap work.
+- World Books, character exclusions, context filters, and advanced import/export polish are future phases.
 - DOM injection can only attach to mounted messages; drawer history covers unavailable messages.
 - Some host themes may still constrain inline content. Inline wide records diagnostics for mount strategy and width constraints, and popover/fullscreen remain the reliable detached alternatives.
 - Mobile QA warnings are heuristic and should be confirmed in the Render Lab at `360px` and `430px`.
 - Embedded tracker tag mode only replaces or removes LTracker's own tag for the exact swipe key.
+- Full orphan sidecar deletion is limited by available storage APIs; v0.24 reindexes discoverable sidecars and reports unknown-storage limitations instead of deleting blindly.
 - Diagnostics may contain sensitive chat-derived prompt and model output when raw/prompt saving is enabled.
 
 ## Roadmap
 
-1. `0.24 Sequential + Partial Regeneration`
-2. `0.25 Cleanup / Repair / Pending Fields`
-3. `0.26 World Books, Character Exclusions, and Context Filters`
-4. `0.27 Dev Mode JS Sandbox Experiments`
-5. `0.28 Preset Marketplace / Pack Collections / Advanced Export Polish`
+1. `0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes`
+2. `0.25 World Books, Character Exclusions, and Context Filters`
+3. `0.26 Dev Mode JS Sandbox Experiments`
+4. `0.27 Preset Marketplace / Pack Collections / Advanced Export Polish`
+5. `0.28 Final UX Polish / Stabilization`
+
+### Optional Future / Backlog
+
+- Sequential + Partial Regeneration
+- Preset Authoring Studio 2.0
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.23`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.24`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

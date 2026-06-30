@@ -59,6 +59,8 @@ import {
 import {
   normalizeMessageAttachedSnapshotPresetMetadata,
   normalizeTrackerSnapshotPresetMetadata,
+  filterMessageSnapshotIndexByStorageKeys,
+  repairMessageSnapshotIndexKeepingNewest,
   repairMessageSnapshotIndex,
   removeMessageSnapshotIndexEntry,
   upsertMessageSnapshotIndexEntry,
@@ -154,6 +156,9 @@ import {
   type LTrackerErrorStage,
   type LTrackerInjectionFormat,
   type LTrackerInjectionMode,
+  type LTrackerMaintenanceReport,
+  type LTrackerMaintenanceReportItem,
+  type LTrackerMaintenanceSeverity,
   type LTrackerMessageDisplayMode,
   type LTrackerMessageDisplayPlacement,
   type LTrackerMessageWidgetPlacementResolved,
@@ -380,6 +385,12 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "restore_deleted_tracker",
     "run_storage_maintenance_scan",
     "cleanup_missing_index_entries",
+    "run_health_check",
+    "repair_settings",
+    "repair_snapshot_index",
+    "repair_preset_render_locks",
+    "clean_orphan_snapshots",
+    "clean_broken_embedded_tags",
     "import_preset_pack",
     "export_preset_pack",
     "validate_preset_report",
@@ -414,6 +425,12 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "restore_deleted_tracker",
       "run_storage_maintenance_scan",
       "cleanup_missing_index_entries",
+      "run_health_check",
+      "repair_settings",
+      "repair_snapshot_index",
+      "repair_preset_render_locks",
+      "clean_orphan_snapshots",
+      "clean_broken_embedded_tags",
       "import_preset_pack",
       "export_preset_pack",
       "validate_preset_report",
@@ -730,6 +747,11 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastPresetRenderLabResult: null,
     lastPresetRenderLabRenderedChars: null,
     lastPresetRenderLabWarnings: [],
+    lastHealthCheckAt: null,
+    lastHealthCheckStatus: null,
+    lastMaintenanceActionAt: null,
+    lastMaintenanceAction: null,
+    lastMaintenanceReport: null,
   };
 }
 
@@ -747,6 +769,52 @@ function nonNegativeInteger(value: unknown): number | null {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function maintenanceSeverityOrNull(value: unknown): LTrackerMaintenanceSeverity | null {
+  return value === "ok" || value === "warning" || value === "repairable" || value === "error" ? value : null;
+}
+
+function maintenanceReportOrNull(value: unknown): LTrackerMaintenanceReport | null {
+  if (!isRecord(value)) return null;
+  const counts = isRecord(value.counts) ? value.counts : {};
+  const items = Array.isArray(value.items)
+    ? value.items.filter(isRecord).map((item): LTrackerMaintenanceReportItem | null => {
+        const severity = maintenanceSeverityOrNull(item.severity);
+        if (!severity || typeof item.category !== "string" || typeof item.message !== "string") return null;
+        return {
+          severity,
+          category: item.category,
+          message: item.message,
+          suggestedFix: stringOrNull(item.suggestedFix),
+          repairActionId: stringOrNull(item.repairActionId),
+        };
+      }).filter((item): item is LTrackerMaintenanceReportItem => item !== null)
+    : [];
+  return {
+    createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date(0).toISOString(),
+    chatId: stringOrNull(value.chatId),
+    status: maintenanceSeverityOrNull(value.status) ?? "ok",
+    summary: typeof value.summary === "string" ? value.summary : "No maintenance report available.",
+    items,
+    counts: {
+      ok: nonNegativeInteger(counts.ok) ?? 0,
+      warning: nonNegativeInteger(counts.warning) ?? 0,
+      repairable: nonNegativeInteger(counts.repairable) ?? 0,
+      error: nonNegativeInteger(counts.error) ?? 0,
+    },
+    duplicateIndexEntries: nonNegativeInteger(value.duplicateIndexEntries) ?? 0,
+    missingSidecarIndexEntries: nonNegativeInteger(value.missingSidecarIndexEntries) ?? 0,
+    orphanSidecarSnapshots: nonNegativeInteger(value.orphanSidecarSnapshots) ?? 0,
+    snapshotsWithoutPresetLocks: nonNegativeInteger(value.snapshotsWithoutPresetLocks) ?? 0,
+    snapshotsWithIncompletePresetLocks: nonNegativeInteger(value.snapshotsWithIncompletePresetLocks) ?? 0,
+    snapshotsWithUnavailableOriginalPreset: nonNegativeInteger(value.snapshotsWithUnavailableOriginalPreset) ?? 0,
+    brokenEmbeddedTags: nonNegativeInteger(value.brokenEmbeddedTags) ?? 0,
+    malformedEmbeddedTags: nonNegativeInteger(value.malformedEmbeddedTags) ?? 0,
+    repairedCount: nonNegativeInteger(value.repairedCount) ?? 0,
+    deletedCount: nonNegativeInteger(value.deletedCount) ?? 0,
+    limitationNotes: stringArray(value.limitationNotes),
+  };
 }
 
 function recordOrNull(value: unknown): Record<string, unknown> | null {
@@ -1188,6 +1256,11 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastPresetRenderLabResult: stringOrNull(value.lastPresetRenderLabResult),
     lastPresetRenderLabRenderedChars: numberOrNull(value.lastPresetRenderLabRenderedChars),
     lastPresetRenderLabWarnings: stringArray(value.lastPresetRenderLabWarnings),
+    lastHealthCheckAt: stringOrNull(value.lastHealthCheckAt),
+    lastHealthCheckStatus: maintenanceSeverityOrNull(value.lastHealthCheckStatus),
+    lastMaintenanceActionAt: stringOrNull(value.lastMaintenanceActionAt),
+    lastMaintenanceAction: stringOrNull(value.lastMaintenanceAction),
+    lastMaintenanceReport: maintenanceReportOrNull(value.lastMaintenanceReport),
   };
 }
 
@@ -4804,20 +4877,438 @@ async function cleanupDuplicateHistory(
     stageError("active_chat", error);
   });
   rememberActiveChat(userId, resolvedChatId);
-  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
-  const repaired = repairMessageSnapshotIndex(index);
-  await saveMessageSnapshotIndex(resolvedChatId, repaired, userId);
+  const rawIndex = await spindle.userStorage.getJson<unknown>(messageSnapshotIndexPath(resolvedChatId), { fallback: [], userId });
+  const repaired = repairMessageSnapshotIndexKeepingNewest(rawIndex);
+  await saveMessageSnapshotIndex(resolvedChatId, repaired.index, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
   const diagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
     lastHistoryCleanupAt: nowIso(),
-    lastHistoryGroupedCount: repaired.length,
-    lastHistoryDuplicateCount: Math.max(0, index.length - repaired.length),
-    messageSnapshotIndexCount: repaired.length,
-    swipeTrackerIndexCount: repaired.length,
+    lastHistoryGroupedCount: repaired.index.length,
+    lastHistoryDuplicateCount: repaired.duplicateCount,
+    messageSnapshotIndexCount: repaired.index.length,
+    swipeTrackerIndexCount: repaired.index.length,
+    lastHealthCheckAt: report.createdAt,
+    lastHealthCheckStatus: report.status,
+    lastMaintenanceActionAt: report.createdAt,
+    lastMaintenanceAction: "cleanup_duplicate_history",
+    lastMaintenanceReport: {
+      ...report,
+      repairedCount: repaired.duplicateCount,
+    },
     lastError: null,
   };
   await tryPersistDiagnostics(diagnostics, userId);
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+function maintenanceSeverityRank(severity: LTrackerMaintenanceSeverity): number {
+  if (severity === "error") return 3;
+  if (severity === "repairable") return 2;
+  if (severity === "warning") return 1;
+  return 0;
+}
+
+function possibleSwipeKeysForMessage(chatId: string, message: ChatMessageDTO): string[] {
+  const keys = new Set<string>([DEFAULT_SWIPE_KEY, deriveSwipeTrackerIdentity(chatId, message).swipeKey]);
+  const swipes = Array.isArray(message.swipes) ? message.swipes : [];
+  for (let index = 0; index < swipes.length; index += 1) {
+    keys.add(`index-${index}`);
+    const content = swipes[index];
+    if (typeof content === "string" && content) keys.add(`hash-${hashSwipeContent(content)}`);
+  }
+  return [...keys];
+}
+
+function presetMatchForSnapshot(
+  snapshot: MessageAttachedSnapshot,
+  presets: TrackerSchemaPreset[],
+): TrackerSchemaPreset | null {
+  const presetId = snapshot.presetId ?? snapshot.snapshot.presetId;
+  if (presetId) {
+    const byId = presets.find((preset) => preset.id === presetId) ?? null;
+    if (byId) return byId;
+  }
+  const presetName = snapshot.presetName ?? snapshot.snapshot.presetName;
+  const presetVersion = snapshot.presetVersion ?? snapshot.snapshot.presetVersion;
+  if (!presetName || !presetVersion) return null;
+  return presets.find((preset) => preset.name === presetName && preset.version === presetVersion) ?? null;
+}
+
+function buildMaintenanceSummary(report: LTrackerMaintenanceReport): string {
+  if (report.counts.error > 0) return `${report.counts.error} error(s), ${report.counts.repairable} repairable item(s), ${report.counts.warning} warning(s).`;
+  if (report.counts.repairable > 0) return `${report.counts.repairable} repairable item(s), ${report.counts.warning} warning(s).`;
+  if (report.counts.warning > 0) return `${report.counts.warning} warning(s).`;
+  return "No LTracker maintenance issues found.";
+}
+
+function createMaintenanceReport(input: {
+  chatId: string | null;
+  items: LTrackerMaintenanceReportItem[];
+  duplicateIndexEntries: number;
+  missingSidecarIndexEntries: number;
+  orphanSidecarSnapshots: number;
+  snapshotsWithoutPresetLocks: number;
+  snapshotsWithIncompletePresetLocks: number;
+  snapshotsWithUnavailableOriginalPreset: number;
+  brokenEmbeddedTags: number;
+  malformedEmbeddedTags: number;
+  repairedCount?: number;
+  deletedCount?: number;
+  limitationNotes?: string[];
+}): LTrackerMaintenanceReport {
+  const counts = {
+    ok: input.items.filter((item) => item.severity === "ok").length,
+    warning: input.items.filter((item) => item.severity === "warning").length,
+    repairable: input.items.filter((item) => item.severity === "repairable").length,
+    error: input.items.filter((item) => item.severity === "error").length,
+  };
+  const status = input.items.reduce<LTrackerMaintenanceSeverity>((current, item) => {
+    return maintenanceSeverityRank(item.severity) > maintenanceSeverityRank(current) ? item.severity : current;
+  }, "ok");
+  const report: LTrackerMaintenanceReport = {
+    createdAt: nowIso(),
+    chatId: input.chatId,
+    status,
+    summary: "",
+    items: input.items.length > 0
+      ? input.items
+      : [{
+          severity: "ok",
+          category: "Status",
+          message: "No LTracker maintenance issues found.",
+          suggestedFix: null,
+          repairActionId: null,
+        }],
+    counts,
+    duplicateIndexEntries: input.duplicateIndexEntries,
+    missingSidecarIndexEntries: input.missingSidecarIndexEntries,
+    orphanSidecarSnapshots: input.orphanSidecarSnapshots,
+    snapshotsWithoutPresetLocks: input.snapshotsWithoutPresetLocks,
+    snapshotsWithIncompletePresetLocks: input.snapshotsWithIncompletePresetLocks,
+    snapshotsWithUnavailableOriginalPreset: input.snapshotsWithUnavailableOriginalPreset,
+    brokenEmbeddedTags: input.brokenEmbeddedTags,
+    malformedEmbeddedTags: input.malformedEmbeddedTags,
+    repairedCount: input.repairedCount ?? 0,
+    deletedCount: input.deletedCount ?? 0,
+    limitationNotes: input.limitationNotes ?? [],
+  };
+  report.summary = buildMaintenanceSummary(report);
+  return report;
+}
+
+async function persistMaintenanceReport(
+  chatId: string,
+  userId: string,
+  report: LTrackerMaintenanceReport,
+  action: string,
+): Promise<void> {
+  await tryPersistDiagnostics({
+    ...await loadDiagnostics(chatId, userId),
+    lastHealthCheckAt: report.createdAt,
+    lastHealthCheckStatus: report.status,
+    lastMaintenanceActionAt: report.createdAt,
+    lastMaintenanceAction: action,
+    lastMaintenanceReport: report,
+    lastHistoryDuplicateCount: report.duplicateIndexEntries,
+    lastHistoryOrphanCount: report.orphanSidecarSnapshots + report.missingSidecarIndexEntries,
+    lastHistoryCleanupAt: report.repairedCount > 0 || report.deletedCount > 0 ? report.createdAt : (await loadDiagnostics(chatId, userId)).lastHistoryCleanupAt,
+    lastError: null,
+  }, userId);
+}
+
+async function buildMaintenanceReport(
+  chatId: string,
+  userId: string,
+  options: { reindexOrphans?: boolean; repairPresetLocks?: boolean } = {},
+): Promise<LTrackerMaintenanceReport> {
+  const items: LTrackerMaintenanceReportItem[] = [];
+  const limitationNotes = ["Full orphan sidecar deletion requires a storage listing API; this scan checks known chat message and index paths only."];
+  let repairedCount = 0;
+
+  const rawSettings = await spindle.userStorage.getJson<unknown>(SETTINGS_PATH, { fallback: DEFAULT_SETTINGS, userId });
+  const repairedSettings = repairSettings(rawSettings);
+  const settingsChanged = JSON.stringify(rawSettings) !== JSON.stringify(repairedSettings);
+  const settings = repairedSettings;
+  if (settingsChanged) {
+    items.push({
+      severity: "repairable",
+      category: "Settings",
+      message: "Settings contain stale, invalid, or out-of-range values.",
+      suggestedFix: "Run Repair Settings to rewrite the repaired settings object.",
+      repairActionId: "repair_settings",
+    });
+  }
+
+  const presetState = await resolveActivePreset(chatId, userId);
+  if (presetState.fallbackReason) {
+    items.push({
+      severity: "repairable",
+      category: "Presets",
+      message: "The selected preset could not be resolved and LTracker used a fallback preset.",
+      suggestedFix: "Choose an installed preset or reset the built-in preset.",
+      repairActionId: "repair_settings",
+    });
+  }
+  for (const preset of presetState.presets) {
+    if (Object.keys(preset.jsonSchema ?? {}).length === 0) {
+      items.push({
+        severity: "warning",
+        category: "Presets",
+        message: `Preset "${preset.name}" has an empty JSON schema.`,
+        suggestedFix: "Edit or re-import the preset with a JSON schema.",
+        repairActionId: null,
+      });
+    }
+    if (!preset.promptInstructions.trim()) {
+      items.push({
+        severity: "warning",
+        category: "Presets",
+        message: `Preset "${preset.name}" has empty prompt instructions.`,
+        suggestedFix: "Edit or re-import the preset with prompt instructions.",
+        repairActionId: null,
+      });
+    }
+  }
+
+  const activeValidation = validatePresetReport(presetState.activePreset, {
+    allowInlineStyles: settings.renderer.allowInlineStyles,
+    maxRenderedChars: settings.budget.renderedHtmlMaxChars,
+  });
+  if (
+    settings.renderer.templateTrustMode === "safe"
+    && activeValidation.rendererRequirements.recommendedMode !== "safe"
+  ) {
+    items.push({
+      severity: "repairable",
+      category: "Renderer",
+      message: "The active preset needs Trusted renderer features, but Safe Mode is active.",
+      suggestedFix: "Switch the renderer trust mode to Trusted for this user-authored preset.",
+      repairActionId: "repair_settings",
+    });
+  }
+  if (settings.messageDisplay.maxRenderedChars < Math.min(settings.budget.renderedHtmlMaxChars, activeValidation.estimatedRenderedChars)) {
+    items.push({
+      severity: "warning",
+      category: "Renderer",
+      message: "Message display render limit may be lower than the active preset needs.",
+      suggestedFix: "Increase Message render chars or use popover/fullscreen display.",
+      repairActionId: null,
+    });
+  }
+
+  const cache = connectionCacheForUser(userId);
+  if (settings.connection.selectedConnectionId && !cache.profiles.some((profile) => profile.id === settings.connection.selectedConnectionId)) {
+    items.push({
+      severity: "warning",
+      category: "Connections",
+      message: "Selected tracker profile is not available in the current connection list.",
+      suggestedFix: "Refresh tracker profiles or select a different tracker profile.",
+      repairActionId: null,
+    });
+  }
+  if (!settings.connection.selectedConnectionId) {
+    items.push({
+      severity: "warning",
+      category: "Connections",
+      message: "No dedicated tracker profile is selected; LTracker will fall back to the active roleplay connection.",
+      suggestedFix: "Open Connection and select a tracker profile.",
+      repairActionId: null,
+    });
+  }
+
+  const rawIndex = await spindle.userStorage.getJson<unknown>(messageSnapshotIndexPath(chatId), { fallback: [], userId });
+  const indexRepair = repairMessageSnapshotIndexKeepingNewest(rawIndex);
+  if (indexRepair.invalidCount > 0) {
+    items.push({
+      severity: "repairable",
+      category: "Storage / History",
+      message: `Found ${indexRepair.invalidCount} invalid snapshot index row(s).`,
+      suggestedFix: "Run Repair Snapshot Index.",
+      repairActionId: "repair_snapshot_index",
+    });
+  }
+  if (indexRepair.duplicateCount > 0) {
+    items.push({
+      severity: "repairable",
+      category: "Storage / History",
+      message: `Found ${indexRepair.duplicateCount} duplicate history entr${indexRepair.duplicateCount === 1 ? "y" : "ies"}.`,
+      suggestedFix: "Run Clean Duplicate Index Entries or Repair Snapshot Index.",
+      repairActionId: "cleanup_duplicate_history",
+    });
+  }
+
+  const existingStorageKeys = new Set<string>();
+  const snapshots: MessageAttachedSnapshot[] = [];
+  let missingSidecarIndexEntries = 0;
+  for (const entry of indexRepair.index) {
+    const exists = await spindle.userStorage.exists(entry.storageKey, userId).catch(() => false);
+    if (!exists) {
+      missingSidecarIndexEntries += 1;
+      continue;
+    }
+    existingStorageKeys.add(entry.storageKey);
+    const snapshot = await spindle.userStorage.getJson<MessageAttachedSnapshot | null>(entry.storageKey, {
+      fallback: null,
+      userId,
+    }).catch(() => null);
+    if (snapshot) snapshots.push(normalizeMessageAttachedSnapshotPresetMetadata(snapshot));
+  }
+  if (missingSidecarIndexEntries > 0) {
+    items.push({
+      severity: "repairable",
+      category: "Storage / History",
+      message: `Found ${missingSidecarIndexEntries} index entr${missingSidecarIndexEntries === 1 ? "y" : "ies"} pointing to missing sidecar snapshots.`,
+      suggestedFix: "Run Repair Snapshot Index or Clean Missing Index Entries.",
+      repairActionId: "cleanup_missing_index_entries",
+    });
+  }
+
+  let snapshotsWithoutPresetLocks = 0;
+  let snapshotsWithIncompletePresetLocks = 0;
+  let snapshotsWithUnavailableOriginalPreset = 0;
+  if (options.repairPresetLocks) {
+    for (const snapshot of snapshots) {
+      const lock = snapshot.snapshot.presetRenderLock;
+      if (lock?.htmlTemplate !== null && lock?.htmlTemplate !== undefined && lock.htmlTemplateHash && lock.schemaHash && lock.promptInstructionsHash) continue;
+      const preset = presetMatchForSnapshot(snapshot, presetState.presets);
+      if (!preset) continue;
+      const capturedAt = snapshot.snapshot.createdAt || snapshot.attachedAt || nowIso();
+      const repairedSnapshot: MessageAttachedSnapshot = {
+        ...snapshot,
+        presetId: snapshot.presetId ?? preset.id,
+        presetName: snapshot.presetName ?? preset.name,
+        presetVersion: snapshot.presetVersion ?? preset.version,
+        snapshot: {
+          ...snapshot.snapshot,
+          presetId: snapshot.snapshot.presetId ?? preset.id,
+          presetName: snapshot.snapshot.presetName ?? preset.name,
+          presetVersion: snapshot.snapshot.presetVersion ?? preset.version,
+          presetRenderLock: capturePresetRenderLock(preset, capturedAt),
+        },
+      };
+      await saveMessageAttachedSnapshot(repairedSnapshot, userId);
+      repairedCount += 1;
+    }
+  }
+  for (const snapshot of snapshots) {
+    const lock = snapshot.snapshot.presetRenderLock;
+    const hasLockTemplate = lock?.htmlTemplate !== null && lock?.htmlTemplate !== undefined;
+    if (!hasLockTemplate) {
+      snapshotsWithoutPresetLocks += 1;
+      const preset = presetMatchForSnapshot(snapshot, presetState.presets);
+      if (!preset) snapshotsWithUnavailableOriginalPreset += 1;
+    } else if (!lock?.htmlTemplateHash || !lock.schemaHash || !lock.promptInstructionsHash) {
+      snapshotsWithIncompletePresetLocks += 1;
+    }
+  }
+  if (snapshotsWithoutPresetLocks > 0) {
+    items.push({
+      severity: snapshotsWithUnavailableOriginalPreset > 0 ? "warning" : "repairable",
+      category: "Preset Render Locks",
+      message: `Found ${snapshotsWithoutPresetLocks} snapshot(s) without preset render locks.`,
+      suggestedFix: snapshotsWithUnavailableOriginalPreset > 0
+        ? "Install the original preset when available; do not silently rebind to the active preset."
+        : "Run Repair Preset Render Locks.",
+      repairActionId: snapshotsWithUnavailableOriginalPreset > 0 ? null : "repair_preset_render_locks",
+    });
+  }
+  if (snapshotsWithIncompletePresetLocks > 0) {
+    items.push({
+      severity: "repairable",
+      category: "Preset Render Locks",
+      message: `Found ${snapshotsWithIncompletePresetLocks} snapshot(s) with incomplete preset lock metadata.`,
+      suggestedFix: "Run Repair Preset Render Locks if the matching installed preset is still available.",
+      repairActionId: "repair_preset_render_locks",
+    });
+  }
+
+  const messages = await readChatMessages(chatId).catch(() => []);
+  const indexKeys = new Set(indexRepair.index.map((entry) => swipeIdentityKey(entry)));
+  const orphansToReindex: MessageSnapshotIndexEntry[] = [];
+  let orphanSidecarSnapshots = 0;
+  let brokenEmbeddedTags = 0;
+  let malformedEmbeddedTags = 0;
+  for (const message of messages) {
+    for (const swipeKey of possibleSwipeKeysForMessage(chatId, message)) {
+      const storageKey = messageSnapshotPath(chatId, message.id, swipeKey);
+      if (!indexKeys.has(`${message.id}:${swipeKey}`) && await spindle.userStorage.exists(storageKey, userId).catch(() => false)) {
+        orphanSidecarSnapshots += 1;
+        const snapshot = await loadMessageSnapshot(chatId, message.id, userId, swipeKey);
+        if (snapshot) {
+          orphansToReindex.push({
+            messageId: message.id,
+            messageIndex: messageIndexFromChatMessage(message),
+            swipeKey,
+            swipeIndex: snapshot.swipeIndex,
+            swipeId: snapshot.swipeId,
+            swipeContentHash: snapshot.swipeContentHash,
+            swipeKeySource: snapshot.swipeKeySource,
+            presetId: snapshot.presetId,
+            presetName: snapshot.presetName,
+            createdAt: snapshot.attachedAt,
+            storageKey,
+          });
+        }
+      }
+    }
+    const contents = [message.content, ...(Array.isArray(message.swipes) ? message.swipes : [])].filter((content): content is string => typeof content === "string");
+    for (const content of contents) {
+      const completeTags = findLTrackerTags(content);
+      const tagOpenCount = (content.match(/<ltracker\b/gi) ?? []).length;
+      malformedEmbeddedTags += Math.max(0, tagOpenCount - completeTags.length);
+      for (const tag of completeTags) {
+        try {
+          parseTrackerJson(tag.content);
+        } catch {
+          brokenEmbeddedTags += 1;
+        }
+      }
+    }
+  }
+  if (options.reindexOrphans && orphansToReindex.length > 0) {
+    let nextIndex = indexRepair.index;
+    for (const orphan of orphansToReindex) {
+      nextIndex = upsertMessageSnapshotIndexEntry(nextIndex, orphan);
+    }
+    await saveMessageSnapshotIndex(chatId, nextIndex, userId);
+    repairedCount += orphansToReindex.length;
+  }
+  if (orphanSidecarSnapshots > 0) {
+    items.push({
+      severity: "repairable",
+      category: "Storage / History",
+      message: `Found ${orphanSidecarSnapshots} discoverable sidecar snapshot(s) not referenced by the index.`,
+      suggestedFix: "Run Clean Orphan Snapshots to reindex discoverable sidecars.",
+      repairActionId: "clean_orphan_snapshots",
+    });
+  }
+  if (brokenEmbeddedTags > 0 || malformedEmbeddedTags > 0) {
+    items.push({
+      severity: brokenEmbeddedTags > 0 ? "repairable" : "warning",
+      category: "Embedded Tags",
+      message: `Found ${brokenEmbeddedTags} broken complete tag(s) and ${malformedEmbeddedTags} malformed tag marker(s).`,
+      suggestedFix: brokenEmbeddedTags > 0
+        ? "Run Clean Broken Embedded Tags to remove complete LTracker tags with invalid JSON."
+        : "Review malformed tag markers manually.",
+      repairActionId: brokenEmbeddedTags > 0 ? "clean_broken_embedded_tags" : null,
+    });
+  }
+
+  return createMaintenanceReport({
+    chatId,
+    items,
+    duplicateIndexEntries: indexRepair.duplicateCount,
+    missingSidecarIndexEntries,
+    orphanSidecarSnapshots,
+    snapshotsWithoutPresetLocks,
+    snapshotsWithIncompletePresetLocks,
+    snapshotsWithUnavailableOriginalPreset,
+    brokenEmbeddedTags,
+    malformedEmbeddedTags,
+    repairedCount,
+    limitationNotes,
+  });
 }
 
 async function saveEditedMessageTracker(
@@ -5132,74 +5623,8 @@ async function runStorageMaintenanceScan(
     stageError("active_chat", error);
   });
   rememberActiveChat(userId, resolvedChatId);
-  
-  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
-  const indexKeys = new Set(index.map((e) => `${e.messageId}:${e.swipeKey}`));
-  
-  const messages = await readChatMessages(resolvedChatId).catch(() => []);
-  
-  let orphanCount = 0;
-  let missingCount = 0;
-  const orphansToFix: MessageSnapshotIndexEntry[] = [];
-  
-  for (const msg of messages) {
-    const swipeKeys = [DEFAULT_SWIPE_KEY];
-    if (msg.swipes) {
-      for (const k of Object.keys(msg.swipes)) {
-        if (k !== DEFAULT_SWIPE_KEY) swipeKeys.push(k);
-      }
-    }
-    for (const swipeKey of swipeKeys) {
-      const path = messageSnapshotPath(resolvedChatId, msg.id, swipeKey);
-      const key = `${msg.id}:${swipeKey}`;
-      const fileExists = await spindle.userStorage.exists(path, userId).catch(() => false);
-      if (fileExists) {
-        if (!indexKeys.has(key)) {
-          orphanCount++;
-          try {
-            const snap = await loadMessageSnapshot(resolvedChatId, msg.id, userId, swipeKey);
-            if (snap) {
-              orphansToFix.push({
-                messageId: msg.id,
-                messageIndex: msg.index_in_chat ?? null,
-                swipeKey,
-                swipeIndex: resolveSwipeContentIndex(msg, swipeKey),
-                swipeId: null,
-                swipeContentHash: null,
-                swipeKeySource: "swipe_id",
-                presetId: snap.presetId,
-                presetName: snap.presetName,
-                createdAt: snap.attachedAt,
-                storageKey: path,
-              });
-            }
-          } catch (e) {}
-        }
-      } else {
-        if (indexKeys.has(key)) {
-          missingCount++;
-        }
-      }
-    }
-  }
-  
-  let nextIndex = [...index];
-  if (orphansToFix.length > 0) {
-    for (const orphan of orphansToFix) {
-      nextIndex = upsertMessageSnapshotIndexEntry(nextIndex, orphan);
-    }
-    await saveMessageSnapshotIndex(resolvedChatId, nextIndex, userId);
-  }
-  
-  const diagnostics = {
-    ...await loadDiagnostics(resolvedChatId, userId),
-    lastHistoryOrphanCount: orphanCount,
-    lastHistoryDuplicateCount: Math.max(0, index.length - repairMessageSnapshotIndex(index).length),
-    lastHistoryCleanupAt: nowIso(),
-    messageSnapshotIndexCount: nextIndex.length,
-    swipeTrackerIndexCount: nextIndex.length,
-  };
-  await tryPersistDiagnostics(diagnostics, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId, { reindexOrphans: true });
+  await persistMaintenanceReport(resolvedChatId, userId, report, "run_storage_maintenance_scan");
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
 
@@ -5211,28 +5636,182 @@ async function cleanupMissingIndexEntries(
     stageError("active_chat", error);
   });
   rememberActiveChat(userId, resolvedChatId);
-  const index = await loadMessageSnapshotIndex(resolvedChatId, userId);
-  
-  const deduped = repairMessageSnapshotIndex(index);
-  
-  const verified: MessageSnapshotIndexEntry[] = [];
-  for (const entry of deduped) {
-    const path = messageSnapshotPath(resolvedChatId, entry.messageId, entry.swipeKey);
-    if (await spindle.userStorage.exists(path, userId)) {
-      verified.push(entry);
+  const rawIndex = await spindle.userStorage.getJson<unknown>(messageSnapshotIndexPath(resolvedChatId), { fallback: [], userId });
+  const repaired = repairMessageSnapshotIndexKeepingNewest(rawIndex);
+  const existingStorageKeys = new Set<string>();
+  for (const entry of repaired.index) {
+    if (await spindle.userStorage.exists(entry.storageKey, userId).catch(() => false)) {
+      existingStorageKeys.add(entry.storageKey);
     }
   }
-  
-  await saveMessageSnapshotIndex(resolvedChatId, verified, userId);
+  const filtered = filterMessageSnapshotIndexByStorageKeys(repaired.index, existingStorageKeys);
+  await saveMessageSnapshotIndex(resolvedChatId, filtered.index, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
   
   const diagnostics = {
     ...await loadDiagnostics(resolvedChatId, userId),
     lastHistoryCleanupAt: nowIso(),
-    messageSnapshotIndexCount: verified.length,
-    swipeTrackerIndexCount: verified.length,
+    messageSnapshotIndexCount: filtered.index.length,
+    swipeTrackerIndexCount: filtered.index.length,
+    lastHealthCheckAt: report.createdAt,
+    lastHealthCheckStatus: report.status,
+    lastMaintenanceActionAt: report.createdAt,
+    lastMaintenanceAction: "cleanup_missing_index_entries",
+    lastMaintenanceReport: {
+      ...report,
+      repairedCount: filtered.removedCount,
+    },
     lastError: null,
   };
   await tryPersistDiagnostics(diagnostics, userId);
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function runHealthCheck(
+  payload: Extract<FrontendMessage, { type: "run_health_check" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, report, "run_health_check");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function repairSettingsAction(
+  payload: Extract<FrontendMessage, { type: "repair_settings" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const raw = await spindle.userStorage.getJson<unknown>(SETTINGS_PATH, { fallback: DEFAULT_SETTINGS, userId });
+  const repaired = repairSettings(raw);
+  const changed = JSON.stringify(raw) !== JSON.stringify(repaired);
+  if (changed) await spindle.userStorage.setJson(SETTINGS_PATH, repaired, { indent: 2, userId });
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + (changed ? 1 : 0),
+    summary: changed ? "Settings were repaired and saved." : report.summary,
+  }, "repair_settings");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function repairSnapshotIndexAction(
+  payload: Extract<FrontendMessage, { type: "repair_snapshot_index" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const rawIndex = await spindle.userStorage.getJson<unknown>(messageSnapshotIndexPath(resolvedChatId), { fallback: [], userId });
+  const repaired = repairMessageSnapshotIndexKeepingNewest(rawIndex);
+  const existingStorageKeys = new Set<string>();
+  for (const entry of repaired.index) {
+    if (await spindle.userStorage.exists(entry.storageKey, userId).catch(() => false)) {
+      existingStorageKeys.add(entry.storageKey);
+    }
+  }
+  const filtered = filterMessageSnapshotIndexByStorageKeys(repaired.index, existingStorageKeys);
+  await saveMessageSnapshotIndex(resolvedChatId, filtered.index, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: repaired.duplicateCount + repaired.invalidCount + filtered.removedCount,
+    summary: `Repaired snapshot index: ${repaired.duplicateCount} duplicate(s), ${repaired.invalidCount} invalid row(s), ${filtered.removedCount} missing sidecar reference(s).`,
+  }, "repair_snapshot_index");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function repairPresetRenderLocksAction(
+  payload: Extract<FrontendMessage, { type: "repair_preset_render_locks" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId, { repairPresetLocks: true });
+  await persistMaintenanceReport(resolvedChatId, userId, report, "repair_preset_render_locks");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function cleanOrphanSnapshotsAction(
+  payload: Extract<FrontendMessage, { type: "clean_orphan_snapshots" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId, { reindexOrphans: true });
+  await persistMaintenanceReport(resolvedChatId, userId, report, "clean_orphan_snapshots");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+function removeBrokenCompleteTags(content: string): { content: string; removed: number; malformed: number } {
+  const tags = findLTrackerTags(content);
+  let removed = 0;
+  const bad = tags.filter((tag) => {
+    try {
+      parseTrackerJson(tag.content);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  let next = content;
+  for (const tag of bad.sort((left, right) => right.start - left.start)) {
+    next = `${next.slice(0, tag.start)}${next.slice(tag.end)}`.replace(/\n{3,}/g, "\n\n").trimEnd();
+    removed += 1;
+  }
+  const malformed = Math.max(0, (content.match(/<ltracker\b/gi) ?? []).length - tags.length);
+  return { content: next, removed, malformed };
+}
+
+async function cleanBrokenEmbeddedTagsAction(
+  payload: Extract<FrontendMessage, { type: "clean_broken_embedded_tags" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const messages = await readChatMessages(resolvedChatId);
+  let removed = 0;
+  let malformed = 0;
+  for (const message of messages) {
+    if (message.is_user || typeof message.id !== "string" || !message.id) continue;
+    const swipes = Array.isArray(message.swipes) && message.swipes.length > 0 ? [...message.swipes] : [message.content ?? ""];
+    let changed = false;
+    for (let index = 0; index < swipes.length; index += 1) {
+      const swipeContent = swipes[index];
+      const current = typeof swipeContent === "string" ? swipeContent : "";
+      const cleaned = removeBrokenCompleteTags(current);
+      removed += cleaned.removed;
+      malformed += cleaned.malformed;
+      if (cleaned.content !== current) {
+        swipes[index] = cleaned.content;
+        changed = true;
+      }
+    }
+    if (changed) {
+      await spindle.chat.updateMessage(resolvedChatId, message.id, { swipes });
+    }
+  }
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    brokenEmbeddedTags: report.brokenEmbeddedTags + removed,
+    malformedEmbeddedTags: report.malformedEmbeddedTags + malformed,
+    repairedCount: report.repairedCount + removed,
+    summary: `Removed ${removed} broken complete embedded LTracker tag(s). ${malformed} malformed marker(s) require manual review.`,
+  }, "clean_broken_embedded_tags");
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
 
@@ -5408,6 +5987,30 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "cleanup_missing_index_entries") {
         await cleanupMissingIndexEntries(payload, userId);
+        return;
+      }
+      if (payload.type === "run_health_check") {
+        await runHealthCheck(payload, userId);
+        return;
+      }
+      if (payload.type === "repair_settings") {
+        await repairSettingsAction(payload, userId);
+        return;
+      }
+      if (payload.type === "repair_snapshot_index") {
+        await repairSnapshotIndexAction(payload, userId);
+        return;
+      }
+      if (payload.type === "repair_preset_render_locks") {
+        await repairPresetRenderLocksAction(payload, userId);
+        return;
+      }
+      if (payload.type === "clean_orphan_snapshots") {
+        await cleanOrphanSnapshotsAction(payload, userId);
+        return;
+      }
+      if (payload.type === "clean_broken_embedded_tags") {
+        await cleanBrokenEmbeddedTagsAction(payload, userId);
         return;
       }
       await handleRefresh(payload, userId);

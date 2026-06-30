@@ -49,7 +49,9 @@ import {
 import {
   normalizeMessageAttachedSnapshotPresetMetadata,
   normalizeTrackerSnapshotPresetMetadata,
+  filterMessageSnapshotIndexByStorageKeys,
   repairMessageSnapshotIndex,
+  repairMessageSnapshotIndexKeepingNewest,
   removeMessageSnapshotIndexEntry,
   upsertMessageSnapshotIndexEntry,
 } from "../src/shared/messageSnapshotIndex";
@@ -2814,8 +2816,8 @@ test("frontend exposes a storage-free Preset Render Lab", () => {
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
-    "Version: `0.23`",
-    "Current release: `0.23 Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup`",
+    "Version: `0.24`",
+    "Current release: `0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes`",
     "Drawer Command Center",
     "Sticky Command Header",
     "Scrollable Active Panel",
@@ -2895,6 +2897,15 @@ test("README settings reference covers the major setting groups", () => {
     "Trusted SVG allowlist",
     "Preset Import Review And Validation",
     "v0.23 Import And Validation Cleanup",
+    "v0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes",
+    "Maintenance & Repair",
+    "Run Health Check",
+    "Repair Settings",
+    "Repair Snapshot Index",
+    "Repair Preset Render Locks",
+    "Clean Orphan Snapshots",
+    "Clean Broken Embedded Tags",
+    "Copy Maintenance Report",
     "Fictional tracker fields named like secrets/tokens/credentials are allowed",
     "real connection credentials in recommended settings are stripped",
     "Pack chars",
@@ -2952,11 +2963,14 @@ test("README settings reference covers the major setting groups", () => {
     "template CSS stripped",
     "tracker generated for wrong swipe",
     "old tracker changed appearance",
-    "0.24 Sequential + Partial Regeneration",
-    "0.25 Cleanup / Repair / Pending Fields",
-    "0.26 World Books, Character Exclusions, and Context Filters",
-    "0.27 Dev Mode JS Sandbox Experiments",
-    "0.28 Preset Marketplace / Pack Collections / Advanced Export Polish",
+    "0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes",
+    "0.25 World Books, Character Exclusions, and Context Filters",
+    "0.26 Dev Mode JS Sandbox Experiments",
+    "0.27 Preset Marketplace / Pack Collections / Advanced Export Polish",
+    "0.28 Final UX Polish / Stabilization",
+    "Optional Future / Backlog",
+    "Sequential + Partial Regeneration",
+    "Preset Authoring Studio 2.0",
   ]) {
     assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
@@ -2996,10 +3010,11 @@ test("drawer UI keeps detailed setting explanations out of the app surface", () 
   assert.match(frontend, /\$\{activePanel === "generation" \? `/);
   assert.match(frontend, /\$\{activePanel === "connection" \? `/);
   assert.match(frontend, /\$\{activePanel === "memory" \? `/);
+  assert.match(frontend, /\$\{activePanel === "maintenance" \? `/);
   assert.match(frontend, /\$\{activePanel === "diagnostics" \? `/);
   assert.match(frontend, /\$\{activePanel === "advanced" \? `/);
   assert.doesNotMatch(frontend, /data-drawer-section/);
-  for (const id of ["home", "presets", "render-lab", "display", "more", "generation", "connection", "memory-context", "diagnostics", "advanced"]) {
+  for (const id of ["home", "presets", "render-lab", "display", "more", "generation", "connection", "memory-context", "maintenance", "diagnostics", "advanced"]) {
     assert.match(frontend, new RegExp(`id="ltracker-section-${id}"`));
   }
   for (const oldId of ["dashboard", "auto", "renderer", "history", "memory-injection"]) {
@@ -3026,8 +3041,17 @@ test("drawer UI keeps detailed setting explanations out of the app surface", () 
   assert.match(frontend, /data-action="test-connection"/);
   assert.match(frontend, /data-panel-target="renderLab"/);
   assert.match(frontend, /data-panel-target="diagnostics"/);
+  assert.match(frontend, /data-panel-target="maintenance"/);
+  assert.match(frontend, /data-action="run-health-check"/);
+  assert.match(frontend, /data-action="repair-settings"/);
+  assert.match(frontend, /data-action="repair-snapshot-index"/);
+  assert.match(frontend, /data-action="repair-preset-render-locks"/);
+  assert.match(frontend, /data-action="clean-orphan-snapshots"/);
+  assert.match(frontend, /data-action="clean-broken-embedded-tags"/);
+  assert.match(frontend, /data-action="copy-maintenance-report"/);
   assert.match(frontend, /data-diagnostics-search/);
   assert.match(frontend, /data-diagnostics-group/);
+  assert.match(frontend, /Maintenance \/ Repair/);
   for (const filter of [
     "text",
     "showDuplicates",
@@ -3253,6 +3277,59 @@ test("v0.17 Preset Pack Import/Export + Validation + Snapshot tests", () => {
   assert.equal((snapshot.list as unknown[]).length, 2); // array size constraint
 });
 
+test("v0.24 snapshot index repair keeps newest entries and filters missing sidecars", () => {
+  const rawIndex = [
+    { messageId: "m1", swipeKey: "index-0", createdAt: "2026-01-01T00:00:00.000Z", storageKey: "old" },
+    { messageId: "m1", swipeKey: "index-0", createdAt: "2026-01-02T00:00:00.000Z", storageKey: "new" },
+    { messageId: "m2", swipeKey: "index-1", createdAt: "2026-01-01T00:00:00.000Z", storageKey: "keep" },
+    { messageId: "broken" },
+  ];
+
+  const repaired = repairMessageSnapshotIndexKeepingNewest(rawIndex);
+  assert.equal(repaired.duplicateCount, 1);
+  assert.equal(repaired.invalidCount, 1);
+  assert.equal(repaired.index.length, 2);
+  assert.ok(repaired.index.some((entry) => entry.messageId === "m1" && entry.storageKey === "new"));
+
+  const filtered = filterMessageSnapshotIndexByStorageKeys(repaired.index, new Set(["new"]));
+  assert.equal(filtered.removedCount, 1);
+  assert.equal(filtered.index.length, 1);
+  assert.equal(filtered.index[0].storageKey, "new");
+});
+
+test("v0.24 maintenance source exposes health check, repair, and diagnostics wiring", () => {
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  const backend = readFileSync("src/backend.ts", "utf8");
+  const types = readFileSync("src/shared/types.ts", "utf8");
+
+  assert.match(types, /interface LTrackerMaintenanceReport/);
+  assert.match(types, /lastMaintenanceReport: LTrackerMaintenanceReport \| null/);
+  assert.match(frontend, /Maintenance & Repair/);
+  assert.match(frontend, /function maintenanceReportText/);
+  assert.match(frontend, /data-action="copy-health-check-report"/);
+  assert.match(frontend, /data-action="copy-maintenance-report"/);
+  assert.match(frontend, /data-action="copy-preset-lock-report"/);
+  assert.match(frontend, /type: "run_health_check"/);
+  assert.match(frontend, /type: "repair_settings"/);
+  assert.match(frontend, /type: "repair_snapshot_index"/);
+  assert.match(frontend, /type: "repair_preset_render_locks"/);
+  assert.match(frontend, /type: "clean_orphan_snapshots"/);
+  assert.match(frontend, /type: "clean_broken_embedded_tags"/);
+  assert.match(frontend, /Search diagnostics/);
+  assert.match(frontend, /Maintenance \/ Repair/);
+
+  assert.match(backend, /structured report|LTrackerMaintenanceReport|createMaintenanceReport/);
+  assert.match(backend, /selected tracker profile is not available|Selected tracker profile is not available/i);
+  assert.match(backend, /repairActionId: "repair_settings"/);
+  assert.match(backend, /repairActionId: "repair_snapshot_index"/);
+  assert.match(backend, /repairActionId: "repair_preset_render_locks"/);
+  assert.match(backend, /repairActionId: brokenEmbeddedTags > 0 \? "clean_broken_embedded_tags" : null/);
+  assert.match(backend, /repairActionId: "clean_orphan_snapshots"/);
+  assert.match(backend, /repairSettings\(raw\)/);
+  assert.match(backend, /capturePresetRenderLock\(preset, capturedAt\)/);
+  assert.match(backend, /presetMatchForSnapshot\(snapshot, presetState\.presets\)/);
+});
+
 test("preset pack import allows narrative secret-like schema fields", () => {
   const narrativePreset: TrackerSchemaPreset = {
     id: "narrative-secrets",
@@ -3352,16 +3429,17 @@ test("exported preset packs never include connection ids or credential-like fiel
   assert.doesNotMatch(serialized, /apiKey|secretKey|password|privateKey|accessKey|bearer/i);
 });
 
-test("v0.23 Release Completion Verification", () => {
+test("v0.24 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.23");
-  assert.equal(spindleJson.version, "0.23");
-  assert.equal(EXTENSION_VERSION, "0.23");
+  assert.equal(packageJson.version, "0.24");
+  assert.equal(spindleJson.version, "0.24");
+  assert.equal(EXTENSION_VERSION, "0.24");
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.24 - Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes/);
   assert.match(changelog, /## 0\.23 - Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup/);
   assert.match(changelog, /## 0\.22 - Drawer Shell Polish \+ True Panel Navigation/);
   assert.match(changelog, /## 0\.21 - Drawer Command Center \/ Settings UX Overhaul/);
@@ -3372,9 +3450,18 @@ test("v0.23 Release Completion Verification", () => {
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.23`/);
-  assert.match(readme, /Current release: `0\.23 Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup`/);
+  assert.match(readme, /Version: `0\.24`/);
+  assert.match(readme, /Current release: `0\.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes`/);
   assert.match(readme, /Drawer Command Center/);
+  assert.match(readme, /v0\.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes/);
+  assert.match(readme, /Maintenance & Repair/);
+  assert.match(readme, /Run Health Check/);
+  assert.match(readme, /Repair Snapshot Index/);
+  assert.match(readme, /Repair Preset Render Locks/);
+  assert.match(readme, /Copy Maintenance Report/);
+  assert.match(readme, /Optional Future \/ Backlog/);
+  assert.match(readme, /Sequential \+ Partial Regeneration/);
+  assert.match(readme, /Preset Authoring Studio 2\.0/);
   assert.match(readme, /v0\.23 Import And Validation Cleanup/);
   assert.match(readme, /fictional fields such as `secrets`, `secretHints`, `tokens`, `credentials`, or `privateKnowledge`/);
   assert.match(readme, /Warnings name the stripped setting path only and never echo the secret value/);
@@ -3401,6 +3488,16 @@ test("v0.23 Release Completion Verification", () => {
   assert.match(backendSource, /JSON\.parse\(importText\)/);
   assert.match(backendSource, /capturePresetRenderLock\(presetState\.activePreset, completedAt\)/);
   assert.match(backendSource, /\.\.\.existing\.snapshot[\s\S]*data: parsed[\s\S]*editedByUser: true/);
+  assert.match(backendSource, /async function buildMaintenanceReport/);
+  assert.match(backendSource, /async function runHealthCheck/);
+  assert.match(backendSource, /async function repairSettingsAction/);
+  assert.match(backendSource, /async function repairSnapshotIndexAction/);
+  assert.match(backendSource, /async function repairPresetRenderLocksAction/);
+  assert.match(backendSource, /async function cleanBrokenEmbeddedTagsAction/);
+  assert.match(backendSource, /repairSettings\(raw\)/);
+  assert.match(backendSource, /repairMessageSnapshotIndexKeepingNewest/);
+  assert.match(backendSource, /filterMessageSnapshotIndexByStorageKeys/);
+  assert.match(backendSource, /never silently rebind|do not silently rebind|active preset/);
 
   // 6. Frontend/backend render paths resolve per snapshot instead of blindly using the active preset.
   assert.match(frontendSource, /presets: state\.presets/);

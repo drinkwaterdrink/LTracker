@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.23";
+export const EXTENSION_VERSION = "0.24";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -455,6 +455,41 @@ export interface LTrackerBuildInfo {
   buildTarget: string;
 }
 
+export type LTrackerMaintenanceSeverity = "ok" | "warning" | "repairable" | "error";
+
+export interface LTrackerMaintenanceReportItem {
+  severity: LTrackerMaintenanceSeverity;
+  category: string;
+  message: string;
+  suggestedFix: string | null;
+  repairActionId: string | null;
+}
+
+export interface LTrackerMaintenanceReport {
+  createdAt: string;
+  chatId: string | null;
+  status: LTrackerMaintenanceSeverity;
+  summary: string;
+  items: LTrackerMaintenanceReportItem[];
+  counts: {
+    ok: number;
+    warning: number;
+    repairable: number;
+    error: number;
+  };
+  duplicateIndexEntries: number;
+  missingSidecarIndexEntries: number;
+  orphanSidecarSnapshots: number;
+  snapshotsWithoutPresetLocks: number;
+  snapshotsWithIncompletePresetLocks: number;
+  snapshotsWithUnavailableOriginalPreset: number;
+  brokenEmbeddedTags: number;
+  malformedEmbeddedTags: number;
+  repairedCount: number;
+  deletedCount: number;
+  limitationNotes: string[];
+}
+
 export interface LTrackerDiagnostics {
   schemaVersion: typeof STORAGE_SCHEMA_VERSION;
   extensionVersion: string;
@@ -700,6 +735,11 @@ export interface LTrackerDiagnostics {
   lastPresetRenderLabResult: string | null;
   lastPresetRenderLabRenderedChars: number | null;
   lastPresetRenderLabWarnings: string[];
+  lastHealthCheckAt: string | null;
+  lastHealthCheckStatus: LTrackerMaintenanceSeverity | null;
+  lastMaintenanceActionAt: string | null;
+  lastMaintenanceAction: string | null;
+  lastMaintenanceReport: LTrackerMaintenanceReport | null;
 }
 
 export interface PermissionState {
@@ -832,7 +872,13 @@ export type FrontendMessage =
   | { type: "embedded_tracker_tag_intercepted"; chatId: string | null; messageId: string | null; swipeKey: string | null; jsonText: string; isStreaming?: boolean; requestId: string }
   | { type: "restore_deleted_tracker"; chatId: string | null; messageId: string; swipeKey: string; requestId: string }
   | { type: "run_storage_maintenance_scan"; chatId: string | null; requestId: string }
-  | { type: "cleanup_missing_index_entries"; chatId: string | null; requestId: string };
+  | { type: "cleanup_missing_index_entries"; chatId: string | null; requestId: string }
+  | { type: "run_health_check"; chatId: string | null; requestId: string }
+  | { type: "repair_settings"; chatId: string | null; requestId: string }
+  | { type: "repair_snapshot_index"; chatId: string | null; requestId: string }
+  | { type: "repair_preset_render_locks"; chatId: string | null; requestId: string }
+  | { type: "clean_orphan_snapshots"; chatId: string | null; requestId: string }
+  | { type: "clean_broken_embedded_tags"; chatId: string | null; requestId: string };
 
 export type BackendMessage =
   | { type: "state"; state: FrontendState; requestId?: string }

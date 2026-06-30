@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.24 - Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes
+- Added a Maintenance & Repair panel with health checks, settings repair, snapshot index repair, preset render-lock repair, orphan sidecar scans, duplicate cleanup, broken embedded tag cleanup, and copyable reports.
+- Added structured maintenance diagnostics with severity, category, suggested fix, repair action id, storage/history counts, preset-lock counts, embedded-tag counts, and scan limitation notes.
+- Added conservative preset render-lock repair that only backfills from matching installed preset id/name-version and never silently rebinds old trackers to the current active preset.
+- Added snapshot index cleanup that keeps the newest message/swipe entry and removes rows pointing at missing sidecar snapshots.
+- Improved diagnostics with Maintenance / Repair grouping plus copy actions for health check and maintenance reports.
+- Kept Render Lab preview overlay behavior, preset import/export guardrails, credential stripping, fictional secret-like schema fields, preset render locks, display surfaces, Trusted renderer behavior, selected tracker profiles, tracker memory, prompt injection, and the always-on generation timer.
+- Moved Sequential + Partial Regeneration and Preset Authoring Studio 2.0 to optional future backlog.
+
 ## 0.23 - Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup
 - Fixed preset import false positives so fictional tracker schema/template fields such as secrets, tokens, credentials, and private knowledge are allowed.
 - Stripped real credential-like recommended connection settings during import without echoing secret values in warnings.

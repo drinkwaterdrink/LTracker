@@ -60,6 +60,63 @@ export function repairMessageSnapshotIndex(value: unknown): MessageSnapshotIndex
   return sortMessageSnapshotIndex(repaired);
 }
 
+function newerIndexEntry(
+  left: MessageSnapshotIndexEntry,
+  right: MessageSnapshotIndexEntry,
+): MessageSnapshotIndexEntry {
+  const leftTime = Date.parse(left.createdAt);
+  const rightTime = Date.parse(right.createdAt);
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime > rightTime ? left : right;
+  }
+  if (left.createdAt !== right.createdAt) return left.createdAt > right.createdAt ? left : right;
+  return left.storageKey >= right.storageKey ? left : right;
+}
+
+export interface MessageSnapshotIndexRepairResult {
+  index: MessageSnapshotIndexEntry[];
+  duplicateCount: number;
+  invalidCount: number;
+}
+
+export function repairMessageSnapshotIndexKeepingNewest(value: unknown): MessageSnapshotIndexRepairResult {
+  if (!Array.isArray(value)) return { index: [], duplicateCount: 0, invalidCount: value === undefined || value === null ? 0 : 1 };
+  const byKey = new Map<string, MessageSnapshotIndexEntry>();
+  let duplicateCount = 0;
+  let invalidCount = 0;
+  for (const item of value) {
+    const entry = repairIndexEntry(item);
+    if (!entry) {
+      invalidCount += 1;
+      continue;
+    }
+    const key = swipeIdentityKey(entry);
+    const existing = byKey.get(key);
+    if (existing) {
+      duplicateCount += 1;
+      byKey.set(key, newerIndexEntry(existing, entry));
+    } else {
+      byKey.set(key, entry);
+    }
+  }
+  return {
+    index: sortMessageSnapshotIndex([...byKey.values()]),
+    duplicateCount,
+    invalidCount,
+  };
+}
+
+export function filterMessageSnapshotIndexByStorageKeys(
+  index: MessageSnapshotIndexEntry[],
+  existingStorageKeys: ReadonlySet<string>,
+): { index: MessageSnapshotIndexEntry[]; removedCount: number } {
+  const filtered = index.filter((entry) => existingStorageKeys.has(entry.storageKey));
+  return {
+    index: sortMessageSnapshotIndex(filtered),
+    removedCount: Math.max(0, index.length - filtered.length),
+  };
+}
+
 export function sortMessageSnapshotIndex(index: MessageSnapshotIndexEntry[]): MessageSnapshotIndexEntry[] {
   return [...index].sort((left, right) => {
     if (left.messageIndex !== null && right.messageIndex !== null && left.messageIndex !== right.messageIndex) {

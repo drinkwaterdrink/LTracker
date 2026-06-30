@@ -51,6 +51,7 @@ import type {
   LTrackerInjectionFormat,
   LTrackerInjectionPlacement,
   LTrackerInjectionRoleFallback,
+  LTrackerMaintenanceReport,
   LTrackerReasoningEffort,
   LTrackerReasoningSource,
   LTrackerInlineAction,
@@ -870,6 +871,23 @@ const STYLES = `
 .ltracker-list-compact li + li {
   margin-top: 4px;
 }
+.ltracker-maintenance-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ltracker-maintenance-item {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(148, 181, 202, 0.12);
+  border-radius: 14px;
+  padding: 10px;
+}
+.ltracker-maintenance-item[data-severity="repairable"] {
+  border-color: rgba(255, 209, 102, 0.28);
+}
+.ltracker-maintenance-item[data-severity="error"] {
+  border-color: rgba(255, 123, 123, 0.34);
+}
 .ltracker-import-review,
 .ltracker-validation-report,
 .ltracker-sample-snapshot-preview {
@@ -1378,6 +1396,11 @@ function emptyState(): FrontendState {
       lastPresetRenderLabResult: null,
       lastPresetRenderLabRenderedChars: null,
       lastPresetRenderLabWarnings: [],
+      lastHealthCheckAt: null,
+      lastHealthCheckStatus: null,
+      lastMaintenanceActionAt: null,
+      lastMaintenanceAction: null,
+      lastMaintenanceReport: null,
       connectionProfileSelected: false,
       effectiveTrackerConnectionMode: "active_quiet",
       effectiveTrackerConnectionReason: "default",
@@ -1477,6 +1500,70 @@ function renderJson(value: unknown, fallback: string): string {
   return JSON.stringify(value, null, 2);
 }
 
+function maintenanceReportText(report: LTrackerMaintenanceReport | null): string | null {
+  if (!report) return null;
+  const lines = [
+    `LTracker Maintenance Report`,
+    `Created: ${report.createdAt}`,
+    `Chat: ${report.chatId ?? "none"}`,
+    `Status: ${report.status}`,
+    `Summary: ${report.summary}`,
+    "",
+    "Counts",
+    `- ok: ${report.counts.ok}`,
+    `- warning: ${report.counts.warning}`,
+    `- repairable: ${report.counts.repairable}`,
+    `- error: ${report.counts.error}`,
+    "",
+    "Storage",
+    `- duplicate index entries: ${report.duplicateIndexEntries}`,
+    `- missing sidecar index entries: ${report.missingSidecarIndexEntries}`,
+    `- orphan sidecar snapshots: ${report.orphanSidecarSnapshots}`,
+    `- broken embedded tags: ${report.brokenEmbeddedTags}`,
+    `- malformed embedded tags: ${report.malformedEmbeddedTags}`,
+    "",
+    "Preset locks",
+    `- snapshots without locks: ${report.snapshotsWithoutPresetLocks}`,
+    `- incomplete locks: ${report.snapshotsWithIncompletePresetLocks}`,
+    `- original preset unavailable: ${report.snapshotsWithUnavailableOriginalPreset}`,
+    "",
+    "Repair results",
+    `- repaired: ${report.repairedCount}`,
+    `- deleted: ${report.deletedCount}`,
+    "",
+    "Findings",
+    ...report.items.map((item) => [
+      `- [${item.severity}] ${item.category}: ${item.message}`,
+      item.suggestedFix ? `  Suggested fix: ${item.suggestedFix}` : null,
+      item.repairActionId ? `  Repair action: ${item.repairActionId}` : null,
+    ].filter((line): line is string => Boolean(line)).join("\n")),
+  ];
+  if (report.limitationNotes.length > 0) {
+    lines.push("", "Limitations", ...report.limitationNotes.map((note) => `- ${note}`));
+  }
+  return lines.join("\n");
+}
+
+function renderMaintenanceItems(report: LTrackerMaintenanceReport | null): string {
+  if (!report) {
+    return `<p class="ltracker-note">Run Health Check to inspect settings, presets, snapshot history, render locks, embedded tags, display limits, and tracker profile fallback state.</p>`;
+  }
+  return `
+    <div class="ltracker-maintenance-list">
+      ${report.items.map((item) => `
+        <article class="ltracker-maintenance-item" data-severity="${escapeHtml(item.severity)}">
+          <div class="ltracker-command-card-header">
+            <span class="ltracker-card-title">${escapeHtml(item.category)}</span>
+            <span class="ltracker-status-chip" data-tone="${item.severity === "error" ? "error" : item.severity === "repairable" ? "warning" : item.severity === "warning" ? "warning" : "success"}">${escapeHtml(item.severity)}</span>
+          </div>
+          <div class="ltracker-card-body">${escapeHtml(item.message)}</div>
+          ${item.suggestedFix ? `<p class="ltracker-note">${escapeHtml(item.suggestedFix)}</p>` : ""}
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -1509,6 +1596,7 @@ type LTrackerDrawerPanel =
   | "generation"
   | "connection"
   | "memory"
+  | "maintenance"
   | "diagnostics"
   | "advanced";
 
@@ -1530,6 +1618,7 @@ function normalizeDrawerPanel(value: string | null | undefined): LTrackerDrawerP
     || value === "generation"
     || value === "connection"
     || value === "memory"
+    || value === "maintenance"
     || value === "diagnostics"
     || value === "advanced"
   ) {
@@ -1542,6 +1631,7 @@ function drawerPanelPrimaryId(panel: LTrackerDrawerPanel): LTrackerDrawerPanel {
   return panel === "generation"
     || panel === "connection"
     || panel === "memory"
+    || panel === "maintenance"
     || panel === "diagnostics"
     || panel === "advanced"
     ? "more"
@@ -4970,9 +5060,20 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       diagnostics.lastGenerationDurationMs !== null ? `duration ${formatDurationMs(diagnostics.lastGenerationDurationMs)}` : null,
       diagnostics.lastGenerationCompletedAt ? `completed ${diagnostics.lastGenerationCompletedAt}` : null,
     ].filter((item): item is string => Boolean(item)).join(" / ");
+    const maintenanceReport = diagnostics.lastMaintenanceReport;
+    const maintenanceTone = maintenanceReport?.status === "error"
+      ? statusTone("error", "Error")
+      : maintenanceReport?.status === "repairable"
+        ? statusTone("warning", "Repairable")
+        : maintenanceReport?.status === "warning"
+          ? statusTone("warning", "Warning")
+          : statusTone("success", maintenanceReport ? "Healthy" : "Ready");
+    const maintenanceSummary = maintenanceReport?.summary ?? "Run Health Check to inspect settings, preset locks, history indexes, embedded tags, and mobile/runtime risk signals.";
     const diagnosticsButtons = `
       <button class="ltracker-button" type="button" data-action="copy-all-diagnostics">Copy all diagnostics</button>
       <button class="ltracker-button" type="button" data-action="copy-last-error">Copy last error</button>
+      <button class="ltracker-button" type="button" data-action="copy-health-check-report" ${disabled(!maintenanceReport)}>Copy health check report</button>
+      <button class="ltracker-button" type="button" data-action="copy-maintenance-report" ${disabled(!maintenanceReport)}>Copy maintenance report</button>
       <button class="ltracker-button" type="button" data-action="copy-prompt" ${disabled(!prompt)}>Copy last prompt preview</button>
       <button class="ltracker-button" type="button" data-action="copy-raw" ${disabled(!rawOutput)}>Copy last raw model output</button>
     `;
@@ -5237,6 +5338,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${card("Generation", state.settings.auto.autoModeEnabled ? statusTone("active", "Auto on") : statusTone("warning", "Manual"), escapeHtml("Auto mode, trigger timing, swipe stability, message budgets, and prompt/raw output saving."), `<button class="ltracker-button" type="button" data-panel-target="generation">Open Generation</button>`)}
             ${card("Connection", connectionWarning ? statusTone("warning", "Fallback") : statusTone(selectedConnection ? "success" : "warning", selectedConnection ? "Selected" : "Profile"), escapeHtml("Tracker profile, refresh/test actions, fallback status, and advanced model parameters."), `<button class="ltracker-button" type="button" data-panel-target="connection">Open Connection</button>`)}
             ${card("Memory / Context", state.settings.memory.enabled ? statusTone("active", "Memory on") : statusTone("warning", "Memory off"), escapeHtml("Tracker Memory for generation consistency and Prompt Injection for roleplay context."), `<button class="ltracker-button" type="button" data-panel-target="memory">Open Memory</button>`)}
+            ${card("Maintenance & Repair", maintenanceTone, escapeHtml(maintenanceSummary), `<button class="ltracker-button" type="button" data-panel-target="maintenance">Open Maintenance</button>`)}
             ${card("Diagnostics", error ? statusTone("error", "Error") : statusTone("success", "Clear"), escapeHtml("Searchable status, generation, renderer, display, connection, storage, and import diagnostics."), `<button class="ltracker-button" type="button" data-panel-target="diagnostics">Open Diagnostics</button>`)}
             ${card("Advanced", statusTone("warning", "Power tools"), escapeHtml("Quick setup profiles, budgets, maintenance, legacy compatibility, and future Dev Mode placeholder."), `<button class="ltracker-button" type="button" data-panel-target="advanced">Open Advanced</button>`)}
           </div>
@@ -5521,6 +5623,57 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         </section>
         ` : ""}
 
+        ${activePanel === "maintenance" ? `
+        <section class="ltracker-panel ltracker-section" id="ltracker-section-maintenance">
+          <div class="ltracker-section-title">
+            <div>
+              <span class="ltracker-label">Maintenance & Repair</span>
+              <h3>Recovery tools</h3>
+            </div>
+            ${maintenanceTone}
+          </div>
+          <div class="ltracker-card-grid">
+            ${card("Health check", maintenanceTone, escapeHtml(maintenanceSummary), `<button class="ltracker-button" type="button" data-action="run-health-check">Run Health Check</button>`)}
+            ${card("Snapshot index", statusTone((maintenanceReport?.duplicateIndexEntries ?? 0) + (maintenanceReport?.missingSidecarIndexEntries ?? 0) > 0 ? "warning" : "success", `${(maintenanceReport?.duplicateIndexEntries ?? 0) + (maintenanceReport?.missingSidecarIndexEntries ?? 0)} issue(s)`), escapeHtml("Deduplicates message/swipe history rows and removes rows that point at missing sidecar snapshots."), `<button class="ltracker-button" type="button" data-action="repair-snapshot-index">Repair Snapshot Index</button>`)}
+            ${card("Preset render locks", statusTone((maintenanceReport?.snapshotsWithoutPresetLocks ?? 0) + (maintenanceReport?.snapshotsWithIncompletePresetLocks ?? 0) > 0 ? "warning" : "success", `${(maintenanceReport?.snapshotsWithoutPresetLocks ?? 0) + (maintenanceReport?.snapshotsWithIncompletePresetLocks ?? 0)} issue(s)`), escapeHtml("Repairs legacy snapshot render locks only when the original installed preset can be matched by id or name/version."), `<button class="ltracker-button" type="button" data-action="repair-preset-render-locks">Repair Preset Render Locks</button>`)}
+            ${card("Embedded tags", statusTone((maintenanceReport?.brokenEmbeddedTags ?? 0) > 0 ? "warning" : "success", `${maintenanceReport?.brokenEmbeddedTags ?? 0} broken`), escapeHtml("Removes only complete LTracker-owned embedded tags whose JSON is broken. Malformed marker fragments are reported for manual review."), `<button class="ltracker-button" type="button" data-action="clean-broken-embedded-tags">Clean Broken Embedded Tags</button>`)}
+          </div>
+          <div class="ltracker-toolbar" style="margin-top: 12px;">
+            <button class="ltracker-button" type="button" data-action="repair-settings">Repair Settings</button>
+            <button class="ltracker-button" type="button" data-action="cleanup-duplicates">Clean Duplicate Index Entries</button>
+            <button class="ltracker-button" type="button" data-action="cleanup-missing-index">Clean Missing Sidecar Rows</button>
+            <button class="ltracker-button" type="button" data-action="clean-orphan-snapshots">Clean Orphan Snapshots</button>
+            <button class="ltracker-button" type="button" data-action="copy-maintenance-report" ${disabled(!maintenanceReport)}>Copy Maintenance Report</button>
+            <button class="ltracker-button" type="button" data-action="copy-preset-lock-report" ${disabled(!maintenanceReport)}>Copy Preset Lock Report</button>
+          </div>
+          <p class="ltracker-note">${escapeHtml("Repairs are intentionally conservative. LTracker never silently rebinds old trackers to the current active preset, and orphan cleanup reindexes discoverable sidecars instead of deleting unknown storage.")}</p>
+          <div class="ltracker-grid ltracker-details">
+            ${renderRow("Last health check", diagnostics.lastHealthCheckAt)}
+            ${renderRow("Health status", diagnostics.lastHealthCheckStatus)}
+            ${renderRow("Last maintenance action", diagnostics.lastMaintenanceAction)}
+            ${renderRow("Duplicate history entries", maintenanceReport?.duplicateIndexEntries ?? diagnostics.lastHistoryDuplicateCount)}
+            ${renderRow("Missing sidecar rows", maintenanceReport?.missingSidecarIndexEntries ?? 0)}
+            ${renderRow("Discoverable orphan sidecars", maintenanceReport?.orphanSidecarSnapshots ?? diagnostics.lastHistoryOrphanCount)}
+            ${renderRow("Snapshots without preset locks", maintenanceReport?.snapshotsWithoutPresetLocks ?? 0)}
+            ${renderRow("Incomplete preset locks", maintenanceReport?.snapshotsWithIncompletePresetLocks ?? 0)}
+            ${renderRow("Original preset unavailable", maintenanceReport?.snapshotsWithUnavailableOriginalPreset ?? 0)}
+            ${renderRow("Broken embedded tags", maintenanceReport?.brokenEmbeddedTags ?? 0)}
+            ${renderRow("Malformed tag markers", maintenanceReport?.malformedEmbeddedTags ?? 0)}
+          </div>
+          ${renderMaintenanceItems(maintenanceReport)}
+          <details class="ltracker-details">
+            <summary>Preset lock report</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Snapshots without locks", maintenanceReport?.snapshotsWithoutPresetLocks ?? 0)}
+              ${renderRow("Incomplete lock metadata", maintenanceReport?.snapshotsWithIncompletePresetLocks ?? 0)}
+              ${renderRow("Original preset unavailable", maintenanceReport?.snapshotsWithUnavailableOriginalPreset ?? 0)}
+              ${renderRow("Repair rule", "Only repair when an installed preset matches the snapshot id or name/version. Active preset fallback is not used.")}
+            </div>
+          </details>
+          ${maintenanceReport?.limitationNotes.length ? `<details class="ltracker-details"><summary>Known scan limits</summary><ul class="ltracker-list-compact">${maintenanceReport.limitationNotes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul></details>` : ""}
+        </section>
+        ` : ""}
+
         ${activePanel === "diagnostics" ? `
         <section class="ltracker-panel ltracker-section" id="ltracker-section-diagnostics">
           <div class="ltracker-section-title">
@@ -5646,6 +5799,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               ${renderRow("History duplicate count", diagnostics.lastHistoryDuplicateCount)}
               ${renderRow("History orphan count", diagnostics.lastHistoryOrphanCount)}
               ${renderRow("Storage key", diagnostics.storageKey)}
+            </div>
+          </details>
+          <details class="ltracker-details" data-diagnostics-group>
+            <summary>Maintenance / Repair</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Last health check at", diagnostics.lastHealthCheckAt)}
+              ${renderRow("Last health check status", diagnostics.lastHealthCheckStatus)}
+              ${renderRow("Last maintenance action", diagnostics.lastMaintenanceAction)}
+              ${renderRow("Last maintenance action at", diagnostics.lastMaintenanceActionAt)}
+              ${renderRow("Maintenance summary", maintenanceReport?.summary ?? null)}
+              ${renderRow("Duplicate index entries", maintenanceReport?.duplicateIndexEntries ?? null)}
+              ${renderRow("Missing sidecar index entries", maintenanceReport?.missingSidecarIndexEntries ?? null)}
+              ${renderRow("Orphan sidecar snapshots", maintenanceReport?.orphanSidecarSnapshots ?? null)}
+              ${renderRow("Snapshots without preset locks", maintenanceReport?.snapshotsWithoutPresetLocks ?? null)}
+              ${renderRow("Incomplete preset locks", maintenanceReport?.snapshotsWithIncompletePresetLocks ?? null)}
+              ${renderRow("Original preset unavailable", maintenanceReport?.snapshotsWithUnavailableOriginalPreset ?? null)}
+              ${renderRow("Broken embedded tags", maintenanceReport?.brokenEmbeddedTags ?? null)}
+              ${renderRow("Malformed embedded tag markers", maintenanceReport?.malformedEmbeddedTags ?? null)}
+              ${renderRow("Maintenance repaired count", maintenanceReport?.repairedCount ?? null)}
+              ${renderRow("Maintenance deleted count", maintenanceReport?.deletedCount ?? null)}
             </div>
           </details>
           <details class="ltracker-details">
@@ -5874,6 +6047,49 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         requestId: requestId("history-cleanup"),
       });
     }
+    if (action === "run-health-check") {
+      send({
+        type: "run_health_check",
+        chatId: activeChatId(),
+        requestId: requestId("health-check"),
+      });
+    }
+    if (action === "repair-settings") {
+      send({
+        type: "repair_settings",
+        chatId: activeChatId(),
+        requestId: requestId("repair-settings"),
+      });
+    }
+    if (action === "repair-snapshot-index") {
+      send({
+        type: "repair_snapshot_index",
+        chatId: activeChatId(),
+        requestId: requestId("repair-index"),
+      });
+    }
+    if (action === "repair-preset-render-locks") {
+      send({
+        type: "repair_preset_render_locks",
+        chatId: activeChatId(),
+        requestId: requestId("repair-locks"),
+      });
+    }
+    if (action === "clean-orphan-snapshots") {
+      send({
+        type: "clean_orphan_snapshots",
+        chatId: activeChatId(),
+        requestId: requestId("clean-orphans"),
+      });
+    }
+    if (action === "clean-broken-embedded-tags") {
+      if (typeof window !== "undefined" && !window.confirm("Remove complete LTracker embedded tags whose JSON is broken? This only touches LTracker-owned tags.")) return;
+      send({
+        type: "clean_broken_embedded_tags",
+        chatId: activeChatId(),
+        requestId: requestId("clean-tags"),
+      });
+    }
     if (action === "refresh-connections") refreshConnections();
     if (action === "test-connection") testTrackerConnection();
     if (action === "cancel-connection-test") cancelConnectionTest();
@@ -5905,6 +6121,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         `History cleanup at: ${state.diagnostics.lastHistoryCleanupAt}`,
       ].join("\n");
       void copyText(report, "storage report");
+    }
+    if (action === "copy-health-check-report" || action === "copy-maintenance-report") {
+      void copyText(maintenanceReportText(state.diagnostics.lastMaintenanceReport), action === "copy-health-check-report" ? "health check report" : "maintenance report");
+    }
+    if (action === "copy-preset-lock-report") {
+      const report = state.diagnostics.lastMaintenanceReport;
+      const text = report
+        ? [
+            "LTracker Preset Lock Report",
+            `Created: ${report.createdAt}`,
+            `Snapshots without locks: ${report.snapshotsWithoutPresetLocks}`,
+            `Incomplete lock metadata: ${report.snapshotsWithIncompletePresetLocks}`,
+            `Original preset unavailable: ${report.snapshotsWithUnavailableOriginalPreset}`,
+            "Repair rule: only repair from installed preset id/name-version matches; never silently rebind to the active preset.",
+          ].join("\n")
+        : null;
+      void copyText(text, "preset lock report");
     }
     if (action === "render-template") renderTemplatePreview();
     if (action === "copy-render-html") void copyText(state.renderPreview?.html ?? null, "sanitized HTML");
