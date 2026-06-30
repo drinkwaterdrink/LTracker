@@ -22,6 +22,12 @@ import {
   type TemplateRendererRequirements,
   type HtmlTemplateRenderResult,
 } from "./htmlTemplateRenderer";
+import {
+  extractOwnerPowerScriptsFromHtml,
+  ownerPowerFeatureSummary,
+  repairOwnerPowerManifest,
+  stripOwnerPowerRecommendedSettings,
+} from "./ownerPower";
 
 // ---------------------------------------------------------------------------
 // Pack format constants
@@ -56,6 +62,8 @@ export interface LTrackerPresetPackV1 {
     tags?: string[];
     origin?: string;
     author?: string;
+    ownerPowerScript?: string;
+    ownerPowerManifest?: unknown;
   };
   recommendedSettings?: PackRecommendedSettings;
   exampleSnapshot?: Record<string, unknown>;
@@ -74,6 +82,7 @@ export interface PackRecommendedSettings {
   renderer?: Partial<LTrackerSettings["renderer"]>;
   expandedWidth?: Partial<LTrackerSettings["expandedWidth"]>;
   budget?: Partial<LTrackerSettings["budget"]>;
+  ownerPowerMode?: Partial<LTrackerSettings["ownerPowerMode"]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +252,12 @@ export function exportPresetPack(
     pack.exportedBy = options.author;
     pack.preset.author = options.author;
   }
+  if (preset.ownerPowerScript) {
+    pack.preset.ownerPowerScript = preset.ownerPowerScript;
+  }
+  if (preset.ownerPowerManifest) {
+    pack.preset.ownerPowerManifest = preset.ownerPowerManifest;
+  }
 
   if (options?.includeRecommendedSettings && options.settings) {
     const settings = options.settings;
@@ -319,22 +334,24 @@ export function exportPresetPack(
 
 function validatePackRecommendedSettings(value: unknown): { settings: PackRecommendedSettings | null; warnings: string[] } {
   if (!isRecord(value)) return { settings: null, warnings: [] };
+  const ownerPowerStripped = stripOwnerPowerRecommendedSettings(value);
+  const safeValue = ownerPowerStripped.value;
   const result: PackRecommendedSettings = {};
   const strippedPaths: string[] = [];
-  if (isRecord(value.connection)) {
+  if (isRecord(safeValue.connection)) {
     result.connection = stripRecommendedSettingCredentials(
-      value.connection,
+      safeValue.connection,
       "recommendedSettings.connection",
       strippedPaths,
     ) as Partial<LTrackerSettings["connection"]>;
   }
-  if (isRecord(value.memory)) result.memory = value.memory as Partial<LTrackerSettings["memory"]>;
-  if (isRecord(value.injection)) result.injection = value.injection as Partial<LTrackerSettings["injection"]>;
-  if (isRecord(value.renderer)) result.renderer = value.renderer as Partial<LTrackerSettings["renderer"]>;
-  if (isRecord(value.messageDisplay)) result.messageDisplay = value.messageDisplay as Partial<LTrackerSettings["messageDisplay"]>;
-  if (isRecord(value.expandedWidth)) result.expandedWidth = value.expandedWidth as Partial<LTrackerSettings["expandedWidth"]>;
-  if (isRecord(value.budget)) result.budget = value.budget as Partial<LTrackerSettings["budget"]>;
-  for (const [key, nestedValue] of Object.entries(value)) {
+  if (isRecord(safeValue.memory)) result.memory = safeValue.memory as Partial<LTrackerSettings["memory"]>;
+  if (isRecord(safeValue.injection)) result.injection = safeValue.injection as Partial<LTrackerSettings["injection"]>;
+  if (isRecord(safeValue.renderer)) result.renderer = safeValue.renderer as Partial<LTrackerSettings["renderer"]>;
+  if (isRecord(safeValue.messageDisplay)) result.messageDisplay = safeValue.messageDisplay as Partial<LTrackerSettings["messageDisplay"]>;
+  if (isRecord(safeValue.expandedWidth)) result.expandedWidth = safeValue.expandedWidth as Partial<LTrackerSettings["expandedWidth"]>;
+  if (isRecord(safeValue.budget)) result.budget = safeValue.budget as Partial<LTrackerSettings["budget"]>;
+  for (const [key, nestedValue] of Object.entries(safeValue)) {
     if (
       key !== "connection"
       && key !== "memory"
@@ -348,7 +365,10 @@ function validatePackRecommendedSettings(value: unknown): { settings: PackRecomm
       stripRecommendedSettingCredentials(nestedValue, `recommendedSettings.${key}`, strippedPaths);
     }
   }
-  const warnings = strippedPaths.map((path) => `Removed credential-like recommended setting field: ${path}`);
+  const warnings = [
+    ...ownerPowerStripped.warnings,
+    ...strippedPaths.map((path) => `Removed credential-like recommended setting field: ${path}`),
+  ];
   return { settings: Object.keys(result).length > 0 ? result : null, warnings };
 }
 
@@ -382,6 +402,13 @@ export function importPresetPack(
       ? createPresetId(stringValue(presetData.name, "Imported Preset"), existing)
       : rawId;
 
+    const htmlExtraction = extractOwnerPowerScriptsFromHtml(typeof presetData.htmlTemplate === "string" ? presetData.htmlTemplate : "");
+    const explicitOwnerPowerScript = typeof presetData.ownerPowerScript === "string" ? presetData.ownerPowerScript : "";
+    const ownerPowerScript = [explicitOwnerPowerScript.trim(), ...htmlExtraction.scripts]
+      .filter(Boolean)
+      .join("\n\n");
+    const ownerPowerManifest = repairOwnerPowerManifest(presetData.ownerPowerManifest);
+
     const preset: TrackerSchemaPreset = {
       id,
       name: stringValue(presetData.name, "Imported Preset").trim() || "Imported Preset",
@@ -391,13 +418,21 @@ export function importPresetPack(
       updatedAt: now,
       jsonSchema: isRecord(presetData.jsonSchema) ? presetData.jsonSchema : {},
       promptInstructions: stringValue(presetData.promptInstructions),
-      htmlTemplate: typeof presetData.htmlTemplate === "string" ? presetData.htmlTemplate : "",
+      htmlTemplate: htmlExtraction.html,
       notes: typeof presetData.notes === "string" ? presetData.notes : "",
       origin: "user_imported" as TrackerPresetOrigin,
       capabilities: {
         supportsHtmlTemplate: typeof presetData.htmlTemplate === "string" && presetData.htmlTemplate.trim().length > 0,
       },
     };
+    if (ownerPowerScript) preset.ownerPowerScript = ownerPowerScript;
+    if (ownerPowerManifest) preset.ownerPowerManifest = ownerPowerManifest;
+    const ownerPowerSummary = ownerPowerFeatureSummary(preset);
+    warnings.push(...htmlExtraction.warnings);
+    if (ownerPowerSummary.requested) {
+      warnings.push("This preset requests Owner Power Mode. It was imported inertly and will not run until Owner Power Mode is enabled manually.");
+      warnings.push("Preset packs cannot enable Owner Power Mode automatically.");
+    }
 
     // Validate minimum requirements
     if (!preset.name.trim()) {

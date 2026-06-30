@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.25";
+export const EXTENSION_VERSION = "0.26";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -94,6 +94,15 @@ export interface TrackerPresetRecommendedConnection {
   notes?: string;
 }
 
+export interface TrackerOwnerPowerManifest {
+  version: number;
+  entry?: string;
+  usesRuntime?: boolean;
+  requiredMode?: "owner_power";
+  capabilities?: string[];
+  notes?: string;
+}
+
 export interface TrackerSchemaPreset {
   id: string;
   name: string;
@@ -108,6 +117,8 @@ export interface TrackerSchemaPreset {
   origin: TrackerPresetOrigin;
   capabilities?: TrackerPresetCapabilities;
   recommendedConnection?: TrackerPresetRecommendedConnection;
+  ownerPowerScript?: string;
+  ownerPowerManifest?: TrackerOwnerPowerManifest;
 }
 
 export interface TrackerPresetDraft {
@@ -121,6 +132,8 @@ export interface TrackerPresetDraft {
   notes?: string;
   capabilities?: TrackerPresetCapabilities;
   recommendedConnection?: TrackerPresetRecommendedConnection;
+  ownerPowerScript?: string;
+  ownerPowerManifest?: TrackerOwnerPowerManifest;
 }
 
 export interface ActiveTrackerPresetState {
@@ -413,6 +426,21 @@ export interface LTrackerStorageMaintenanceSettings {
   cleanupDuplicatesOnly: boolean;
 }
 
+export interface LTrackerOwnerPowerSettings {
+  enabled: boolean;
+  allowRenderLabRuntime: boolean;
+  allowInstalledPresetRuntime: boolean;
+  allowScriptBlocks: boolean;
+  allowTemplateActionHooks: boolean;
+  allowExternalUrls: boolean;
+  allowNetwork: boolean;
+  allowHostDomAccess: boolean;
+  maxScriptChars: number;
+  maxRuntimeErrors: number;
+  crashDisableThreshold: number;
+  autoDisableOnCrash: boolean;
+}
+
 export interface LTrackerContextFiltersSettings {
   enabled: boolean;
   includeChatMessages: boolean;
@@ -459,6 +487,7 @@ export interface LTrackerSettings {
   expandedWidth: LTrackerExpandedWidthSettings;
   connection: LTrackerConnectionSettings;
   contextFilters: LTrackerContextFiltersSettings;
+  ownerPowerMode: LTrackerOwnerPowerSettings;
   history: LTrackerHistorySettings;
   storageMaintenance: LTrackerStorageMaintenanceSettings;
 }
@@ -794,6 +823,21 @@ export interface LTrackerDiagnostics {
   lastPresetRenderLabResult: string | null;
   lastPresetRenderLabRenderedChars: number | null;
   lastPresetRenderLabWarnings: string[];
+  ownerPowerModeEnabled: boolean;
+  renderLabRuntimeEnabled: boolean;
+  installedPresetRuntimeEnabled: boolean;
+  declarativeHooksEnabled: boolean;
+  activePresetRequestedOwnerPower: boolean;
+  activePresetHasOwnerPowerScript: boolean;
+  lastOwnerPowerRuntimeMode: string | null;
+  lastOwnerPowerMountedAt: string | null;
+  lastOwnerPowerDestroyedAt: string | null;
+  lastOwnerPowerError: string | null;
+  lastOwnerPowerEvent: string | null;
+  ownerPowerCrashCount: number;
+  ownerPowerDisabledReason: string | null;
+  lastOwnerPowerSanitizerAction: string | null;
+  lastOwnerPowerImportWarning: string | null;
   lastHealthCheckAt: string | null;
   lastHealthCheckStatus: LTrackerMaintenanceSeverity | null;
   lastMaintenanceActionAt: string | null;
@@ -940,7 +984,10 @@ export type FrontendMessage =
   | { type: "repair_snapshot_index"; chatId: string | null; requestId: string }
   | { type: "repair_preset_render_locks"; chatId: string | null; requestId: string }
   | { type: "clean_orphan_snapshots"; chatId: string | null; requestId: string }
-  | { type: "clean_broken_embedded_tags"; chatId: string | null; requestId: string };
+  | { type: "clean_broken_embedded_tags"; chatId: string | null; requestId: string }
+  | { type: "disable_owner_power"; chatId: string | null; requestId: string }
+  | { type: "reset_owner_power_settings"; chatId: string | null; requestId: string }
+  | { type: "clear_owner_power_crashes"; chatId: string | null; requestId: string };
 
 export type BackendMessage =
   | { type: "state"; state: FrontendState; requestId?: string }

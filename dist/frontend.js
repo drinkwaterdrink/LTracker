@@ -34,6 +34,129 @@ var DEFAULT_TRACKER_SCHEMA = {
   next_scene_pressure: ""
 };
 
+// src/shared/ownerPower.ts
+var OWNER_POWER_SCRIPT_TYPE = "application/ltracker-owner-power";
+var OWNER_POWER_SCRIPT_PATTERN = /<\s*script\b([^>]*)>([\s\S]*?)<\s*\/\s*script\s*>/gi;
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function optionalString(value, maxLength = 64e3) {
+  return typeof value === "string" ? value.slice(0, maxLength) : void 0;
+}
+function boolValue(value) {
+  return typeof value === "boolean" ? value : void 0;
+}
+function scriptType(rawAttributes) {
+  const match = rawAttributes.match(/\stype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+  return (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim().toLowerCase() || null;
+}
+function extractOwnerPowerScriptsFromHtml(html) {
+  const scripts = [];
+  const warnings = [];
+  const stripped = html.replace(OWNER_POWER_SCRIPT_PATTERN, (_match, rawAttributes, body) => {
+    if (scriptType(rawAttributes) === OWNER_POWER_SCRIPT_TYPE) {
+      scripts.push(body.trim());
+      warnings.push("Owner Power script source was imported inertly and will not run unless Owner Power Mode is enabled.");
+    } else {
+      warnings.push("Normal script content was stripped from sanitized rendering.");
+    }
+    return "";
+  });
+  return { html: stripped, scripts, warnings };
+}
+function repairOwnerPowerManifest(value) {
+  if (!isRecord(value)) return void 0;
+  const version = typeof value.version === "number" && Number.isFinite(value.version) ? Math.max(1, Math.round(value.version)) : 1;
+  const manifest = { version };
+  const entry = optionalString(value.entry, 200);
+  if (entry) manifest.entry = entry;
+  const usesRuntime = boolValue(value.usesRuntime);
+  if (usesRuntime !== void 0) manifest.usesRuntime = usesRuntime;
+  if (value.requiredMode === "owner_power") manifest.requiredMode = "owner_power";
+  if (Array.isArray(value.capabilities)) {
+    const capabilities = value.capabilities.filter((item) => typeof item === "string").map((item) => item.trim().slice(0, 80)).filter(Boolean).slice(0, 40);
+    if (capabilities.length > 0) manifest.capabilities = capabilities;
+  }
+  const notes = optionalString(value.notes, 2e3);
+  if (notes) manifest.notes = notes;
+  return manifest;
+}
+function ownerPowerRequestedByPreset(preset) {
+  return preset.ownerPowerManifest?.requiredMode === "owner_power" || preset.ownerPowerManifest?.usesRuntime === true || /application\/ltracker-owner-power/i.test(preset.htmlTemplate ?? "");
+}
+function ownerPowerFeatureSummary(preset) {
+  const extracted = extractOwnerPowerScriptsFromHtml(preset.htmlTemplate ?? "");
+  const explicitScript = typeof preset.ownerPowerScript === "string" ? preset.ownerPowerScript : "";
+  const scriptChars = explicitScript.length + extracted.scripts.reduce((sum, script) => sum + script.length, 0);
+  const hasScript = scriptChars > 0;
+  const requested = ownerPowerRequestedByPreset(preset) || hasScript;
+  const warnings = [
+    ...extracted.warnings,
+    hasScript ? "Preset contains Owner Power runtime source; it remains inert until manually enabled." : null,
+    requested ? "Preset packs cannot enable Owner Power Mode automatically." : null
+  ].filter((item) => Boolean(item));
+  return {
+    requested,
+    hasScript,
+    scriptChars,
+    manifest: preset.ownerPowerManifest ?? null,
+    warnings
+  };
+}
+function stripOwnerPowerRecommendedSettings(value) {
+  const warnings = [];
+  const output = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === "ownerPowerMode") {
+      warnings.push("Recommended settings that attempted to enable Owner Power Mode were stripped.");
+      continue;
+    }
+    if (key === "renderer" && isRecord(nested)) {
+      const renderer = { ...nested };
+      if (renderer.templateTrustMode === "dev") {
+        renderer.templateTrustMode = "trusted";
+        warnings.push("Recommended renderer Dev Mode was downgraded to Trusted; Owner Power must be enabled manually.");
+      }
+      output[key] = renderer;
+      continue;
+    }
+    output[key] = nested;
+  }
+  return { value: output, warnings };
+}
+function ownerPowerStatusLabel(settings) {
+  if (!settings.enabled) return "disabled";
+  if (settings.allowInstalledPresetRuntime) return "installed runtime allowed";
+  if (settings.allowRenderLabRuntime) return "Render Lab only";
+  if (settings.allowTemplateActionHooks) return "declarative hooks only";
+  return "enabled, no runtime surface allowed";
+}
+function ownerPowerReport(input) {
+  const presetSummary = input.preset ? ownerPowerFeatureSummary(input.preset) : null;
+  return [
+    "LTracker Owner Power Report",
+    `Mode: ${ownerPowerStatusLabel(input.settings)}`,
+    `Global enabled: ${input.settings.enabled ? "yes" : "no"}`,
+    `Render Lab runtime: ${input.settings.allowRenderLabRuntime ? "yes" : "no"}`,
+    `Installed preset runtime: ${input.settings.allowInstalledPresetRuntime ? "yes" : "no"}`,
+    `Declarative hooks: ${input.settings.allowTemplateActionHooks ? "yes" : "no"}`,
+    `Script blocks allowed: ${input.settings.allowScriptBlocks ? "yes" : "no"}`,
+    `External URLs: ${input.settings.allowExternalUrls ? "yes" : "no"}`,
+    `Network: ${input.settings.allowNetwork ? "yes" : "no"}`,
+    `Host DOM access: ${input.settings.allowHostDomAccess ? "yes" : "no"}`,
+    `Max script chars: ${input.settings.maxScriptChars}`,
+    `Crash threshold: ${input.settings.crashDisableThreshold}`,
+    `Crash count: ${input.crashCount ?? 0}`,
+    `Disabled reason: ${input.disabledReason ?? "none"}`,
+    `Last event: ${input.lastEvent ?? "none"}`,
+    `Last error: ${input.lastError ?? "none"}`,
+    input.preset ? `Preset: ${input.preset.name} (${input.preset.id})` : "Preset: none",
+    presetSummary ? `Preset requested Owner Power: ${presetSummary.requested ? "yes" : "no"}` : null,
+    presetSummary ? `Preset has script source: ${presetSummary.hasScript ? "yes" : "no"}` : null,
+    presetSummary ? `Preset script chars: ${presetSummary.scriptChars}` : null
+  ].filter((line) => Boolean(line)).join("\n");
+}
+
 // src/shared/presets.ts
 var DEFAULT_TRACKER_PRESET_ID = "default_scene_tracker";
 var PRESET_EXPORT_KIND = "ltracker_schema_preset";
@@ -71,13 +194,13 @@ var DEFAULT_TRACKER_PRESET = {
     notes: "Start with active quiet mode, low temperature, and inherited reasoning. Use a selected raw tracker profile after confirming it returns strict JSON."
   }
 };
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringValue(value, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
-function optionalString(value) {
+function optionalString2(value) {
   return typeof value === "string" ? value : void 0;
 }
 function validOrigin(value) {
@@ -94,7 +217,7 @@ function boundedNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 function repairCapabilities(value) {
-  if (!isRecord(value)) return void 0;
+  if (!isRecord2(value)) return void 0;
   const result = {};
   if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
   if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
@@ -102,7 +225,7 @@ function repairCapabilities(value) {
   return Object.keys(result).length > 0 ? result : void 0;
 }
 function repairRecommendedConnection(value) {
-  if (!isRecord(value)) return void 0;
+  if (!isRecord2(value)) return void 0;
   const result = {};
   const mode = recommendedMode(value.mode);
   if (mode) result.mode = mode;
@@ -110,7 +233,7 @@ function repairRecommendedConnection(value) {
   if (temperature !== void 0) result.temperature = temperature;
   const maxTokens = boundedNumber(value.max_tokens, 256, 64e3);
   if (maxTokens !== void 0) result.max_tokens = Math.round(maxTokens);
-  const reasoning = isRecord(value.reasoning) ? value.reasoning : null;
+  const reasoning = isRecord2(value.reasoning) ? value.reasoning : null;
   if (reasoning) {
     const source = recommendedReasoningSource(reasoning.source);
     const effort = typeof reasoning.effort === "string" ? reasoning.effort : void 0;
@@ -120,7 +243,7 @@ function repairRecommendedConnection(value) {
       if (effort) result.reasoning.effort = effort;
     }
   }
-  const notes = optionalString(value.notes);
+  const notes = optionalString2(value.notes);
   if (notes !== void 0) result.notes = notes;
   return Object.keys(result).length > 0 ? result : void 0;
 }
@@ -139,13 +262,13 @@ function createPresetId(name, existingIds) {
   return `${base}_${Date.now()}`;
 }
 function validateJsonSchema(value) {
-  if (!isRecord(value)) {
+  if (!isRecord2(value)) {
     return { ok: false, error: "JSON Schema must be a JSON object." };
   }
   return { ok: true, error: null };
 }
 function validateTrackerPreset(value) {
-  if (!isRecord(value)) return { ok: false, error: "Preset must be a JSON object." };
+  if (!isRecord2(value)) return { ok: false, error: "Preset must be a JSON object." };
   if (typeof value.id !== "string" || !sanitizePresetId(value.id)) {
     return { ok: false, error: "Preset id is required." };
   }
@@ -166,13 +289,19 @@ function validateTrackerPreset(value) {
   if ("htmlTemplate" in value && typeof value.htmlTemplate !== "string") {
     return { ok: false, error: "HTML template must be text." };
   }
-  if ("recommendedConnection" in value && value.recommendedConnection !== void 0 && !isRecord(value.recommendedConnection)) {
+  if ("ownerPowerScript" in value && value.ownerPowerScript !== void 0 && typeof value.ownerPowerScript !== "string") {
+    return { ok: false, error: "Owner Power script source must be text." };
+  }
+  if ("ownerPowerManifest" in value && value.ownerPowerManifest !== void 0 && !isRecord2(value.ownerPowerManifest)) {
+    return { ok: false, error: "Owner Power manifest must be an object." };
+  }
+  if ("recommendedConnection" in value && value.recommendedConnection !== void 0 && !isRecord2(value.recommendedConnection)) {
     return { ok: false, error: "Recommended connection must be an object." };
   }
   return { ok: true, error: null };
 }
 function repairTrackerPreset(value) {
-  if (!isRecord(value)) return null;
+  if (!isRecord2(value)) return null;
   const origin = validOrigin(value.origin) ? value.origin : null;
   if (!origin) return null;
   const preset = {
@@ -182,13 +311,17 @@ function repairTrackerPreset(value) {
     version: stringValue(value.version, "1.0"),
     createdAt: stringValue(value.createdAt, (/* @__PURE__ */ new Date()).toISOString()),
     updatedAt: stringValue(value.updatedAt, (/* @__PURE__ */ new Date()).toISOString()),
-    jsonSchema: isRecord(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord2(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: stringValue(value.promptInstructions),
     origin
   };
-  const htmlTemplate = optionalString(value.htmlTemplate);
+  const htmlTemplate = optionalString2(value.htmlTemplate);
   if (htmlTemplate !== void 0) preset.htmlTemplate = htmlTemplate;
-  const notes = optionalString(value.notes);
+  const ownerPowerScript = optionalString2(value.ownerPowerScript);
+  if (ownerPowerScript !== void 0) preset.ownerPowerScript = ownerPowerScript;
+  const ownerPowerManifest = repairOwnerPowerManifest(value.ownerPowerManifest);
+  if (ownerPowerManifest) preset.ownerPowerManifest = ownerPowerManifest;
+  const notes = optionalString2(value.notes);
   if (notes !== void 0) preset.notes = notes;
   const capabilities = repairCapabilities(value.capabilities);
   if (capabilities) preset.capabilities = capabilities;
@@ -204,7 +337,7 @@ function exportTrackerPreset(preset) {
   };
 }
 function importTrackerPresetEnvelope(value, existingIds, now) {
-  if (!isRecord(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
+  if (!isRecord2(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
   if (value.kind !== PRESET_EXPORT_KIND) {
     return { ok: false, preset: null, error: "Import kind must be ltracker_schema_preset." };
   }
@@ -239,7 +372,7 @@ function estimatePresetStats(preset) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.25";
+var EXTENSION_VERSION = "0.26";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -277,6 +410,7 @@ var ALLOWED_TAGS = /* @__PURE__ */ new Set([
   "td",
   "details",
   "summary",
+  "button",
   "code",
   "pre"
 ]);
@@ -297,7 +431,15 @@ var ALLOWED_SVG_TAGS = /* @__PURE__ */ new Set([
   "stop"
 ]);
 var VOID_TAGS = /* @__PURE__ */ new Set(["br", "hr"]);
-var ALLOWED_ATTRIBUTES = /* @__PURE__ */ new Set(["class", "title", "aria-label", "data-ltracker-section", "role", "aria-hidden"]);
+var ALLOWED_ATTRIBUTES = /* @__PURE__ */ new Set(["class", "title", "aria-label", "data-ltracker-section", "role", "aria-hidden", "type"]);
+var OWNER_POWER_ACTION_ATTRIBUTES = /* @__PURE__ */ new Set([
+  "data-ltracker-power-action",
+  "data-target",
+  "data-class",
+  "data-path",
+  "data-text",
+  "data-ltracker-power-panel"
+]);
 var SVG_ATTRIBUTES = /* @__PURE__ */ new Set([
   "viewbox",
   "fill",
@@ -333,7 +475,6 @@ var DANGEROUS_CONTAINER_TAGS = [
   "meta",
   "form",
   "input",
-  "button",
   "textarea",
   "select",
   "foreignobject",
@@ -466,14 +607,14 @@ var INLINE_HELPERS = /* @__PURE__ */ new Set([
   "fieldChip",
   "fieldChipList"
 ]);
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function safeHtml(html) {
   return { __ltrackerSafeHtml: true, html };
 }
 function isSafeHtmlValue(value) {
-  return isRecord2(value) && value.__ltrackerSafeHtml === true && typeof value.html === "string";
+  return isRecord3(value) && value.__ltrackerSafeHtml === true && typeof value.html === "string";
 }
 function escapeHtml(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -497,7 +638,7 @@ function valueAtPath(source, path) {
     if (!segment) continue;
     if (Array.isArray(current) && /^\d+$/.test(segment)) {
       current = current[Number(segment)];
-    } else if (isRecord2(current)) {
+    } else if (isRecord3(current)) {
       current = current[segment];
     } else {
       return void 0;
@@ -578,13 +719,13 @@ function arrayFromUnknown(value) {
 }
 function valueLength(value) {
   if (Array.isArray(value) || typeof value === "string") return value.length;
-  if (isRecord2(value)) return Object.keys(value).length;
+  if (isRecord3(value)) return Object.keys(value).length;
   return truthy(value) ? 1 : 0;
 }
 function isEmptyValue(value) {
   if (value === false || value === null || value === void 0 || value === "" || value === 0) return true;
   if (Array.isArray(value) || typeof value === "string") return value.length === 0;
-  if (isRecord2(value)) return Object.keys(value).length === 0;
+  if (isRecord3(value)) return Object.keys(value).length === 0;
   return false;
 }
 function fieldValue(value, field) {
@@ -651,7 +792,7 @@ function evalExpression(ctx, expression, placeholder) {
   if (helper === "get") return fieldValue(args[0], args[1]);
   if (helper === "coalesce") return args.find((arg) => !isEmptyValue(arg)) ?? placeholder;
   if (helper === "isArray") return Array.isArray(args[0]);
-  if (helper === "isObject") return isRecord2(args[0]);
+  if (helper === "isObject") return isRecord3(args[0]);
   if (helper === "isEmpty") return isEmptyValue(args[0]);
   if (helper === "notEmpty") return !isEmptyValue(args[0]);
   if (helper === "clamp") {
@@ -796,10 +937,10 @@ function listFromUnknown(value) {
     return value.map((item) => {
       const rendered = primitiveToString(item);
       if (rendered) return rendered;
-      return isRecord2(item) ? recordSummary(item) : null;
+      return isRecord3(item) ? recordSummary(item) : null;
     }).filter((item) => Boolean(item));
   }
-  if (isRecord2(value)) {
+  if (isRecord3(value)) {
     const summary = recordSummary(value);
     return summary ? [summary] : [];
   }
@@ -808,7 +949,7 @@ function listFromUnknown(value) {
 function stringAt(data, path) {
   let current = data;
   for (const key of path) {
-    if (!isRecord2(current)) return null;
+    if (!isRecord3(current)) return null;
     current = current[key];
   }
   return primitiveToString(current);
@@ -859,7 +1000,7 @@ function hashString(value) {
   return (hash >>> 0).toString(36);
 }
 function detectJavaScriptLike(value) {
-  return /<\s*script\b|on[a-z]+\s*=|javascript:|<\s*(?:iframe|object|embed|form|input|button|textarea|select)\b/i.test(value);
+  return /<\s*script\b|on[a-z]+\s*=|javascript:|<\s*(?:iframe|object|embed|form|input|textarea|select)\b/i.test(value);
 }
 function stripStyleBlocks(html, warnings) {
   return html.replace(/<\s*style\b[^>]*>[\s\S]*?<\s*\/\s*style\s*>/gi, () => {
@@ -1126,8 +1267,25 @@ function sanitizeAttributes(raw, tag, options, warnings) {
       attributes.push(`${svgAttributeName(attribute.lowerName)}="${escapeHtml(attribute.value)}"`);
       continue;
     }
+    if (OWNER_POWER_ACTION_ATTRIBUTES.has(attribute.lowerName)) {
+      if (!options.allowActionHooks) {
+        warnings.push(`Removed Owner Power action attribute ${attribute.lowerName}.`);
+        continue;
+      }
+      if (/javascript:|data:|<|>/i.test(attribute.value)) {
+        warnings.push(`Removed unsafe Owner Power action attribute ${attribute.lowerName}.`);
+        continue;
+      }
+      attributes.push(`${attribute.lowerName}="${escapeHtml(attribute.value)}"`);
+      continue;
+    }
     if (!ALLOWED_ATTRIBUTES.has(attribute.lowerName)) {
       warnings.push(`Removed unsupported attribute ${attribute.lowerName}.`);
+      continue;
+    }
+    if (attribute.lowerName === "type" && tag === "button") {
+      const buttonType = attribute.value === "button" || attribute.value === "reset" ? attribute.value : "button";
+      attributes.push(`type="${buttonType}"`);
       continue;
     }
     attributes.push(`${attribute.lowerName}="${escapeHtml(attribute.value)}"`);
@@ -1139,6 +1297,7 @@ function sanitizeHtml(html, options = {}) {
   const trustMode = options.templateTrustMode ?? (options.allowInlineStyles === true ? "trusted" : "safe");
   const trusted = trustMode === "trusted" || trustMode === "dev";
   const allowInlineStyles = trusted && options.allowInlineStyles === true;
+  const allowActionHooks = trusted;
   if (detectJavaScriptLike(html)) {
     warnings.push("JavaScript requires Dev Mode and was not executed.");
   }
@@ -1158,7 +1317,7 @@ function sanitizeHtml(html, options = {}) {
       }
       if (closing) return `</${tag}>`;
       if (VOID_TAGS.has(tag)) return `<${tag}>`;
-      return `<${tag}${sanitizeAttributes(rawAttributes, tag, { allowInlineStyles, allowSvg: allowedSvg }, warnings)}>`;
+      return `<${tag}${sanitizeAttributes(rawAttributes, tag, { allowInlineStyles, allowSvg: allowedSvg, allowActionHooks }, warnings)}>`;
     }
   );
   const htmlWithScopedCss = scopedStyles ? `<div class="${scopeClass}" data-ltracker-template-root><style>${scopedStyles}</style>${sanitized}</div>` : sanitized;
@@ -1175,6 +1334,7 @@ function detectTemplateRendererRequirements(template) {
   const helperPattern = new RegExp(`\\{\\{\\s*(?:${[...INLINE_HELPERS].map((helper) => helper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
   const usesHelpers = helperPattern.test(template);
   const usesNestedLoops = /\{\{\s*#each\b[\s\S]*\{\{\s*#each\b/i.test(template);
+  const usesDeclarativeActions = /data-ltracker-power-action\s*=/i.test(template);
   const hasJavaScriptLikeContent = detectJavaScriptLike(template);
   const features = [
     usesScopedCss ? "Scoped CSS" : null,
@@ -1182,7 +1342,8 @@ function detectTemplateRendererRequirements(template) {
     usesInlineSvg ? "Inline SVG" : null,
     usesConditionals ? "Conditionals" : null,
     usesNestedLoops ? "Nested loops" : null,
-    usesHelpers ? "Template helpers" : null
+    usesHelpers ? "Template helpers" : null,
+    usesDeclarativeActions ? "Declarative actions" : null
   ].filter((item) => Boolean(item));
   const warnings = hasJavaScriptLikeContent ? ["This preset contains JavaScript-like content. JavaScript will be stripped unless Dev Mode is explicitly enabled in a future phase."] : [];
   const recommendedMode2 = hasJavaScriptLikeContent ? "dev" : usesScopedCss || usesInlineStyles || usesInlineSvg || usesConditionals || usesHelpers ? "trusted" : "safe";
@@ -1256,7 +1417,7 @@ function renderHtmlTemplate(input, options = {}) {
 // src/shared/presetPack.ts
 var PRESET_PACK_KIND = "ltracker_preset_pack";
 var PRESET_PACK_FORMAT_VERSION = 1;
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringValue2(value, fallback = "") {
@@ -1293,7 +1454,7 @@ function stripRecommendedSettingCredentials(obj, path, strippedPaths, depth = 0)
       strippedPaths.push(nextPath);
       continue;
     }
-    if (isRecord3(value)) {
+    if (isRecord4(value)) {
       result[key] = stripRecommendedSettingCredentials(value, nextPath, strippedPaths, depth + 1);
     } else {
       result[key] = value;
@@ -1303,7 +1464,7 @@ function stripRecommendedSettingCredentials(obj, path, strippedPaths, depth = 0)
 }
 function exportPresetPack(preset, options) {
   const presetStats = estimatePresetStats(preset);
-  const schemaKeys = isRecord3(preset.jsonSchema) ? Object.keys(preset.jsonSchema) : [];
+  const schemaKeys = isRecord4(preset.jsonSchema) ? Object.keys(preset.jsonSchema) : [];
   const pack = {
     kind: PRESET_PACK_KIND,
     formatVersion: PRESET_PACK_FORMAT_VERSION,
@@ -1333,6 +1494,12 @@ function exportPresetPack(preset, options) {
   if (options?.author) {
     pack.exportedBy = options.author;
     pack.preset.author = options.author;
+  }
+  if (preset.ownerPowerScript) {
+    pack.preset.ownerPowerScript = preset.ownerPowerScript;
+  }
+  if (preset.ownerPowerManifest) {
+    pack.preset.ownerPowerManifest = preset.ownerPowerManifest;
   }
   if (options?.includeRecommendedSettings && options.settings) {
     const settings = options.settings;
@@ -1394,53 +1561,62 @@ function exportPresetPack(preset, options) {
     };
     pack.recommendedSettings = recommended;
   }
-  if (options?.exampleSnapshot && isRecord3(options.exampleSnapshot)) {
+  if (options?.exampleSnapshot && isRecord4(options.exampleSnapshot)) {
     pack.exampleSnapshot = options.exampleSnapshot;
   }
   return pack;
 }
 function validatePackRecommendedSettings(value) {
-  if (!isRecord3(value)) return { settings: null, warnings: [] };
+  if (!isRecord4(value)) return { settings: null, warnings: [] };
+  const ownerPowerStripped = stripOwnerPowerRecommendedSettings(value);
+  const safeValue = ownerPowerStripped.value;
   const result = {};
   const strippedPaths = [];
-  if (isRecord3(value.connection)) {
+  if (isRecord4(safeValue.connection)) {
     result.connection = stripRecommendedSettingCredentials(
-      value.connection,
+      safeValue.connection,
       "recommendedSettings.connection",
       strippedPaths
     );
   }
-  if (isRecord3(value.memory)) result.memory = value.memory;
-  if (isRecord3(value.injection)) result.injection = value.injection;
-  if (isRecord3(value.renderer)) result.renderer = value.renderer;
-  if (isRecord3(value.messageDisplay)) result.messageDisplay = value.messageDisplay;
-  if (isRecord3(value.expandedWidth)) result.expandedWidth = value.expandedWidth;
-  if (isRecord3(value.budget)) result.budget = value.budget;
-  for (const [key, nestedValue] of Object.entries(value)) {
-    if (key !== "connection" && key !== "memory" && key !== "injection" && key !== "renderer" && key !== "messageDisplay" && key !== "expandedWidth" && key !== "budget" && isRecord3(nestedValue)) {
+  if (isRecord4(safeValue.memory)) result.memory = safeValue.memory;
+  if (isRecord4(safeValue.injection)) result.injection = safeValue.injection;
+  if (isRecord4(safeValue.renderer)) result.renderer = safeValue.renderer;
+  if (isRecord4(safeValue.messageDisplay)) result.messageDisplay = safeValue.messageDisplay;
+  if (isRecord4(safeValue.expandedWidth)) result.expandedWidth = safeValue.expandedWidth;
+  if (isRecord4(safeValue.budget)) result.budget = safeValue.budget;
+  for (const [key, nestedValue] of Object.entries(safeValue)) {
+    if (key !== "connection" && key !== "memory" && key !== "injection" && key !== "renderer" && key !== "messageDisplay" && key !== "expandedWidth" && key !== "budget" && isRecord4(nestedValue)) {
       stripRecommendedSettingCredentials(nestedValue, `recommendedSettings.${key}`, strippedPaths);
     }
   }
-  const warnings = strippedPaths.map((path) => `Removed credential-like recommended setting field: ${path}`);
+  const warnings = [
+    ...ownerPowerStripped.warnings,
+    ...strippedPaths.map((path) => `Removed credential-like recommended setting field: ${path}`)
+  ];
   return { settings: Object.keys(result).length > 0 ? result : null, warnings };
 }
 function importPresetPack(value, existingIds, now) {
-  if (!isRecord3(value)) {
+  if (!isRecord4(value)) {
     return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import must be a JSON object.", warnings: [], packMeta: null };
   }
   if (value.kind === PRESET_PACK_KIND) {
     if (value.formatVersion !== PRESET_PACK_FORMAT_VERSION) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: `Unsupported preset pack format version: ${value.formatVersion}. Expected ${PRESET_PACK_FORMAT_VERSION}.`, warnings: [], packMeta: null };
     }
-    const presetData = isRecord3(value.preset) ? value.preset : null;
+    const presetData = isRecord4(value.preset) ? value.preset : null;
     if (!presetData) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import preset data is missing or invalid.", warnings: [], packMeta: null };
     }
-    const compat = isRecord3(value.appCompatibility) ? value.appCompatibility : null;
+    const compat = isRecord4(value.appCompatibility) ? value.appCompatibility : null;
     const warnings = [];
     const existing = new Set(existingIds);
     const rawId = sanitizePresetId(stringValue2(presetData.id, stringValue2(presetData.name, "imported")));
     const id = existing.has(rawId) || rawId === DEFAULT_TRACKER_PRESET_ID ? createPresetId(stringValue2(presetData.name, "Imported Preset"), existing) : rawId;
+    const htmlExtraction = extractOwnerPowerScriptsFromHtml(typeof presetData.htmlTemplate === "string" ? presetData.htmlTemplate : "");
+    const explicitOwnerPowerScript = typeof presetData.ownerPowerScript === "string" ? presetData.ownerPowerScript : "";
+    const ownerPowerScript = [explicitOwnerPowerScript.trim(), ...htmlExtraction.scripts].filter(Boolean).join("\n\n");
+    const ownerPowerManifest = repairOwnerPowerManifest(presetData.ownerPowerManifest);
     const preset = {
       id,
       name: stringValue2(presetData.name, "Imported Preset").trim() || "Imported Preset",
@@ -1448,15 +1624,23 @@ function importPresetPack(value, existingIds, now) {
       version: stringValue2(presetData.version, "1.0"),
       createdAt: now,
       updatedAt: now,
-      jsonSchema: isRecord3(presetData.jsonSchema) ? presetData.jsonSchema : {},
+      jsonSchema: isRecord4(presetData.jsonSchema) ? presetData.jsonSchema : {},
       promptInstructions: stringValue2(presetData.promptInstructions),
-      htmlTemplate: typeof presetData.htmlTemplate === "string" ? presetData.htmlTemplate : "",
+      htmlTemplate: htmlExtraction.html,
       notes: typeof presetData.notes === "string" ? presetData.notes : "",
       origin: "user_imported",
       capabilities: {
         supportsHtmlTemplate: typeof presetData.htmlTemplate === "string" && presetData.htmlTemplate.trim().length > 0
       }
     };
+    if (ownerPowerScript) preset.ownerPowerScript = ownerPowerScript;
+    if (ownerPowerManifest) preset.ownerPowerManifest = ownerPowerManifest;
+    const ownerPowerSummary = ownerPowerFeatureSummary(preset);
+    warnings.push(...htmlExtraction.warnings);
+    if (ownerPowerSummary.requested) {
+      warnings.push("This preset requests Owner Power Mode. It was imported inertly and will not run until Owner Power Mode is enabled manually.");
+      warnings.push("Preset packs cannot enable Owner Power Mode automatically.");
+    }
     if (!preset.name.trim()) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Imported preset name is empty.", warnings, packMeta: null };
     }
@@ -1469,7 +1653,7 @@ function importPresetPack(value, existingIds, now) {
     const recommendedSettingsResult = validatePackRecommendedSettings(value.recommendedSettings);
     warnings.push(...recommendedSettingsResult.warnings);
     const recommendedSettings = recommendedSettingsResult.settings;
-    const exampleSnapshot = isRecord3(value.exampleSnapshot) ? value.exampleSnapshot : null;
+    const exampleSnapshot = isRecord4(value.exampleSnapshot) ? value.exampleSnapshot : null;
     const tags = Array.isArray(presetData.tags) ? presetData.tags.filter((t) => typeof t === "string") : [];
     const packMeta = {
       kind: PRESET_PACK_KIND,
@@ -1497,7 +1681,7 @@ function importPresetPack(value, existingIds, now) {
       packMeta: { kind: PRESET_EXPORT_KIND, formatVersion: PRESET_EXPORT_FORMAT_VERSION, exportedAt: null, minVersion: null, recommendedVersion: null, tags: [], author: null }
     };
   }
-  if (isRecord3(value) && isRecord3(value.jsonSchema) && typeof value.promptInstructions === "string") {
+  if (isRecord4(value) && isRecord4(value.jsonSchema) && typeof value.promptInstructions === "string") {
     const repaired = repairTrackerPreset({
       ...value,
       origin: value.origin ?? "user_imported",
@@ -1568,16 +1752,16 @@ function sampleValueForField(fieldName, depth) {
 }
 function generateSampleFromSchema(schema, depth = 0) {
   if (depth > SAMPLE_MAX_DEPTH) return "[max depth]";
-  if (!isRecord3(schema)) {
+  if (!isRecord4(schema)) {
     return "sample value";
   }
   const schemaType = stringValue2(schema.type, "object");
-  if (schemaType === "object" || schema.properties && isRecord3(schema.properties)) {
-    const properties = isRecord3(schema.properties) ? schema.properties : schema;
+  if (schemaType === "object" || schema.properties && isRecord4(schema.properties)) {
+    const properties = isRecord4(schema.properties) ? schema.properties : schema;
     const result = {};
     for (const [key, value] of Object.entries(properties)) {
       if (key === "type" || key === "properties" || key === "required" || key === "description" || key === "items" || key === "default" || key === "enum") continue;
-      if (isRecord3(value)) {
+      if (isRecord4(value)) {
         result[key] = generateSampleForProperty(key, value, depth + 1);
       } else {
         result[key] = sampleValueForField(key, depth);
@@ -1585,7 +1769,7 @@ function generateSampleFromSchema(schema, depth = 0) {
     }
     if (Object.keys(result).length === 0 && !schema.properties) {
       for (const key of Object.keys(schema)) {
-        if (isRecord3(schema[key])) {
+        if (isRecord4(schema[key])) {
           result[key] = generateSampleFromSchema(schema[key], depth + 1);
         } else {
           result[key] = sampleValueForField(key, depth);
@@ -1595,11 +1779,11 @@ function generateSampleFromSchema(schema, depth = 0) {
     return result;
   }
   if (schemaType === "array") {
-    const items = isRecord3(schema.items) ? schema.items : null;
+    const items = isRecord4(schema.items) ? schema.items : null;
     const sample = items ? generateSampleFromSchema(items, depth + 1) : "sample item";
     return Array.from(
       { length: Math.min(SAMPLE_MAX_ARRAY_LENGTH, 2) },
-      () => isRecord3(sample) ? { ...sample } : sample
+      () => isRecord4(sample) ? { ...sample } : sample
     );
   }
   if (schemaType === "string") {
@@ -1624,15 +1808,15 @@ function generateSampleForProperty(fieldName, prop, depth) {
   if (typeof prop.default !== "undefined") return prop.default;
   if (Array.isArray(prop.enum) && prop.enum.length > 0) return prop.enum[0];
   const propType = stringValue2(prop.type, "");
-  if (propType === "object" || isRecord3(prop.properties)) {
+  if (propType === "object" || isRecord4(prop.properties)) {
     return generateSampleFromSchema(prop, depth);
   }
   if (propType === "array") {
-    const items = isRecord3(prop.items) ? prop.items : null;
+    const items = isRecord4(prop.items) ? prop.items : null;
     const itemSample = items ? generateSampleFromSchema(items, depth + 1) : sampleValueForField(fieldName, depth);
     return Array.from(
       { length: SAMPLE_MAX_ARRAY_LENGTH },
-      () => isRecord3(itemSample) ? { ...itemSample } : itemSample
+      () => isRecord4(itemSample) ? { ...itemSample } : itemSample
     );
   }
   if (propType === "number" || propType === "integer") {
@@ -1795,18 +1979,18 @@ function mergeSampleModeData(base, mode) {
       rel: Array.isArray(base.rel) ? base.rel : modeData.rel,
       relations: Array.isArray(base.relations) ? base.relations : modeData.relations,
       pockets: Array.isArray(base.pockets) ? base.pockets : modeData.pockets,
-      world: isRecord3(base.world) ? { ...modeData.world, ...base.world } : modeData.world
+      world: isRecord4(base.world) ? { ...modeData.world, ...base.world } : modeData.world
     };
   }
   return {
     ...base,
     ...modeData,
-    world: isRecord3(base.world) && isRecord3(modeData.world) ? { ...base.world, ...modeData.world } : modeData.world
+    world: isRecord4(base.world) && isRecord4(modeData.world) ? { ...base.world, ...modeData.world } : modeData.world
   };
 }
 function generateSampleSnapshot(jsonSchema, mode = "normal") {
   const result = generateSampleFromSchema(jsonSchema, 0);
-  const base = isRecord3(result) ? result : { data: result };
+  const base = isRecord4(result) ? result : { data: result };
   return mergeSampleModeData(base, mode);
 }
 var SCHEMA_META_KEYS = /* @__PURE__ */ new Set(["type", "properties", "required", "description", "items", "default", "enum"]);
@@ -1850,7 +2034,7 @@ function valueAtTemplatePath(source, path) {
     if (!part) continue;
     if (Array.isArray(current) && /^\d+$/.test(part)) {
       current = current[Number(part)];
-    } else if (isRecord3(current)) {
+    } else if (isRecord4(current)) {
       current = current[part];
     } else {
       return void 0;
@@ -1860,7 +2044,7 @@ function valueAtTemplatePath(source, path) {
 }
 function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
   if (depth > 5) return [];
-  if (isRecord3(schema.properties)) {
+  if (isRecord4(schema.properties)) {
     return collectSchemaFieldNames(schema.properties, prefix, depth);
   }
   const fields = [];
@@ -1869,14 +2053,14 @@ function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
     const fullKey = prefix ? `${prefix}.${key}` : key;
     fields.push(fullKey);
     const val = schema[key];
-    if (isRecord3(val)) {
-      if (isRecord3(val.properties)) {
+    if (isRecord4(val)) {
+      if (isRecord4(val.properties)) {
         fields.push(...collectSchemaFieldNames(val.properties, fullKey, depth + 1));
-      } else if (val.type === "array" && isRecord3(val.items)) {
+      } else if (val.type === "array" && isRecord4(val.items)) {
         const item = val.items;
-        if (isRecord3(item.properties)) {
+        if (isRecord4(item.properties)) {
           fields.push(...collectSchemaFieldNames(item.properties, fullKey, depth + 1));
-        } else if (isRecord3(item)) {
+        } else if (isRecord4(item)) {
           fields.push(...collectSchemaFieldNames(item, fullKey, depth + 1));
         }
       } else if (val.type !== "string" && val.type !== "number" && val.type !== "boolean" && val.type !== "integer" && val.type !== "array") {
@@ -1995,7 +2179,7 @@ function collectTemplateAuthoringWarnings(template, sampleData) {
   for (const path of findDirectInterpolatedPaths(template)) {
     const value = valueAtTemplatePath(sampleData, path);
     if (Array.isArray(value)) rawArrayInterpolationPaths.push(path);
-    else if (isRecord3(value)) rawObjectInterpolationPaths.push(path);
+    else if (isRecord4(value)) rawObjectInterpolationPaths.push(path);
   }
   const mobileRiskWarnings = [];
   const verticalTextRiskWarnings = [];
@@ -2066,7 +2250,7 @@ function validatePresetReport(preset, options) {
   } else {
     entries.push({ severity: "error", category: "Metadata", message: "Preset version is missing." });
   }
-  if (isRecord3(preset.jsonSchema)) {
+  if (isRecord4(preset.jsonSchema)) {
     const rootKeys = Object.keys(preset.jsonSchema);
     if (rootKeys.length > 0) {
       entries.push({ severity: "pass", category: "Schema", message: `JSON schema has ${rootKeys.length} root field(s): ${rootKeys.slice(0, 10).join(", ")}${rootKeys.length > 10 ? "..." : ""}.` });
@@ -2083,7 +2267,7 @@ function validatePresetReport(preset, options) {
     const schemaObj = preset.jsonSchema;
     if (Array.isArray(schemaObj.required)) {
       const requiredFields = schemaObj.required.filter((f) => typeof f === "string");
-      const invalidRequired = requiredFields.filter((f) => !rootKeys.includes(f) && !(isRecord3(schemaObj.properties) && f in schemaObj.properties));
+      const invalidRequired = requiredFields.filter((f) => !rootKeys.includes(f) && !(isRecord4(schemaObj.properties) && f in schemaObj.properties));
       if (invalidRequired.length > 0) {
         entries.push({ severity: "warning", category: "Schema", message: `Required fields not in schema properties: ${invalidRequired.join(", ")}.` });
       }
@@ -2120,7 +2304,7 @@ function validatePresetReport(preset, options) {
     for (const warning of rendererRequirements.warnings) {
       entries.push({ severity: "warning", category: "Renderer", message: warning });
     }
-    const sampleData = isRecord3(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema, options?.sampleMode ?? "normal") : {};
+    const sampleData = isRecord4(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema, options?.sampleMode ?? "normal") : {};
     const authoringWarnings = collectTemplateAuthoringWarnings(template, sampleData);
     rawObjectInterpolationPaths.push(...authoringWarnings.rawObjectInterpolationPaths);
     rawArrayInterpolationPaths.push(...authoringWarnings.rawArrayInterpolationPaths);
@@ -2146,7 +2330,7 @@ function validatePresetReport(preset, options) {
     for (const warning of verticalTextRiskWarnings) {
       entries.push({ severity: "warning", category: "Mobile QA", message: warning });
     }
-    if (isRecord3(preset.jsonSchema)) {
+    if (isRecord4(preset.jsonSchema)) {
       const schemaFields = collectSchemaFieldNames(preset.jsonSchema);
       const templatePlaceholders = findTemplatePlaceholders(template);
       for (const placeholder of templatePlaceholders) {
@@ -2212,7 +2396,7 @@ function validatePresetReport(preset, options) {
     version: preset.version ?? "1.0",
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    jsonSchema: isRecord3(preset.jsonSchema) ? preset.jsonSchema : {},
+    jsonSchema: isRecord4(preset.jsonSchema) ? preset.jsonSchema : {},
     promptInstructions: preset.promptInstructions ?? "",
     htmlTemplate: preset.htmlTemplate ?? "",
     notes: preset.notes ?? "",
@@ -2245,11 +2429,11 @@ function validatePresetReport(preset, options) {
 }
 
 // src/shared/snapshotFormat.ts
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isMessageAttachedSnapshot(value) {
-  return "snapshot" in value && isRecord4(value.snapshot);
+  return "snapshot" in value && isRecord5(value.snapshot);
 }
 function normalizeSnapshot(value) {
   if (isMessageAttachedSnapshot(value)) {
@@ -2296,10 +2480,10 @@ function listFromUnknown2(value) {
     return value.map((item) => {
       const rendered = primitiveToString2(item);
       if (rendered) return rendered;
-      return isRecord4(item) ? recordSummary2(item) : null;
+      return isRecord5(item) ? recordSummary2(item) : null;
     }).filter((item) => Boolean(item));
   }
-  if (isRecord4(value)) {
+  if (isRecord5(value)) {
     const summary = recordSummary2(value);
     return summary ? [summary] : [];
   }
@@ -2308,7 +2492,7 @@ function listFromUnknown2(value) {
 function stringAt2(data, path) {
   let current = data;
   for (const key of path) {
-    if (!isRecord4(current)) return null;
+    if (!isRecord5(current)) return null;
     current = current[key];
   }
   return primitiveToString2(current);
@@ -2336,7 +2520,7 @@ function openThreads(data) {
 }
 function fallbackSummary(data) {
   const fragments = Object.entries(data).map(([key, value]) => {
-    if (isRecord4(value)) return `${key}: ${recordSummary2(value) ?? "set"}`;
+    if (isRecord5(value)) return `${key}: ${recordSummary2(value) ?? "set"}`;
     const list = listFromUnknown2(value);
     if (list.length > 0) return `${key}: ${list.slice(0, 2).join("; ")}`;
     return null;
@@ -2414,7 +2598,7 @@ ${JSON.stringify(snapshot.data, null, 2)}
 // src/shared/presetRenderLock.ts
 var MAX_LOCKED_SCHEMA_CHARS = 5e4;
 var MAX_LOCKED_PROMPT_CHARS = 4e4;
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringOrNull(value) {
@@ -2466,8 +2650,8 @@ function capturePresetRenderLock(preset, capturedAt) {
   };
 }
 function normalizePresetRenderLock(value) {
-  if (!isRecord5(value)) return null;
-  const schema = isRecord5(value.jsonSchema) ? value.jsonSchema : null;
+  if (!isRecord6(value)) return null;
+  const schema = isRecord6(value.jsonSchema) ? value.jsonSchema : null;
   return {
     presetId: stringOrNull(value.presetId),
     presetName: stringOrNull(value.presetName),
@@ -3168,7 +3352,10 @@ var SETTINGS_LIMITS = {
   expandedContentMaxHeightVh: { min: 30, max: 95, default: 80 },
   maxWorldLoreChars: { min: 0, max: 512e3, default: 12e3 },
   maxCharacterContextChars: { min: 0, max: 512e3, default: 12e3 },
-  maxPersonaContextChars: { min: 0, max: 256e3, default: 6e3 }
+  maxPersonaContextChars: { min: 0, max: 256e3, default: 6e3 },
+  maxOwnerPowerScriptChars: { min: 0, max: 2e5, default: 5e4 },
+  maxOwnerPowerRuntimeErrors: { min: 1, max: 50, default: 5 },
+  ownerPowerCrashDisableThreshold: { min: 1, max: 20, default: 3 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -3315,6 +3502,20 @@ var DEFAULT_SETTINGS = {
     manualWorldLoreContext: "",
     manualCharacterContext: "",
     manualPersonaContext: ""
+  },
+  ownerPowerMode: {
+    enabled: false,
+    allowRenderLabRuntime: false,
+    allowInstalledPresetRuntime: false,
+    allowScriptBlocks: false,
+    allowTemplateActionHooks: true,
+    allowExternalUrls: false,
+    allowNetwork: false,
+    allowHostDomAccess: false,
+    maxScriptChars: SETTINGS_LIMITS.maxOwnerPowerScriptChars.default,
+    maxRuntimeErrors: SETTINGS_LIMITS.maxOwnerPowerRuntimeErrors.default,
+    crashDisableThreshold: SETTINGS_LIMITS.ownerPowerCrashDisableThreshold.default,
+    autoDisableOnCrash: true
   },
   history: {
     pageSize: 25,
@@ -4674,6 +4875,21 @@ function emptyState() {
       lastPresetRenderLabResult: null,
       lastPresetRenderLabRenderedChars: null,
       lastPresetRenderLabWarnings: [],
+      ownerPowerModeEnabled: DEFAULT_SETTINGS.ownerPowerMode.enabled,
+      renderLabRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowRenderLabRuntime,
+      installedPresetRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowInstalledPresetRuntime,
+      declarativeHooksEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowTemplateActionHooks,
+      activePresetRequestedOwnerPower: false,
+      activePresetHasOwnerPowerScript: false,
+      lastOwnerPowerRuntimeMode: "static",
+      lastOwnerPowerMountedAt: null,
+      lastOwnerPowerDestroyedAt: null,
+      lastOwnerPowerError: null,
+      lastOwnerPowerEvent: null,
+      ownerPowerCrashCount: 0,
+      ownerPowerDisabledReason: null,
+      lastOwnerPowerSanitizerAction: null,
+      lastOwnerPowerImportWarning: null,
       lastHealthCheckAt: null,
       lastHealthCheckStatus: null,
       lastMaintenanceActionAt: null,
@@ -4713,11 +4929,11 @@ function emptyState() {
     connectionProfiles: []
   };
 }
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null;
 }
 function isBackendMessage(payload) {
-  return isRecord6(payload) && typeof payload.type === "string";
+  return isRecord7(payload) && typeof payload.type === "string";
 }
 function escapeHtml2(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -5020,7 +5236,7 @@ function setup(ctx) {
   }
   function isSettingsControl(target) {
     if (!(target instanceof HTMLElement)) return false;
-    return Boolean(target.closest("[data-setting], [data-auto-timing-setting], [data-budget-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-expanded-width-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning], [data-context-filter-setting]"));
+    return Boolean(target.closest("[data-setting], [data-auto-timing-setting], [data-budget-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-expanded-width-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning], [data-context-filter-setting], [data-owner-power-setting]"));
   }
   function isDisplaySurfaceControl(target) {
     if (!(target instanceof HTMLElement)) return false;
@@ -5155,7 +5371,7 @@ function setup(ctx) {
     });
   }
   function handleWidgetPayload(expectedMessageId, expectedSwipeKey, payload) {
-    if (!isRecord6(payload) || payload.type !== "ltracker_widget_action" || payload.action !== "toggle_regenerate" && payload.action !== "generate" || payload.messageId !== expectedMessageId) return;
+    if (!isRecord7(payload) || payload.type !== "ltracker_widget_action" || payload.action !== "toggle_regenerate" && payload.action !== "generate" || payload.messageId !== expectedMessageId) return;
     if ("swipeKey" in payload && payload.swipeKey !== expectedSwipeKey) return;
     const jobId = typeof payload.jobId === "string" && payload.jobId ? payload.jobId : null;
     if (payload.action === "generate") generateMessageTracker(expectedMessageId, expectedSwipeKey);
@@ -5204,6 +5420,7 @@ function setup(ctx) {
     }
   }
   function handleDomTrackerAction(event) {
+    if (handleOwnerPowerAction(event)) return;
     const target = event.target instanceof HTMLElement ? event.target.closest("[data-ltracker-dom-action]") : null;
     if (!target) return;
     const tracker = target.closest("[data-ltracker-message-id][data-ltracker-swipe-key]");
@@ -5233,6 +5450,139 @@ function setup(ctx) {
       noteInlineAction("delete", messageId, swipeKey);
       void deleteMessageTracker(messageId, swipeKey);
     }
+  }
+  function ownerPowerRootFor(target) {
+    return target.closest("[data-render-lab-preview], .ltracker-dom-tracker, .ltracker-display-preview-body, .ltracker-popover-panel, .ltracker-reader-content-wrapper, .ltracker-render-lab-preview");
+  }
+  function scopedOwnerPowerTargets(root, target) {
+    if (!target?.trim()) return [root];
+    const trimmed = target.trim();
+    if (!trimmed.startsWith(".") && !trimmed.startsWith("#") && !trimmed.startsWith("[") && !trimmed.includes(" ")) {
+      const panels = Array.from(root.querySelectorAll("[data-ltracker-power-panel]"));
+      const matchedPanels = panels.filter((panel) => panel.dataset.ltrackerPowerPanel === trimmed);
+      if (matchedPanels.length > 0) return matchedPanels;
+    }
+    try {
+      return Array.from(root.querySelectorAll(trimmed));
+    } catch {
+      return [];
+    }
+  }
+  function valueAtPath2(source, path) {
+    if (!path?.trim()) return void 0;
+    let current = source;
+    for (const segment of path.split(".").map((part) => part.trim()).filter(Boolean)) {
+      if (!isRecord7(current) && !Array.isArray(current)) return void 0;
+      if (Array.isArray(current)) {
+        const index = Number(segment);
+        current = Number.isInteger(index) ? current[index] : void 0;
+      } else {
+        current = current[segment];
+      }
+    }
+    return current;
+  }
+  function ownerPowerDataForRoot(root) {
+    const tracker = root.closest("[data-ltracker-message-id][data-ltracker-swipe-key]");
+    const messageId = tracker?.dataset.ltrackerMessageId;
+    const swipeKey = tracker?.dataset.ltrackerSwipeKey;
+    if (messageId && swipeKey) {
+      return findHistoryEntry(messageId, swipeKey)?.snapshot?.snapshot.data ?? null;
+    }
+    if (root.closest("[data-render-lab-preview]")) {
+      return buildRenderLabPreview().sampleData;
+    }
+    return state.snapshot?.data ?? null;
+  }
+  function resetOwnerPowerView(root) {
+    for (const panel of Array.from(root.querySelectorAll("[data-ltracker-power-panel]"))) {
+      panel.hidden = false;
+    }
+    for (const element of Array.from(root.querySelectorAll(".ltracker-power-active"))) {
+      element.classList.remove("ltracker-power-active");
+    }
+    for (const detail of Array.from(root.querySelectorAll("details"))) {
+      detail.open = false;
+    }
+  }
+  function handleOwnerPowerAction(event) {
+    const control = event.target instanceof HTMLElement ? event.target.closest("[data-ltracker-power-action]") : null;
+    if (!control) return false;
+    const root = ownerPowerRootFor(control);
+    if (!root) return false;
+    if (!state.settings.ownerPowerMode.allowTemplateActionHooks) {
+      localDiagnostics({
+        lastOwnerPowerError: "Declarative action hooks are disabled in Owner Power settings.",
+        lastOwnerPowerEvent: "blocked"
+      });
+      return true;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const action = control.dataset.ltrackerPowerAction ?? "";
+    const target = control.dataset.target;
+    try {
+      if (action === "show-panel") {
+        const panels = Array.from(root.querySelectorAll("[data-ltracker-power-panel]"));
+        const targets = scopedOwnerPowerTargets(root, target);
+        const targetSet = new Set(targets);
+        for (const panel of panels) panel.hidden = !targetSet.has(panel);
+      } else if (action === "toggle-panel") {
+        for (const element of scopedOwnerPowerTargets(root, target)) element.hidden = !element.hidden;
+      } else if (action === "toggle-class") {
+        const className = control.dataset.class?.trim() ?? "";
+        if (!/^[A-Za-z_][\w-]{0,80}$/.test(className)) throw new Error("Invalid class name for toggle-class.");
+        for (const element of scopedOwnerPowerTargets(root, target)) element.classList.toggle(className);
+      } else if (action === "copy-field") {
+        const value = valueAtPath2(ownerPowerDataForRoot(root), control.dataset.path);
+        const text = typeof value === "string" ? value : value === void 0 ? null : JSON.stringify(value, null, 2);
+        void copyText(text, "Owner Power field");
+      } else if (action === "copy-text") {
+        const targets = scopedOwnerPowerTargets(root, target);
+        const text = (control.dataset.text ?? targets.map((element) => element.textContent?.trim() ?? "").filter(Boolean).join("\n")) || control.textContent?.trim() || null;
+        void copyText(text, "Owner Power text");
+      } else if (action === "open-fullscreen") {
+        const entry = latestPreviewEntry();
+        if (entry) openFullscreenReader(entry, true);
+      } else if (action === "close-overlay") {
+        closeRenderLabPreview();
+        closeDisplayPreview();
+        closePopover();
+        closeFullscreenReader();
+      } else if (action === "reset-view") {
+        resetOwnerPowerView(root);
+      } else if (action === "expand-all" || action === "collapse-all") {
+        for (const detail of Array.from(root.querySelectorAll("details"))) {
+          detail.open = action === "expand-all";
+        }
+      } else {
+        throw new Error(`Unsupported Owner Power action: ${action || "missing action"}.`);
+      }
+      localDiagnostics({
+        lastOwnerPowerRuntimeMode: "declarative_hooks",
+        lastOwnerPowerEvent: action,
+        lastOwnerPowerError: null
+      });
+    } catch (error) {
+      const crashCount = state.diagnostics.ownerPowerCrashCount + 1;
+      localDiagnostics({
+        lastOwnerPowerRuntimeMode: "declarative_hooks",
+        lastOwnerPowerEvent: action || "failed",
+        lastOwnerPowerError: errorMessage(error),
+        ownerPowerCrashCount: crashCount,
+        ownerPowerDisabledReason: state.settings.ownerPowerMode.autoDisableOnCrash && crashCount >= state.settings.ownerPowerMode.crashDisableThreshold ? "Owner Power action hooks were disabled after repeated runtime errors." : state.diagnostics.ownerPowerDisabledReason
+      });
+      if (state.settings.ownerPowerMode.autoDisableOnCrash && crashCount >= state.settings.ownerPowerMode.crashDisableThreshold) {
+        saveSettingsValue({
+          ...state.settings,
+          ownerPowerMode: {
+            ...state.settings.ownerPowerMode,
+            allowTemplateActionHooks: false
+          }
+        }, "owner-power-crash-disable");
+      }
+    }
+    return true;
   }
   function renderInlineTrackerHtml(entry) {
     return entry.rendered.domHtml;
@@ -5445,6 +5795,7 @@ function setup(ctx) {
       }
     }
     panel.addEventListener("click", (e) => {
+      if (handleOwnerPowerAction(e)) return;
       const btn = e.target instanceof HTMLElement ? e.target.closest("[data-popover-action]") : null;
       if (!btn) return;
       const action = btn.dataset.popoverAction;
@@ -5549,6 +5900,7 @@ function setup(ctx) {
       </main>
     `;
     overlay.addEventListener("click", (e) => {
+      if (handleOwnerPowerAction(e)) return;
       const btn = e.target instanceof HTMLElement ? e.target.closest("[data-reader-action]") : null;
       if (!btn) return;
       const action = btn.dataset.readerAction;
@@ -5600,6 +5952,7 @@ function setup(ctx) {
   function openRenderLabPreview(fullscreen = false) {
     closeRenderLabPreview();
     const lab = buildRenderLabPreview();
+    const labOwnerPowerSummary = ownerPowerFeatureSummary(lab.preset);
     const width = renderLabWidthPx();
     const presetName2 = lab.preset.name ?? "Render Lab Preset";
     const warningCount = lab.warnings.length;
@@ -5635,6 +5988,7 @@ function setup(ctx) {
       </section>
     `;
     overlay.addEventListener("click", (event) => {
+      if (handleOwnerPowerAction(event)) return;
       const closeTarget = event.target instanceof HTMLElement ? event.target.closest("[data-render-lab-preview-close]") : null;
       if (closeTarget) {
         closeRenderLabPreview();
@@ -5650,7 +6004,10 @@ function setup(ctx) {
     localDiagnostics({
       lastPresetRenderLabResult: fullscreen ? "fullscreen_preview_opened" : "preview_overlay_opened",
       lastPresetRenderLabRenderedChars: lab.html.length,
-      lastPresetRenderLabWarnings: lab.warnings.slice(0, 20)
+      lastPresetRenderLabWarnings: lab.warnings.slice(0, 20),
+      lastOwnerPowerRuntimeMode: state.settings.ownerPowerMode.allowTemplateActionHooks ? "declarative_hooks" : "static",
+      lastOwnerPowerMountedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      lastOwnerPowerSanitizerAction: labOwnerPowerSummary.hasScript ? "script source preserved inertly; sanitized HTML remains script-free" : state.diagnostics.lastOwnerPowerSanitizerAction
     });
   }
   function closeRenderLabPreview() {
@@ -5658,7 +6015,8 @@ function setup(ctx) {
     activeRenderLabPreviewElement.remove();
     activeRenderLabPreviewElement = null;
     localDiagnostics({
-      lastPresetRenderLabResult: "preview_closed"
+      lastPresetRenderLabResult: "preview_closed",
+      lastOwnerPowerDestroyedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
   }
   function renderEntryForSurface(entry, surface) {
@@ -5726,6 +6084,7 @@ function setup(ctx) {
       </div>
     `;
     panel.addEventListener("click", (event) => {
+      if (handleOwnerPowerAction(event)) return;
       const button = event.target instanceof HTMLElement ? event.target.closest("[data-preview-action]") : null;
       if (button) {
         closeDisplayPreview();
@@ -5972,7 +6331,7 @@ function setup(ctx) {
     const swipeKey = payload.attrs.swipe || DEFAULT_SWIPE_KEY;
     const version = payload.attrs.version || EXTENSION_VERSION;
     const parsed = JSON.parse(payload.content);
-    if (!isRecord6(parsed) || Array.isArray(parsed)) {
+    if (!isRecord7(parsed) || Array.isArray(parsed)) {
       throw new Error("Embedded LTracker tag content must be a JSON object.");
     }
     const attachedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -6253,6 +6612,14 @@ function setup(ctx) {
       if (!input) return state.settings.contextFilters[name];
       return input.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
     };
+    const ownerPowerBooleanValue = (name) => {
+      const input = tab.root.querySelector(`[data-owner-power-setting="${name}"]`);
+      return input ? input.checked : state.settings.ownerPowerMode[name];
+    };
+    const ownerPowerNumberValue = (name) => {
+      const input = tab.root.querySelector(`[data-owner-power-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.ownerPowerMode[name];
+    };
     const injectionNumberValue = (name) => {
       const input = tab.root.querySelector(`[data-injection-setting="${name}"]`);
       return input ? Number(input.value) : state.settings.injection[name];
@@ -6491,6 +6858,20 @@ function setup(ctx) {
         manualWorldLoreContext: contextFilterTextValue("manualWorldLoreContext"),
         manualCharacterContext: contextFilterTextValue("manualCharacterContext"),
         manualPersonaContext: contextFilterTextValue("manualPersonaContext")
+      },
+      ownerPowerMode: {
+        enabled: ownerPowerBooleanValue("enabled"),
+        allowRenderLabRuntime: ownerPowerBooleanValue("allowRenderLabRuntime"),
+        allowInstalledPresetRuntime: ownerPowerBooleanValue("allowInstalledPresetRuntime"),
+        allowScriptBlocks: ownerPowerBooleanValue("allowScriptBlocks"),
+        allowTemplateActionHooks: ownerPowerBooleanValue("allowTemplateActionHooks"),
+        allowExternalUrls: ownerPowerBooleanValue("allowExternalUrls"),
+        allowNetwork: ownerPowerBooleanValue("allowNetwork"),
+        allowHostDomAccess: ownerPowerBooleanValue("allowHostDomAccess"),
+        maxScriptChars: ownerPowerNumberValue("maxScriptChars"),
+        maxRuntimeErrors: ownerPowerNumberValue("maxRuntimeErrors"),
+        crashDisableThreshold: ownerPowerNumberValue("crashDisableThreshold"),
+        autoDisableOnCrash: ownerPowerBooleanValue("autoDisableOnCrash")
       },
       history: {
         pageSize: state.settings.history?.pageSize ?? 25,
@@ -6783,6 +7164,8 @@ function setup(ctx) {
         supportsHtmlTemplate: htmlTemplate.trim().length > 0
       }
     };
+    if (state.activePreset.ownerPowerScript !== void 0) draft.ownerPowerScript = state.activePreset.ownerPowerScript;
+    if (state.activePreset.ownerPowerManifest !== void 0) draft.ownerPowerManifest = state.activePreset.ownerPowerManifest;
     return draft;
   }
   function selectPreset(presetId2) {
@@ -6898,7 +7281,7 @@ function setup(ctx) {
   }
   function buildRenderLabPreview() {
     const preset = renderLabTargetPreset();
-    const schema = isRecord6(preset.jsonSchema) ? preset.jsonSchema : {};
+    const schema = isRecord7(preset.jsonSchema) ? preset.jsonSchema : {};
     const sampleData = generateSampleSnapshot(schema, renderLabSampleMode);
     const report = validatePresetReport(preset, {
       allowInlineStyles: true,
@@ -7282,7 +7665,7 @@ function setup(ctx) {
         const jsonText = jsonInput?.value ?? "";
         try {
           const parsed = JSON.parse(jsonText);
-          const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "data" in parsed && isRecord6(parsed.data) ? parsed.data : parsed;
+          const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "data" in parsed && isRecord7(parsed.data) ? parsed.data : parsed;
           if (!data || typeof data !== "object" || Array.isArray(data)) {
             setError("Tracker JSON must be a JSON object.");
             return;
@@ -7504,6 +7887,16 @@ function setup(ctx) {
       recommendedConnection.reasoning?.source ? `reasoning ${recommendedConnection.reasoning.source}` : null
     ].filter((item) => Boolean(item)).join(" / ") : null;
     const statusTone = (tone, label) => `<span class="ltracker-status-chip" data-tone="${tone}">${escapeHtml2(label)}</span>`;
+    const activeOwnerPowerSummary = ownerPowerFeatureSummary(activePreset);
+    const ownerPowerReportText = ownerPowerReport({
+      settings: state.settings.ownerPowerMode,
+      preset: activePreset,
+      crashCount: diagnostics.ownerPowerCrashCount,
+      disabledReason: diagnostics.ownerPowerDisabledReason,
+      lastError: diagnostics.lastOwnerPowerError,
+      lastEvent: diagnostics.lastOwnerPowerEvent
+    });
+    const ownerPowerStatusChip = state.settings.ownerPowerMode.enabled ? statusTone("warning", "Owner Power on") : activeOwnerPowerSummary.requested ? statusTone("warning", "Owner Power available") : statusTone("success", "Static safe");
     const renderLab = buildRenderLabPreview();
     const renderLabWidth = renderLabWidthPx();
     const renderLabRequirements = renderLab.report.rendererRequirements.features.length > 0 ? renderLab.report.rendererRequirements.features.join(", ") : "Basic HTML";
@@ -7554,6 +7947,34 @@ function setup(ctx) {
               <option value="checker"${selected(renderLabBackground === "checker")}>Transparent checker</option>
             </select>
           </label>
+        </div>
+        <div class="ltracker-command-card" style="margin-top: 12px;">
+          <div class="ltracker-command-card-header">
+            <span class="ltracker-card-title">Owner Power Preview</span>
+            ${ownerPowerStatusChip}
+          </div>
+          <div class="ltracker-grid">
+            ${renderRow("Runtime mode", state.settings.ownerPowerMode.allowTemplateActionHooks ? "Declarative hooks" : "Static only")}
+            ${renderRow("Script detected", activeOwnerPowerSummary.hasScript ? "yes" : "no")}
+            ${renderRow("Script chars", activeOwnerPowerSummary.scriptChars)}
+            ${renderRow("Last runtime event", diagnostics.lastOwnerPowerEvent)}
+            ${renderRow("Runtime errors", diagnostics.ownerPowerCrashCount)}
+          </div>
+          <div class="ltracker-settings" style="margin-top: 10px;">
+            <label class="ltracker-check">
+              <input type="checkbox" data-owner-power-setting="enabled"${checked(state.settings.ownerPowerMode.enabled)}>
+              Owner Power enabled for this local install
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-owner-power-setting="allowRenderLabRuntime"${checked(state.settings.ownerPowerMode.allowRenderLabRuntime)}>
+              Allow Render Lab interactive preview
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-owner-power-setting="allowTemplateActionHooks"${checked(state.settings.ownerPowerMode.allowTemplateActionHooks)}>
+              Enable declarative action hooks
+            </label>
+          </div>
+          <p class="ltracker-note">Script source stays inert in this build. Interactive preview uses LTracker-owned declarative hooks inside the preset root.</p>
         </div>
         <div class="ltracker-command-card" style="margin-top: 12px;">
           <div class="ltracker-command-card-header">
@@ -7638,6 +8059,21 @@ function setup(ctx) {
             ${rendererRequirements.warnings.map((warning) => `<div class="ltracker-warning-text">${escapeHtml2(warning)}</div>`).join("")}
           </div>
         ` : "";
+      const importOwnerPowerSummary = preset ? ownerPowerFeatureSummary(preset) : null;
+      const importOwnerPowerHtml = importOwnerPowerSummary?.requested || importOwnerPowerSummary?.hasScript ? `
+          <div class="ltracker-themed-callout">
+            <strong>Owner Power review</strong>
+            <div class="ltracker-grid">
+              ${renderRow("Owner Power requested", importOwnerPowerSummary.requested ? "yes" : "no")}
+              ${renderRow("Script-like source detected", importOwnerPowerSummary.hasScript ? "yes" : "no")}
+              ${renderRow("Runtime installed", "disabled until you enable Owner Power manually")}
+              ${renderRow("Script chars", importOwnerPowerSummary.scriptChars)}
+              ${renderRow("External/network access", "blocked by default")}
+            </div>
+            <div class="ltracker-warning-text">Preset packs cannot enable Owner Power automatically. Runtime source imports inertly and never runs during review.</div>
+            ${pack.warnings.filter((warning) => /Owner Power|script|Dev Mode/i.test(warning)).map((warning) => `<div class="ltracker-warning-text">${escapeHtml2(warning)}</div>`).join("")}
+          </div>
+        ` : "";
       importReviewHtml = `
         <div class="ltracker-import-review">
           <h3 class="ltracker-import-review-title">Preset Pack Import Review</h3>
@@ -7650,6 +8086,7 @@ function setup(ctx) {
             ${renderRow("Min. LTracker version", meta?.minVersion ?? "None")}
           </div>
           ${rendererRequirementsHtml}
+          ${importOwnerPowerHtml}
 
           <div class="ltracker-settings">
             <label class="ltracker-field">
@@ -7913,6 +8350,7 @@ function setup(ctx) {
       <button class="ltracker-button" type="button" data-action="copy-last-error">Copy last error</button>
       <button class="ltracker-button" type="button" data-action="copy-health-check-report" ${disabled(!maintenanceReport)}>Copy health check report</button>
       <button class="ltracker-button" type="button" data-action="copy-maintenance-report" ${disabled(!maintenanceReport)}>Copy maintenance report</button>
+      <button class="ltracker-button" type="button" data-action="copy-owner-power-report">Copy Owner Power report</button>
       <button class="ltracker-button" type="button" data-action="copy-prompt" ${disabled(!prompt)}>Copy last prompt preview</button>
       <button class="ltracker-button" type="button" data-action="copy-raw" ${disabled(!rawOutput)}>Copy last raw model output</button>
       <button class="ltracker-button" type="button" data-action="copy-included-context" ${disabled(!diagnostics.lastIncludedContextPreview)}>Copy included context</button>
@@ -8783,6 +9221,26 @@ function setup(ctx) {
             </div>
           </details>
           <details class="ltracker-details" data-diagnostics-group>
+            <summary>Owner Power / Runtime</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Owner Power enabled", diagnostics.ownerPowerModeEnabled ? "yes" : "no")}
+              ${renderRow("Render Lab runtime enabled", diagnostics.renderLabRuntimeEnabled ? "yes" : "no")}
+              ${renderRow("Installed preset runtime enabled", diagnostics.installedPresetRuntimeEnabled ? "yes" : "no")}
+              ${renderRow("Declarative hooks enabled", diagnostics.declarativeHooksEnabled ? "yes" : "no")}
+              ${renderRow("Active preset requested Owner Power", diagnostics.activePresetRequestedOwnerPower ? "yes" : "no")}
+              ${renderRow("Active preset has script source", diagnostics.activePresetHasOwnerPowerScript ? "yes" : "no")}
+              ${renderRow("Last runtime mode", diagnostics.lastOwnerPowerRuntimeMode)}
+              ${renderRow("Last mounted", diagnostics.lastOwnerPowerMountedAt)}
+              ${renderRow("Last destroyed", diagnostics.lastOwnerPowerDestroyedAt)}
+              ${renderRow("Last runtime event", diagnostics.lastOwnerPowerEvent)}
+              ${renderRow("Last runtime error", diagnostics.lastOwnerPowerError)}
+              ${renderRow("Crash count", diagnostics.ownerPowerCrashCount)}
+              ${renderRow("Disabled reason", diagnostics.ownerPowerDisabledReason)}
+              ${renderRow("Sanitizer action", diagnostics.lastOwnerPowerSanitizerAction)}
+              ${renderRow("Import warning", diagnostics.lastOwnerPowerImportWarning)}
+            </div>
+          </details>
+          <details class="ltracker-details" data-diagnostics-group>
             <summary>Presets / import</summary>
             <div class="ltracker-grid">
               ${renderRow("Selected preset id", diagnostics.selectedPresetId ?? activePreset.id)}
@@ -8906,6 +9364,79 @@ function setup(ctx) {
             </div>
           </details>
           <details class="ltracker-details">
+            <summary>Owner Power Mode - Private Interactive Runtime</summary>
+            <div class="ltracker-themed-callout">
+              <strong>For your own approved presets only.</strong>
+              <div>Current mode: ${escapeHtml2(ownerPowerStatusLabel(state.settings.ownerPowerMode))}</div>
+              <div>Imported packs cannot enable this automatically. If runtime fails repeatedly, LTracker disables action hooks and falls back to static HTML.</div>
+            </div>
+            <div class="ltracker-settings">
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="enabled"${checked(state.settings.ownerPowerMode.enabled)}>
+                Enable Owner Power Mode
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowRenderLabRuntime"${checked(state.settings.ownerPowerMode.allowRenderLabRuntime)}>
+                Allow Render Lab runtime
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowInstalledPresetRuntime"${checked(state.settings.ownerPowerMode.allowInstalledPresetRuntime)}>
+                Allow installed preset runtime
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowTemplateActionHooks"${checked(state.settings.ownerPowerMode.allowTemplateActionHooks)}>
+                Allow declarative template action hooks
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowScriptBlocks"${checked(state.settings.ownerPowerMode.allowScriptBlocks)}>
+                Preserve owner script blocks as inert source
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowExternalUrls"${checked(state.settings.ownerPowerMode.allowExternalUrls)}>
+                Allow external URLs (default off)
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowNetwork"${checked(state.settings.ownerPowerMode.allowNetwork)}>
+                Allow network access (default off)
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowHostDomAccess"${checked(state.settings.ownerPowerMode.allowHostDomAccess)}>
+                Allow host DOM access (unsupported; keep off)
+              </label>
+              <label class="ltracker-field">
+                Max script chars
+                <input type="number" min="0" max="200000" step="1000" data-owner-power-setting="maxScriptChars" value="${escapeHtml2(String(state.settings.ownerPowerMode.maxScriptChars))}">
+              </label>
+              <label class="ltracker-field">
+                Max runtime errors
+                <input type="number" min="1" max="50" step="1" data-owner-power-setting="maxRuntimeErrors" value="${escapeHtml2(String(state.settings.ownerPowerMode.maxRuntimeErrors))}">
+              </label>
+              <label class="ltracker-field">
+                Crash disable threshold
+                <input type="number" min="1" max="20" step="1" data-owner-power-setting="crashDisableThreshold" value="${escapeHtml2(String(state.settings.ownerPowerMode.crashDisableThreshold))}">
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="autoDisableOnCrash"${checked(state.settings.ownerPowerMode.autoDisableOnCrash)}>
+                Auto-disable hooks after repeated errors
+              </label>
+            </div>
+            <div class="ltracker-toolbar" style="margin-top: 10px;">
+              <button class="ltracker-button" type="button" data-action="disable-owner-power">Disable Owner Power now</button>
+              <button class="ltracker-button" type="button" data-action="reset-owner-power-settings">Reset Owner Power settings</button>
+              <button class="ltracker-button" type="button" data-action="clear-owner-power-crashes">Clear crash counters</button>
+              <button class="ltracker-button" type="button" data-action="copy-owner-power-report">Copy Owner Power report</button>
+            </div>
+            <div class="ltracker-grid ltracker-details">
+              ${renderRow("Active preset requested Owner Power", activeOwnerPowerSummary.requested ? "yes" : "no")}
+              ${renderRow("Active preset script source", activeOwnerPowerSummary.hasScript ? `${activeOwnerPowerSummary.scriptChars} chars` : "none")}
+              ${renderRow("Last runtime mode", diagnostics.lastOwnerPowerRuntimeMode)}
+              ${renderRow("Last runtime event", diagnostics.lastOwnerPowerEvent)}
+              ${renderRow("Last runtime error", diagnostics.lastOwnerPowerError)}
+              ${renderRow("Crash count", diagnostics.ownerPowerCrashCount)}
+              ${renderRow("Disabled reason", diagnostics.ownerPowerDisabledReason)}
+            </div>
+          </details>
+          <details class="ltracker-details">
             <summary>Renderer and legacy compatibility</summary>
             <div class="ltracker-settings">
               <label class="ltracker-check">
@@ -9019,6 +9550,7 @@ function setup(ctx) {
     return;
   }
   const onClick = (event) => {
+    if (handleOwnerPowerAction(event)) return;
     const panelTarget = event.target instanceof HTMLElement ? event.target.closest("[data-panel-target]") : null;
     if (panelTarget?.dataset.panelTarget) {
       const panel = normalizeDrawerPanel(panelTarget.dataset.panelTarget);
@@ -9069,6 +9601,27 @@ function setup(ctx) {
         type: "repair_settings",
         chatId: activeChatId(),
         requestId: requestId("repair-settings")
+      });
+    }
+    if (action === "disable-owner-power") {
+      send({
+        type: "disable_owner_power",
+        chatId: activeChatId(),
+        requestId: requestId("owner-power-disable")
+      });
+    }
+    if (action === "reset-owner-power-settings") {
+      send({
+        type: "reset_owner_power_settings",
+        chatId: activeChatId(),
+        requestId: requestId("owner-power-reset")
+      });
+    }
+    if (action === "clear-owner-power-crashes") {
+      send({
+        type: "clear_owner_power_crashes",
+        chatId: activeChatId(),
+        requestId: requestId("owner-power-clear-crashes")
       });
     }
     if (action === "repair-snapshot-index") {
@@ -9123,6 +9676,16 @@ function setup(ctx) {
     if (action === "copy-included-context") void copyText(state.diagnostics.lastIncludedContextPreview, "included context");
     if (action === "copy-exclusion-report") void copyText(state.diagnostics.lastContextExclusionReport, "context exclusion report");
     if (action === "copy-lore-context") void copyText(state.diagnostics.lastWorldLoreContextPreview, "world lore context");
+    if (action === "copy-owner-power-report") {
+      void copyText(ownerPowerReport({
+        settings: state.settings.ownerPowerMode,
+        preset: state.activePreset,
+        crashCount: state.diagnostics.ownerPowerCrashCount,
+        disabledReason: state.diagnostics.ownerPowerDisabledReason,
+        lastError: state.diagnostics.lastOwnerPowerError,
+        lastEvent: state.diagnostics.lastOwnerPowerEvent
+      }), "Owner Power report");
+    }
     if (action === "copy-storage-report") {
       const report = [
         `Storage key: ${state.diagnostics.storageKey}`,

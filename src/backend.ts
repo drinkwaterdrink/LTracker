@@ -133,6 +133,7 @@ import {
   TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
   type TrackerGenerationRequestBuildResult,
 } from "./shared/generationRequest";
+import { ownerPowerFeatureSummary, repairOwnerPowerManifest } from "./shared/ownerPower";
 import {
   capturePresetRenderLock,
   resolvePresetForSnapshot,
@@ -400,6 +401,9 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
     "repair_preset_render_locks",
     "clean_orphan_snapshots",
     "clean_broken_embedded_tags",
+    "disable_owner_power",
+    "reset_owner_power_settings",
+    "clear_owner_power_crashes",
     "import_preset_pack",
     "export_preset_pack",
     "validate_preset_report",
@@ -440,6 +444,9 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "repair_preset_render_locks",
       "clean_orphan_snapshots",
       "clean_broken_embedded_tags",
+      "disable_owner_power",
+      "reset_owner_power_settings",
+      "clear_owner_power_crashes",
       "import_preset_pack",
       "export_preset_pack",
       "validate_preset_report",
@@ -788,6 +795,21 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastPresetRenderLabResult: null,
     lastPresetRenderLabRenderedChars: null,
     lastPresetRenderLabWarnings: [],
+    ownerPowerModeEnabled: DEFAULT_SETTINGS.ownerPowerMode.enabled,
+    renderLabRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowRenderLabRuntime,
+    installedPresetRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowInstalledPresetRuntime,
+    declarativeHooksEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowTemplateActionHooks,
+    activePresetRequestedOwnerPower: false,
+    activePresetHasOwnerPowerScript: false,
+    lastOwnerPowerRuntimeMode: "static",
+    lastOwnerPowerMountedAt: null,
+    lastOwnerPowerDestroyedAt: null,
+    lastOwnerPowerError: null,
+    lastOwnerPowerEvent: null,
+    ownerPowerCrashCount: 0,
+    ownerPowerDisabledReason: null,
+    lastOwnerPowerSanitizerAction: null,
+    lastOwnerPowerImportWarning: null,
     lastHealthCheckAt: null,
     lastHealthCheckStatus: null,
     lastMaintenanceActionAt: null,
@@ -1326,6 +1348,21 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastPresetRenderLabResult: stringOrNull(value.lastPresetRenderLabResult),
     lastPresetRenderLabRenderedChars: numberOrNull(value.lastPresetRenderLabRenderedChars),
     lastPresetRenderLabWarnings: stringArray(value.lastPresetRenderLabWarnings),
+    ownerPowerModeEnabled: typeof value.ownerPowerModeEnabled === "boolean" ? value.ownerPowerModeEnabled : base.ownerPowerModeEnabled,
+    renderLabRuntimeEnabled: typeof value.renderLabRuntimeEnabled === "boolean" ? value.renderLabRuntimeEnabled : base.renderLabRuntimeEnabled,
+    installedPresetRuntimeEnabled: typeof value.installedPresetRuntimeEnabled === "boolean" ? value.installedPresetRuntimeEnabled : base.installedPresetRuntimeEnabled,
+    declarativeHooksEnabled: typeof value.declarativeHooksEnabled === "boolean" ? value.declarativeHooksEnabled : base.declarativeHooksEnabled,
+    activePresetRequestedOwnerPower: typeof value.activePresetRequestedOwnerPower === "boolean" ? value.activePresetRequestedOwnerPower : base.activePresetRequestedOwnerPower,
+    activePresetHasOwnerPowerScript: typeof value.activePresetHasOwnerPowerScript === "boolean" ? value.activePresetHasOwnerPowerScript : base.activePresetHasOwnerPowerScript,
+    lastOwnerPowerRuntimeMode: stringOrNull(value.lastOwnerPowerRuntimeMode),
+    lastOwnerPowerMountedAt: stringOrNull(value.lastOwnerPowerMountedAt),
+    lastOwnerPowerDestroyedAt: stringOrNull(value.lastOwnerPowerDestroyedAt),
+    lastOwnerPowerError: stringOrNull(value.lastOwnerPowerError),
+    lastOwnerPowerEvent: stringOrNull(value.lastOwnerPowerEvent),
+    ownerPowerCrashCount: typeof value.ownerPowerCrashCount === "number" && Number.isFinite(value.ownerPowerCrashCount) ? Math.max(0, Math.round(value.ownerPowerCrashCount)) : 0,
+    ownerPowerDisabledReason: stringOrNull(value.ownerPowerDisabledReason),
+    lastOwnerPowerSanitizerAction: stringOrNull(value.lastOwnerPowerSanitizerAction),
+    lastOwnerPowerImportWarning: stringOrNull(value.lastOwnerPowerImportWarning),
     lastHealthCheckAt: stringOrNull(value.lastHealthCheckAt),
     lastHealthCheckStatus: maintenanceSeverityOrNull(value.lastHealthCheckStatus),
     lastMaintenanceActionAt: stringOrNull(value.lastMaintenanceActionAt),
@@ -2100,6 +2137,7 @@ async function buildState(
     ? formatTrackerInjectionBlock(memoryPreviewResult.entries, injectionSettings)
     : null;
   const stateError = error ?? diagnostics.lastError;
+  const ownerPowerSummary = ownerPowerFeatureSummary(presetState.activePreset);
   return {
     version: EXTENSION_VERSION,
     status: status ?? diagnostics.status,
@@ -2179,6 +2217,13 @@ async function buildState(
       expandedWidthModeResolved: settings.expandedWidth.expandedWidthMode,
       lastPresetEstimatedTokens: presetStats.estimatedTokens,
       lastPresetEstimatedRenderedChars: presetStats.estimatedRenderedChars,
+      ownerPowerModeEnabled: settings.ownerPowerMode.enabled,
+      renderLabRuntimeEnabled: settings.ownerPowerMode.allowRenderLabRuntime,
+      installedPresetRuntimeEnabled: settings.ownerPowerMode.allowInstalledPresetRuntime,
+      declarativeHooksEnabled: settings.ownerPowerMode.allowTemplateActionHooks,
+      activePresetRequestedOwnerPower: ownerPowerSummary.requested,
+      activePresetHasOwnerPowerScript: ownerPowerSummary.hasScript,
+      lastOwnerPowerRuntimeMode: settings.ownerPowerMode.allowTemplateActionHooks ? "declarative_hooks" : diagnostics.lastOwnerPowerRuntimeMode,
     },
     connectionProfiles: connectionCache.profiles,
   };
@@ -4522,6 +4567,9 @@ function normalizePresetDraft(value: TrackerPresetDraft): TrackerPresetDraft {
   };
   if (typeof value.id === "string") draft.id = value.id;
   if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
+  if (typeof value.ownerPowerScript === "string") draft.ownerPowerScript = value.ownerPowerScript;
+  const ownerPowerManifest = repairOwnerPowerManifest(value.ownerPowerManifest);
+  if (ownerPowerManifest) draft.ownerPowerManifest = ownerPowerManifest;
   if (typeof value.notes === "string") draft.notes = value.notes;
   if (isRecord(value.capabilities)) {
     const capabilities: NonNullable<TrackerPresetDraft["capabilities"]> = {};
@@ -4826,6 +4874,8 @@ async function importPresetPackHandler(
   }
 
   const importedPreset = result.preset;
+  const importedOwnerPowerSummary = ownerPowerFeatureSummary(importedPreset);
+  const ownerPowerImportWarning = result.warnings.find((warning) => /Owner Power|script|Dev Mode/i.test(warning)) ?? null;
 
   if (options.presetName && options.presetName.trim()) {
     importedPreset.name = options.presetName.trim();
@@ -4930,6 +4980,10 @@ async function importPresetPackHandler(
     lastPresetPackImportError: null,
     lastPresetPackImportSizeChars: importText.length,
     lastPresetPackImportEstimatedTokens: stats.estimatedTokens,
+    activePresetRequestedOwnerPower: importedOwnerPowerSummary.requested,
+    activePresetHasOwnerPowerScript: importedOwnerPowerSummary.hasScript,
+    lastOwnerPowerImportWarning: ownerPowerImportWarning,
+    lastOwnerPowerSanitizerAction: importedOwnerPowerSummary.hasScript ? "Owner Power script source imported inertly; sanitized rendering remains script-free." : null,
   });
 
   await sendState(resolvedChatId, userId, "idle", null, requestId);
@@ -5522,6 +5576,53 @@ async function buildMaintenanceReport(
       message: "Message display render limit may be lower than the active preset needs.",
       suggestedFix: "Increase Message render chars or use popover/fullscreen display.",
       repairActionId: null,
+    });
+  }
+  const activeOwnerPower = ownerPowerFeatureSummary(presetState.activePreset);
+  if (settings.ownerPowerMode.enabled) {
+    items.push({
+      severity: "warning",
+      category: "Owner Power",
+      message: "Owner Power Mode is enabled for this local install.",
+      suggestedFix: "Keep it enabled only for your own approved presets; use Disable Owner Power if the drawer becomes unstable.",
+      repairActionId: "disable_owner_power",
+    });
+  }
+  if (settings.ownerPowerMode.allowInstalledPresetRuntime) {
+    items.push({
+      severity: "warning",
+      category: "Owner Power",
+      message: "Installed preset runtime is enabled; interactive behavior can run outside Render Lab surfaces.",
+      suggestedFix: "Keep installed runtime off unless you are actively testing a preset you authored.",
+      repairActionId: "disable_owner_power",
+    });
+  }
+  if (activeOwnerPower.hasScript && !settings.ownerPowerMode.enabled) {
+    items.push({
+      severity: "warning",
+      category: "Owner Power",
+      message: "The active preset contains Owner Power runtime source, but Owner Power Mode is disabled.",
+      suggestedFix: "Use Render Lab static preview, or enable Owner Power manually for this local preset.",
+      repairActionId: null,
+    });
+  }
+  if (settings.ownerPowerMode.allowExternalUrls || settings.ownerPowerMode.allowNetwork || settings.ownerPowerMode.allowHostDomAccess) {
+    items.push({
+      severity: "warning",
+      category: "Owner Power",
+      message: "One or more high-risk Owner Power capability flags are enabled.",
+      suggestedFix: "Reset Owner Power settings unless a specific local preset requires them.",
+      repairActionId: "reset_owner_power_settings",
+    });
+  }
+  const currentDiagnostics = await loadDiagnostics(chatId, userId);
+  if (currentDiagnostics.ownerPowerCrashCount >= settings.ownerPowerMode.crashDisableThreshold) {
+    items.push({
+      severity: "repairable",
+      category: "Owner Power",
+      message: "Owner Power runtime crash count has reached the disable threshold.",
+      suggestedFix: "Clear crash counters after reviewing the preset, or reset Owner Power settings.",
+      repairActionId: "clear_owner_power_crashes",
     });
   }
 
@@ -6197,6 +6298,106 @@ async function repairSettingsAction(
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
 
+async function disableOwnerPowerAction(
+  payload: Extract<FrontendMessage, { type: "disable_owner_power" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const settings = await getSettings(userId);
+  settings.ownerPowerMode = {
+    ...settings.ownerPowerMode,
+    enabled: false,
+    allowRenderLabRuntime: false,
+    allowInstalledPresetRuntime: false,
+    allowScriptBlocks: false,
+    allowTemplateActionHooks: false,
+    allowExternalUrls: false,
+    allowNetwork: false,
+    allowHostDomAccess: false,
+  };
+  await saveSettings(settings, userId);
+  const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+  await tryPersistDiagnostics({
+    ...diagnostics,
+    ownerPowerModeEnabled: false,
+    renderLabRuntimeEnabled: false,
+    installedPresetRuntimeEnabled: false,
+    declarativeHooksEnabled: false,
+    ownerPowerDisabledReason: "Owner Power Mode was disabled by maintenance action.",
+    lastOwnerPowerRuntimeMode: "static",
+    lastOwnerPowerEvent: "disabled",
+    lastOwnerPowerError: null,
+  }, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Owner Power Mode was disabled and runtime capability flags were cleared.",
+  }, "disable_owner_power");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function resetOwnerPowerSettingsAction(
+  payload: Extract<FrontendMessage, { type: "reset_owner_power_settings" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const settings = await getSettings(userId);
+  settings.ownerPowerMode = { ...DEFAULT_SETTINGS.ownerPowerMode };
+  await saveSettings(settings, userId);
+  const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+  await tryPersistDiagnostics({
+    ...diagnostics,
+    ownerPowerModeEnabled: DEFAULT_SETTINGS.ownerPowerMode.enabled,
+    renderLabRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowRenderLabRuntime,
+    installedPresetRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowInstalledPresetRuntime,
+    declarativeHooksEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowTemplateActionHooks,
+    ownerPowerCrashCount: 0,
+    ownerPowerDisabledReason: null,
+    lastOwnerPowerRuntimeMode: "static",
+    lastOwnerPowerEvent: "reset",
+    lastOwnerPowerError: null,
+  }, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Owner Power settings were reset to safe defaults.",
+  }, "reset_owner_power_settings");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function clearOwnerPowerCrashesAction(
+  payload: Extract<FrontendMessage, { type: "clear_owner_power_crashes" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+  await tryPersistDiagnostics({
+    ...diagnostics,
+    ownerPowerCrashCount: 0,
+    ownerPowerDisabledReason: null,
+    lastOwnerPowerError: null,
+    lastOwnerPowerEvent: "crash_counters_cleared",
+  }, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Owner Power crash counters were cleared.",
+  }, "clear_owner_power_crashes");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
 async function repairSnapshotIndexAction(
   payload: Extract<FrontendMessage, { type: "repair_snapshot_index" }>,
   userId: string,
@@ -6491,6 +6692,18 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "repair_settings") {
         await repairSettingsAction(payload, userId);
+        return;
+      }
+      if (payload.type === "disable_owner_power") {
+        await disableOwnerPowerAction(payload, userId);
+        return;
+      }
+      if (payload.type === "reset_owner_power_settings") {
+        await resetOwnerPowerSettingsAction(payload, userId);
+        return;
+      }
+      if (payload.type === "clear_owner_power_crashes") {
+        await clearOwnerPowerCrashesAction(payload, userId);
         return;
       }
       if (payload.type === "repair_snapshot_index") {

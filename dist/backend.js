@@ -470,7 +470,7 @@ var CONTEXT_HANDLER_EXPERIMENTAL_ENABLED = false;
 var CONTEXT_HANDLER_DISABLED_REASON = "Context handler injection remains disabled in 0.16; safe normal prompt injection uses the Lumiverse interceptor path instead.";
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.25";
+var EXTENSION_VERSION = "0.26";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -587,6 +587,7 @@ var ALLOWED_TAGS = /* @__PURE__ */ new Set([
   "td",
   "details",
   "summary",
+  "button",
   "code",
   "pre"
 ]);
@@ -607,7 +608,15 @@ var ALLOWED_SVG_TAGS = /* @__PURE__ */ new Set([
   "stop"
 ]);
 var VOID_TAGS = /* @__PURE__ */ new Set(["br", "hr"]);
-var ALLOWED_ATTRIBUTES = /* @__PURE__ */ new Set(["class", "title", "aria-label", "data-ltracker-section", "role", "aria-hidden"]);
+var ALLOWED_ATTRIBUTES = /* @__PURE__ */ new Set(["class", "title", "aria-label", "data-ltracker-section", "role", "aria-hidden", "type"]);
+var OWNER_POWER_ACTION_ATTRIBUTES = /* @__PURE__ */ new Set([
+  "data-ltracker-power-action",
+  "data-target",
+  "data-class",
+  "data-path",
+  "data-text",
+  "data-ltracker-power-panel"
+]);
 var SVG_ATTRIBUTES = /* @__PURE__ */ new Set([
   "viewbox",
   "fill",
@@ -643,7 +652,6 @@ var DANGEROUS_CONTAINER_TAGS = [
   "meta",
   "form",
   "input",
-  "button",
   "textarea",
   "select",
   "foreignobject",
@@ -1169,7 +1177,7 @@ function hashString(value) {
   return (hash >>> 0).toString(36);
 }
 function detectJavaScriptLike(value) {
-  return /<\s*script\b|on[a-z]+\s*=|javascript:|<\s*(?:iframe|object|embed|form|input|button|textarea|select)\b/i.test(value);
+  return /<\s*script\b|on[a-z]+\s*=|javascript:|<\s*(?:iframe|object|embed|form|input|textarea|select)\b/i.test(value);
 }
 function stripStyleBlocks(html, warnings) {
   return html.replace(/<\s*style\b[^>]*>[\s\S]*?<\s*\/\s*style\s*>/gi, () => {
@@ -1436,8 +1444,25 @@ function sanitizeAttributes(raw, tag, options, warnings) {
       attributes.push(`${svgAttributeName(attribute.lowerName)}="${escapeHtml(attribute.value)}"`);
       continue;
     }
+    if (OWNER_POWER_ACTION_ATTRIBUTES.has(attribute.lowerName)) {
+      if (!options.allowActionHooks) {
+        warnings.push(`Removed Owner Power action attribute ${attribute.lowerName}.`);
+        continue;
+      }
+      if (/javascript:|data:|<|>/i.test(attribute.value)) {
+        warnings.push(`Removed unsafe Owner Power action attribute ${attribute.lowerName}.`);
+        continue;
+      }
+      attributes.push(`${attribute.lowerName}="${escapeHtml(attribute.value)}"`);
+      continue;
+    }
     if (!ALLOWED_ATTRIBUTES.has(attribute.lowerName)) {
       warnings.push(`Removed unsupported attribute ${attribute.lowerName}.`);
+      continue;
+    }
+    if (attribute.lowerName === "type" && tag === "button") {
+      const buttonType = attribute.value === "button" || attribute.value === "reset" ? attribute.value : "button";
+      attributes.push(`type="${buttonType}"`);
       continue;
     }
     attributes.push(`${attribute.lowerName}="${escapeHtml(attribute.value)}"`);
@@ -1449,6 +1474,7 @@ function sanitizeHtml(html, options = {}) {
   const trustMode = options.templateTrustMode ?? (options.allowInlineStyles === true ? "trusted" : "safe");
   const trusted = trustMode === "trusted" || trustMode === "dev";
   const allowInlineStyles = trusted && options.allowInlineStyles === true;
+  const allowActionHooks = trusted;
   if (detectJavaScriptLike(html)) {
     warnings.push("JavaScript requires Dev Mode and was not executed.");
   }
@@ -1468,7 +1494,7 @@ function sanitizeHtml(html, options = {}) {
       }
       if (closing) return `</${tag}>`;
       if (VOID_TAGS.has(tag)) return `<${tag}>`;
-      return `<${tag}${sanitizeAttributes(rawAttributes, tag, { allowInlineStyles, allowSvg: allowedSvg }, warnings)}>`;
+      return `<${tag}${sanitizeAttributes(rawAttributes, tag, { allowInlineStyles, allowSvg: allowedSvg, allowActionHooks }, warnings)}>`;
     }
   );
   const htmlWithScopedCss = scopedStyles ? `<div class="${scopeClass}" data-ltracker-template-root><style>${scopedStyles}</style>${sanitized}</div>` : sanitized;
@@ -1485,6 +1511,7 @@ function detectTemplateRendererRequirements(template) {
   const helperPattern = new RegExp(`\\{\\{\\s*(?:${[...INLINE_HELPERS].map((helper) => helper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
   const usesHelpers = helperPattern.test(template);
   const usesNestedLoops = /\{\{\s*#each\b[\s\S]*\{\{\s*#each\b/i.test(template);
+  const usesDeclarativeActions = /data-ltracker-power-action\s*=/i.test(template);
   const hasJavaScriptLikeContent = detectJavaScriptLike(template);
   const features = [
     usesScopedCss ? "Scoped CSS" : null,
@@ -1492,7 +1519,8 @@ function detectTemplateRendererRequirements(template) {
     usesInlineSvg ? "Inline SVG" : null,
     usesConditionals ? "Conditionals" : null,
     usesNestedLoops ? "Nested loops" : null,
-    usesHelpers ? "Template helpers" : null
+    usesHelpers ? "Template helpers" : null,
+    usesDeclarativeActions ? "Declarative actions" : null
   ].filter((item) => Boolean(item));
   const warnings = hasJavaScriptLikeContent ? ["This preset contains JavaScript-like content. JavaScript will be stripped unless Dev Mode is explicitly enabled in a future phase."] : [];
   const recommendedMode2 = hasJavaScriptLikeContent ? "dev" : usesScopedCss || usesInlineStyles || usesInlineSvg || usesConditionals || usesHelpers ? "trusted" : "safe";
@@ -2636,6 +2664,97 @@ var DEFAULT_TRACKER_SCHEMA = {
   next_scene_pressure: ""
 };
 
+// src/shared/ownerPower.ts
+var OWNER_POWER_SCRIPT_TYPE = "application/ltracker-owner-power";
+var OWNER_POWER_SCRIPT_PATTERN = /<\s*script\b([^>]*)>([\s\S]*?)<\s*\/\s*script\s*>/gi;
+function isRecord6(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function optionalString(value, maxLength = 64e3) {
+  return typeof value === "string" ? value.slice(0, maxLength) : void 0;
+}
+function boolValue(value) {
+  return typeof value === "boolean" ? value : void 0;
+}
+function scriptType(rawAttributes) {
+  const match = rawAttributes.match(/\stype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+  return (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim().toLowerCase() || null;
+}
+function extractOwnerPowerScriptsFromHtml(html) {
+  const scripts = [];
+  const warnings = [];
+  const stripped = html.replace(OWNER_POWER_SCRIPT_PATTERN, (_match, rawAttributes, body) => {
+    if (scriptType(rawAttributes) === OWNER_POWER_SCRIPT_TYPE) {
+      scripts.push(body.trim());
+      warnings.push("Owner Power script source was imported inertly and will not run unless Owner Power Mode is enabled.");
+    } else {
+      warnings.push("Normal script content was stripped from sanitized rendering.");
+    }
+    return "";
+  });
+  return { html: stripped, scripts, warnings };
+}
+function repairOwnerPowerManifest(value) {
+  if (!isRecord6(value)) return void 0;
+  const version = typeof value.version === "number" && Number.isFinite(value.version) ? Math.max(1, Math.round(value.version)) : 1;
+  const manifest = { version };
+  const entry = optionalString(value.entry, 200);
+  if (entry) manifest.entry = entry;
+  const usesRuntime = boolValue(value.usesRuntime);
+  if (usesRuntime !== void 0) manifest.usesRuntime = usesRuntime;
+  if (value.requiredMode === "owner_power") manifest.requiredMode = "owner_power";
+  if (Array.isArray(value.capabilities)) {
+    const capabilities = value.capabilities.filter((item) => typeof item === "string").map((item) => item.trim().slice(0, 80)).filter(Boolean).slice(0, 40);
+    if (capabilities.length > 0) manifest.capabilities = capabilities;
+  }
+  const notes = optionalString(value.notes, 2e3);
+  if (notes) manifest.notes = notes;
+  return manifest;
+}
+function ownerPowerRequestedByPreset(preset) {
+  return preset.ownerPowerManifest?.requiredMode === "owner_power" || preset.ownerPowerManifest?.usesRuntime === true || /application\/ltracker-owner-power/i.test(preset.htmlTemplate ?? "");
+}
+function ownerPowerFeatureSummary(preset) {
+  const extracted = extractOwnerPowerScriptsFromHtml(preset.htmlTemplate ?? "");
+  const explicitScript = typeof preset.ownerPowerScript === "string" ? preset.ownerPowerScript : "";
+  const scriptChars = explicitScript.length + extracted.scripts.reduce((sum, script) => sum + script.length, 0);
+  const hasScript = scriptChars > 0;
+  const requested = ownerPowerRequestedByPreset(preset) || hasScript;
+  const warnings = [
+    ...extracted.warnings,
+    hasScript ? "Preset contains Owner Power runtime source; it remains inert until manually enabled." : null,
+    requested ? "Preset packs cannot enable Owner Power Mode automatically." : null
+  ].filter((item) => Boolean(item));
+  return {
+    requested,
+    hasScript,
+    scriptChars,
+    manifest: preset.ownerPowerManifest ?? null,
+    warnings
+  };
+}
+function stripOwnerPowerRecommendedSettings(value) {
+  const warnings = [];
+  const output = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === "ownerPowerMode") {
+      warnings.push("Recommended settings that attempted to enable Owner Power Mode were stripped.");
+      continue;
+    }
+    if (key === "renderer" && isRecord6(nested)) {
+      const renderer = { ...nested };
+      if (renderer.templateTrustMode === "dev") {
+        renderer.templateTrustMode = "trusted";
+        warnings.push("Recommended renderer Dev Mode was downgraded to Trusted; Owner Power must be enabled manually.");
+      }
+      output[key] = renderer;
+      continue;
+    }
+    output[key] = nested;
+  }
+  return { value: output, warnings };
+}
+
 // src/shared/presets.ts
 var DEFAULT_TRACKER_PRESET_ID = "default_scene_tracker";
 var PRESET_EXPORT_KIND = "ltracker_schema_preset";
@@ -2673,13 +2792,13 @@ var DEFAULT_TRACKER_PRESET = {
     notes: "Start with active quiet mode, low temperature, and inherited reasoning. Use a selected raw tracker profile after confirming it returns strict JSON."
   }
 };
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringValue(value, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
-function optionalString(value) {
+function optionalString2(value) {
   return typeof value === "string" ? value : void 0;
 }
 function validOrigin(value) {
@@ -2696,7 +2815,7 @@ function boundedNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 function repairCapabilities(value) {
-  if (!isRecord6(value)) return void 0;
+  if (!isRecord7(value)) return void 0;
   const result = {};
   if (typeof value.supportsHtmlTemplate === "boolean") result.supportsHtmlTemplate = value.supportsHtmlTemplate;
   if (typeof value.supportsPartialRegeneration === "boolean") result.supportsPartialRegeneration = value.supportsPartialRegeneration;
@@ -2704,7 +2823,7 @@ function repairCapabilities(value) {
   return Object.keys(result).length > 0 ? result : void 0;
 }
 function repairRecommendedConnection(value) {
-  if (!isRecord6(value)) return void 0;
+  if (!isRecord7(value)) return void 0;
   const result = {};
   const mode = recommendedMode(value.mode);
   if (mode) result.mode = mode;
@@ -2712,7 +2831,7 @@ function repairRecommendedConnection(value) {
   if (temperature !== void 0) result.temperature = temperature;
   const maxTokens = boundedNumber(value.max_tokens, 256, 64e3);
   if (maxTokens !== void 0) result.max_tokens = Math.round(maxTokens);
-  const reasoning = isRecord6(value.reasoning) ? value.reasoning : null;
+  const reasoning = isRecord7(value.reasoning) ? value.reasoning : null;
   if (reasoning) {
     const source = recommendedReasoningSource(reasoning.source);
     const effort = typeof reasoning.effort === "string" ? reasoning.effort : void 0;
@@ -2722,7 +2841,7 @@ function repairRecommendedConnection(value) {
       if (effort) result.reasoning.effort = effort;
     }
   }
-  const notes = optionalString(value.notes);
+  const notes = optionalString2(value.notes);
   if (notes !== void 0) result.notes = notes;
   return Object.keys(result).length > 0 ? result : void 0;
 }
@@ -2741,13 +2860,13 @@ function createPresetId(name, existingIds) {
   return `${base}_${Date.now()}`;
 }
 function validateJsonSchema(value) {
-  if (!isRecord6(value)) {
+  if (!isRecord7(value)) {
     return { ok: false, error: "JSON Schema must be a JSON object." };
   }
   return { ok: true, error: null };
 }
 function validateTrackerPreset(value) {
-  if (!isRecord6(value)) return { ok: false, error: "Preset must be a JSON object." };
+  if (!isRecord7(value)) return { ok: false, error: "Preset must be a JSON object." };
   if (typeof value.id !== "string" || !sanitizePresetId(value.id)) {
     return { ok: false, error: "Preset id is required." };
   }
@@ -2768,13 +2887,19 @@ function validateTrackerPreset(value) {
   if ("htmlTemplate" in value && typeof value.htmlTemplate !== "string") {
     return { ok: false, error: "HTML template must be text." };
   }
-  if ("recommendedConnection" in value && value.recommendedConnection !== void 0 && !isRecord6(value.recommendedConnection)) {
+  if ("ownerPowerScript" in value && value.ownerPowerScript !== void 0 && typeof value.ownerPowerScript !== "string") {
+    return { ok: false, error: "Owner Power script source must be text." };
+  }
+  if ("ownerPowerManifest" in value && value.ownerPowerManifest !== void 0 && !isRecord7(value.ownerPowerManifest)) {
+    return { ok: false, error: "Owner Power manifest must be an object." };
+  }
+  if ("recommendedConnection" in value && value.recommendedConnection !== void 0 && !isRecord7(value.recommendedConnection)) {
     return { ok: false, error: "Recommended connection must be an object." };
   }
   return { ok: true, error: null };
 }
 function repairTrackerPreset(value) {
-  if (!isRecord6(value)) return null;
+  if (!isRecord7(value)) return null;
   const origin = validOrigin(value.origin) ? value.origin : null;
   if (!origin) return null;
   const preset = {
@@ -2784,13 +2909,17 @@ function repairTrackerPreset(value) {
     version: stringValue(value.version, "1.0"),
     createdAt: stringValue(value.createdAt, (/* @__PURE__ */ new Date()).toISOString()),
     updatedAt: stringValue(value.updatedAt, (/* @__PURE__ */ new Date()).toISOString()),
-    jsonSchema: isRecord6(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord7(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: stringValue(value.promptInstructions),
     origin
   };
-  const htmlTemplate = optionalString(value.htmlTemplate);
+  const htmlTemplate = optionalString2(value.htmlTemplate);
   if (htmlTemplate !== void 0) preset.htmlTemplate = htmlTemplate;
-  const notes = optionalString(value.notes);
+  const ownerPowerScript = optionalString2(value.ownerPowerScript);
+  if (ownerPowerScript !== void 0) preset.ownerPowerScript = ownerPowerScript;
+  const ownerPowerManifest = repairOwnerPowerManifest(value.ownerPowerManifest);
+  if (ownerPowerManifest) preset.ownerPowerManifest = ownerPowerManifest;
+  const notes = optionalString2(value.notes);
   if (notes !== void 0) preset.notes = notes;
   const capabilities = repairCapabilities(value.capabilities);
   if (capabilities) preset.capabilities = capabilities;
@@ -2811,13 +2940,15 @@ function draftToPreset(draft, options) {
     origin: options.origin
   };
   if (draft.htmlTemplate !== void 0) preset.htmlTemplate = draft.htmlTemplate;
+  if (draft.ownerPowerScript !== void 0) preset.ownerPowerScript = draft.ownerPowerScript;
+  if (draft.ownerPowerManifest !== void 0) preset.ownerPowerManifest = draft.ownerPowerManifest;
   if (draft.notes !== void 0) preset.notes = draft.notes;
   if (draft.capabilities) preset.capabilities = draft.capabilities;
   if (draft.recommendedConnection) preset.recommendedConnection = draft.recommendedConnection;
   return preset;
 }
 function importTrackerPresetEnvelope(value, existingIds, now) {
-  if (!isRecord6(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
+  if (!isRecord7(value)) return { ok: false, preset: null, error: "Import must be a JSON object." };
   if (value.kind !== PRESET_EXPORT_KIND) {
     return { ok: false, preset: null, error: "Import kind must be ltracker_schema_preset." };
   }
@@ -2865,7 +2996,7 @@ function estimatePresetStats(preset) {
 // src/shared/presetPack.ts
 var PRESET_PACK_KIND = "ltracker_preset_pack";
 var PRESET_PACK_FORMAT_VERSION = 1;
-function isRecord7(value) {
+function isRecord8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringValue2(value, fallback = "") {
@@ -2902,7 +3033,7 @@ function stripRecommendedSettingCredentials(obj, path, strippedPaths, depth = 0)
       strippedPaths.push(nextPath);
       continue;
     }
-    if (isRecord7(value)) {
+    if (isRecord8(value)) {
       result[key] = stripRecommendedSettingCredentials(value, nextPath, strippedPaths, depth + 1);
     } else {
       result[key] = value;
@@ -2912,7 +3043,7 @@ function stripRecommendedSettingCredentials(obj, path, strippedPaths, depth = 0)
 }
 function exportPresetPack(preset, options) {
   const presetStats = estimatePresetStats(preset);
-  const schemaKeys = isRecord7(preset.jsonSchema) ? Object.keys(preset.jsonSchema) : [];
+  const schemaKeys = isRecord8(preset.jsonSchema) ? Object.keys(preset.jsonSchema) : [];
   const pack = {
     kind: PRESET_PACK_KIND,
     formatVersion: PRESET_PACK_FORMAT_VERSION,
@@ -2942,6 +3073,12 @@ function exportPresetPack(preset, options) {
   if (options?.author) {
     pack.exportedBy = options.author;
     pack.preset.author = options.author;
+  }
+  if (preset.ownerPowerScript) {
+    pack.preset.ownerPowerScript = preset.ownerPowerScript;
+  }
+  if (preset.ownerPowerManifest) {
+    pack.preset.ownerPowerManifest = preset.ownerPowerManifest;
   }
   if (options?.includeRecommendedSettings && options.settings) {
     const settings = options.settings;
@@ -3003,53 +3140,62 @@ function exportPresetPack(preset, options) {
     };
     pack.recommendedSettings = recommended;
   }
-  if (options?.exampleSnapshot && isRecord7(options.exampleSnapshot)) {
+  if (options?.exampleSnapshot && isRecord8(options.exampleSnapshot)) {
     pack.exampleSnapshot = options.exampleSnapshot;
   }
   return pack;
 }
 function validatePackRecommendedSettings(value) {
-  if (!isRecord7(value)) return { settings: null, warnings: [] };
+  if (!isRecord8(value)) return { settings: null, warnings: [] };
+  const ownerPowerStripped = stripOwnerPowerRecommendedSettings(value);
+  const safeValue = ownerPowerStripped.value;
   const result = {};
   const strippedPaths = [];
-  if (isRecord7(value.connection)) {
+  if (isRecord8(safeValue.connection)) {
     result.connection = stripRecommendedSettingCredentials(
-      value.connection,
+      safeValue.connection,
       "recommendedSettings.connection",
       strippedPaths
     );
   }
-  if (isRecord7(value.memory)) result.memory = value.memory;
-  if (isRecord7(value.injection)) result.injection = value.injection;
-  if (isRecord7(value.renderer)) result.renderer = value.renderer;
-  if (isRecord7(value.messageDisplay)) result.messageDisplay = value.messageDisplay;
-  if (isRecord7(value.expandedWidth)) result.expandedWidth = value.expandedWidth;
-  if (isRecord7(value.budget)) result.budget = value.budget;
-  for (const [key, nestedValue] of Object.entries(value)) {
-    if (key !== "connection" && key !== "memory" && key !== "injection" && key !== "renderer" && key !== "messageDisplay" && key !== "expandedWidth" && key !== "budget" && isRecord7(nestedValue)) {
+  if (isRecord8(safeValue.memory)) result.memory = safeValue.memory;
+  if (isRecord8(safeValue.injection)) result.injection = safeValue.injection;
+  if (isRecord8(safeValue.renderer)) result.renderer = safeValue.renderer;
+  if (isRecord8(safeValue.messageDisplay)) result.messageDisplay = safeValue.messageDisplay;
+  if (isRecord8(safeValue.expandedWidth)) result.expandedWidth = safeValue.expandedWidth;
+  if (isRecord8(safeValue.budget)) result.budget = safeValue.budget;
+  for (const [key, nestedValue] of Object.entries(safeValue)) {
+    if (key !== "connection" && key !== "memory" && key !== "injection" && key !== "renderer" && key !== "messageDisplay" && key !== "expandedWidth" && key !== "budget" && isRecord8(nestedValue)) {
       stripRecommendedSettingCredentials(nestedValue, `recommendedSettings.${key}`, strippedPaths);
     }
   }
-  const warnings = strippedPaths.map((path) => `Removed credential-like recommended setting field: ${path}`);
+  const warnings = [
+    ...ownerPowerStripped.warnings,
+    ...strippedPaths.map((path) => `Removed credential-like recommended setting field: ${path}`)
+  ];
   return { settings: Object.keys(result).length > 0 ? result : null, warnings };
 }
 function importPresetPack(value, existingIds, now) {
-  if (!isRecord7(value)) {
+  if (!isRecord8(value)) {
     return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import must be a JSON object.", warnings: [], packMeta: null };
   }
   if (value.kind === PRESET_PACK_KIND) {
     if (value.formatVersion !== PRESET_PACK_FORMAT_VERSION) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: `Unsupported preset pack format version: ${value.formatVersion}. Expected ${PRESET_PACK_FORMAT_VERSION}.`, warnings: [], packMeta: null };
     }
-    const presetData = isRecord7(value.preset) ? value.preset : null;
+    const presetData = isRecord8(value.preset) ? value.preset : null;
     if (!presetData) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Import preset data is missing or invalid.", warnings: [], packMeta: null };
     }
-    const compat = isRecord7(value.appCompatibility) ? value.appCompatibility : null;
+    const compat = isRecord8(value.appCompatibility) ? value.appCompatibility : null;
     const warnings = [];
     const existing = new Set(existingIds);
     const rawId = sanitizePresetId(stringValue2(presetData.id, stringValue2(presetData.name, "imported")));
     const id = existing.has(rawId) || rawId === DEFAULT_TRACKER_PRESET_ID ? createPresetId(stringValue2(presetData.name, "Imported Preset"), existing) : rawId;
+    const htmlExtraction = extractOwnerPowerScriptsFromHtml(typeof presetData.htmlTemplate === "string" ? presetData.htmlTemplate : "");
+    const explicitOwnerPowerScript = typeof presetData.ownerPowerScript === "string" ? presetData.ownerPowerScript : "";
+    const ownerPowerScript = [explicitOwnerPowerScript.trim(), ...htmlExtraction.scripts].filter(Boolean).join("\n\n");
+    const ownerPowerManifest = repairOwnerPowerManifest(presetData.ownerPowerManifest);
     const preset = {
       id,
       name: stringValue2(presetData.name, "Imported Preset").trim() || "Imported Preset",
@@ -3057,15 +3203,23 @@ function importPresetPack(value, existingIds, now) {
       version: stringValue2(presetData.version, "1.0"),
       createdAt: now,
       updatedAt: now,
-      jsonSchema: isRecord7(presetData.jsonSchema) ? presetData.jsonSchema : {},
+      jsonSchema: isRecord8(presetData.jsonSchema) ? presetData.jsonSchema : {},
       promptInstructions: stringValue2(presetData.promptInstructions),
-      htmlTemplate: typeof presetData.htmlTemplate === "string" ? presetData.htmlTemplate : "",
+      htmlTemplate: htmlExtraction.html,
       notes: typeof presetData.notes === "string" ? presetData.notes : "",
       origin: "user_imported",
       capabilities: {
         supportsHtmlTemplate: typeof presetData.htmlTemplate === "string" && presetData.htmlTemplate.trim().length > 0
       }
     };
+    if (ownerPowerScript) preset.ownerPowerScript = ownerPowerScript;
+    if (ownerPowerManifest) preset.ownerPowerManifest = ownerPowerManifest;
+    const ownerPowerSummary = ownerPowerFeatureSummary(preset);
+    warnings.push(...htmlExtraction.warnings);
+    if (ownerPowerSummary.requested) {
+      warnings.push("This preset requests Owner Power Mode. It was imported inertly and will not run until Owner Power Mode is enabled manually.");
+      warnings.push("Preset packs cannot enable Owner Power Mode automatically.");
+    }
     if (!preset.name.trim()) {
       return { ok: false, preset: null, recommendedSettings: null, exampleSnapshot: null, error: "Imported preset name is empty.", warnings, packMeta: null };
     }
@@ -3078,7 +3232,7 @@ function importPresetPack(value, existingIds, now) {
     const recommendedSettingsResult = validatePackRecommendedSettings(value.recommendedSettings);
     warnings.push(...recommendedSettingsResult.warnings);
     const recommendedSettings = recommendedSettingsResult.settings;
-    const exampleSnapshot = isRecord7(value.exampleSnapshot) ? value.exampleSnapshot : null;
+    const exampleSnapshot = isRecord8(value.exampleSnapshot) ? value.exampleSnapshot : null;
     const tags = Array.isArray(presetData.tags) ? presetData.tags.filter((t) => typeof t === "string") : [];
     const packMeta = {
       kind: PRESET_PACK_KIND,
@@ -3106,7 +3260,7 @@ function importPresetPack(value, existingIds, now) {
       packMeta: { kind: PRESET_EXPORT_KIND, formatVersion: PRESET_EXPORT_FORMAT_VERSION, exportedAt: null, minVersion: null, recommendedVersion: null, tags: [], author: null }
     };
   }
-  if (isRecord7(value) && isRecord7(value.jsonSchema) && typeof value.promptInstructions === "string") {
+  if (isRecord8(value) && isRecord8(value.jsonSchema) && typeof value.promptInstructions === "string") {
     const repaired = repairTrackerPreset({
       ...value,
       origin: value.origin ?? "user_imported",
@@ -3177,16 +3331,16 @@ function sampleValueForField(fieldName, depth) {
 }
 function generateSampleFromSchema(schema, depth = 0) {
   if (depth > SAMPLE_MAX_DEPTH) return "[max depth]";
-  if (!isRecord7(schema)) {
+  if (!isRecord8(schema)) {
     return "sample value";
   }
   const schemaType = stringValue2(schema.type, "object");
-  if (schemaType === "object" || schema.properties && isRecord7(schema.properties)) {
-    const properties = isRecord7(schema.properties) ? schema.properties : schema;
+  if (schemaType === "object" || schema.properties && isRecord8(schema.properties)) {
+    const properties = isRecord8(schema.properties) ? schema.properties : schema;
     const result = {};
     for (const [key, value] of Object.entries(properties)) {
       if (key === "type" || key === "properties" || key === "required" || key === "description" || key === "items" || key === "default" || key === "enum") continue;
-      if (isRecord7(value)) {
+      if (isRecord8(value)) {
         result[key] = generateSampleForProperty(key, value, depth + 1);
       } else {
         result[key] = sampleValueForField(key, depth);
@@ -3194,7 +3348,7 @@ function generateSampleFromSchema(schema, depth = 0) {
     }
     if (Object.keys(result).length === 0 && !schema.properties) {
       for (const key of Object.keys(schema)) {
-        if (isRecord7(schema[key])) {
+        if (isRecord8(schema[key])) {
           result[key] = generateSampleFromSchema(schema[key], depth + 1);
         } else {
           result[key] = sampleValueForField(key, depth);
@@ -3204,11 +3358,11 @@ function generateSampleFromSchema(schema, depth = 0) {
     return result;
   }
   if (schemaType === "array") {
-    const items = isRecord7(schema.items) ? schema.items : null;
+    const items = isRecord8(schema.items) ? schema.items : null;
     const sample = items ? generateSampleFromSchema(items, depth + 1) : "sample item";
     return Array.from(
       { length: Math.min(SAMPLE_MAX_ARRAY_LENGTH, 2) },
-      () => isRecord7(sample) ? { ...sample } : sample
+      () => isRecord8(sample) ? { ...sample } : sample
     );
   }
   if (schemaType === "string") {
@@ -3233,15 +3387,15 @@ function generateSampleForProperty(fieldName, prop, depth) {
   if (typeof prop.default !== "undefined") return prop.default;
   if (Array.isArray(prop.enum) && prop.enum.length > 0) return prop.enum[0];
   const propType = stringValue2(prop.type, "");
-  if (propType === "object" || isRecord7(prop.properties)) {
+  if (propType === "object" || isRecord8(prop.properties)) {
     return generateSampleFromSchema(prop, depth);
   }
   if (propType === "array") {
-    const items = isRecord7(prop.items) ? prop.items : null;
+    const items = isRecord8(prop.items) ? prop.items : null;
     const itemSample = items ? generateSampleFromSchema(items, depth + 1) : sampleValueForField(fieldName, depth);
     return Array.from(
       { length: SAMPLE_MAX_ARRAY_LENGTH },
-      () => isRecord7(itemSample) ? { ...itemSample } : itemSample
+      () => isRecord8(itemSample) ? { ...itemSample } : itemSample
     );
   }
   if (propType === "number" || propType === "integer") {
@@ -3404,18 +3558,18 @@ function mergeSampleModeData(base, mode) {
       rel: Array.isArray(base.rel) ? base.rel : modeData.rel,
       relations: Array.isArray(base.relations) ? base.relations : modeData.relations,
       pockets: Array.isArray(base.pockets) ? base.pockets : modeData.pockets,
-      world: isRecord7(base.world) ? { ...modeData.world, ...base.world } : modeData.world
+      world: isRecord8(base.world) ? { ...modeData.world, ...base.world } : modeData.world
     };
   }
   return {
     ...base,
     ...modeData,
-    world: isRecord7(base.world) && isRecord7(modeData.world) ? { ...base.world, ...modeData.world } : modeData.world
+    world: isRecord8(base.world) && isRecord8(modeData.world) ? { ...base.world, ...modeData.world } : modeData.world
   };
 }
 function generateSampleSnapshot(jsonSchema, mode = "normal") {
   const result = generateSampleFromSchema(jsonSchema, 0);
-  const base = isRecord7(result) ? result : { data: result };
+  const base = isRecord8(result) ? result : { data: result };
   return mergeSampleModeData(base, mode);
 }
 var SCHEMA_META_KEYS = /* @__PURE__ */ new Set(["type", "properties", "required", "description", "items", "default", "enum"]);
@@ -3459,7 +3613,7 @@ function valueAtTemplatePath(source, path) {
     if (!part) continue;
     if (Array.isArray(current) && /^\d+$/.test(part)) {
       current = current[Number(part)];
-    } else if (isRecord7(current)) {
+    } else if (isRecord8(current)) {
       current = current[part];
     } else {
       return void 0;
@@ -3469,7 +3623,7 @@ function valueAtTemplatePath(source, path) {
 }
 function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
   if (depth > 5) return [];
-  if (isRecord7(schema.properties)) {
+  if (isRecord8(schema.properties)) {
     return collectSchemaFieldNames(schema.properties, prefix, depth);
   }
   const fields = [];
@@ -3478,14 +3632,14 @@ function collectSchemaFieldNames(schema, prefix = "", depth = 0) {
     const fullKey = prefix ? `${prefix}.${key}` : key;
     fields.push(fullKey);
     const val = schema[key];
-    if (isRecord7(val)) {
-      if (isRecord7(val.properties)) {
+    if (isRecord8(val)) {
+      if (isRecord8(val.properties)) {
         fields.push(...collectSchemaFieldNames(val.properties, fullKey, depth + 1));
-      } else if (val.type === "array" && isRecord7(val.items)) {
+      } else if (val.type === "array" && isRecord8(val.items)) {
         const item = val.items;
-        if (isRecord7(item.properties)) {
+        if (isRecord8(item.properties)) {
           fields.push(...collectSchemaFieldNames(item.properties, fullKey, depth + 1));
-        } else if (isRecord7(item)) {
+        } else if (isRecord8(item)) {
           fields.push(...collectSchemaFieldNames(item, fullKey, depth + 1));
         }
       } else if (val.type !== "string" && val.type !== "number" && val.type !== "boolean" && val.type !== "integer" && val.type !== "array") {
@@ -3604,7 +3758,7 @@ function collectTemplateAuthoringWarnings(template, sampleData) {
   for (const path of findDirectInterpolatedPaths(template)) {
     const value = valueAtTemplatePath(sampleData, path);
     if (Array.isArray(value)) rawArrayInterpolationPaths.push(path);
-    else if (isRecord7(value)) rawObjectInterpolationPaths.push(path);
+    else if (isRecord8(value)) rawObjectInterpolationPaths.push(path);
   }
   const mobileRiskWarnings = [];
   const verticalTextRiskWarnings = [];
@@ -3675,7 +3829,7 @@ function validatePresetReport(preset, options) {
   } else {
     entries.push({ severity: "error", category: "Metadata", message: "Preset version is missing." });
   }
-  if (isRecord7(preset.jsonSchema)) {
+  if (isRecord8(preset.jsonSchema)) {
     const rootKeys = Object.keys(preset.jsonSchema);
     if (rootKeys.length > 0) {
       entries.push({ severity: "pass", category: "Schema", message: `JSON schema has ${rootKeys.length} root field(s): ${rootKeys.slice(0, 10).join(", ")}${rootKeys.length > 10 ? "..." : ""}.` });
@@ -3692,7 +3846,7 @@ function validatePresetReport(preset, options) {
     const schemaObj = preset.jsonSchema;
     if (Array.isArray(schemaObj.required)) {
       const requiredFields = schemaObj.required.filter((f) => typeof f === "string");
-      const invalidRequired = requiredFields.filter((f) => !rootKeys.includes(f) && !(isRecord7(schemaObj.properties) && f in schemaObj.properties));
+      const invalidRequired = requiredFields.filter((f) => !rootKeys.includes(f) && !(isRecord8(schemaObj.properties) && f in schemaObj.properties));
       if (invalidRequired.length > 0) {
         entries.push({ severity: "warning", category: "Schema", message: `Required fields not in schema properties: ${invalidRequired.join(", ")}.` });
       }
@@ -3729,7 +3883,7 @@ function validatePresetReport(preset, options) {
     for (const warning of rendererRequirements.warnings) {
       entries.push({ severity: "warning", category: "Renderer", message: warning });
     }
-    const sampleData = isRecord7(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema, options?.sampleMode ?? "normal") : {};
+    const sampleData = isRecord8(preset.jsonSchema) ? generateSampleSnapshot(preset.jsonSchema, options?.sampleMode ?? "normal") : {};
     const authoringWarnings = collectTemplateAuthoringWarnings(template, sampleData);
     rawObjectInterpolationPaths.push(...authoringWarnings.rawObjectInterpolationPaths);
     rawArrayInterpolationPaths.push(...authoringWarnings.rawArrayInterpolationPaths);
@@ -3755,7 +3909,7 @@ function validatePresetReport(preset, options) {
     for (const warning of verticalTextRiskWarnings) {
       entries.push({ severity: "warning", category: "Mobile QA", message: warning });
     }
-    if (isRecord7(preset.jsonSchema)) {
+    if (isRecord8(preset.jsonSchema)) {
       const schemaFields = collectSchemaFieldNames(preset.jsonSchema);
       const templatePlaceholders = findTemplatePlaceholders(template);
       for (const placeholder of templatePlaceholders) {
@@ -3821,7 +3975,7 @@ function validatePresetReport(preset, options) {
     version: preset.version ?? "1.0",
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    jsonSchema: isRecord7(preset.jsonSchema) ? preset.jsonSchema : {},
+    jsonSchema: isRecord8(preset.jsonSchema) ? preset.jsonSchema : {},
     promptInstructions: preset.promptInstructions ?? "",
     htmlTemplate: preset.htmlTemplate ?? "",
     notes: preset.notes ?? "",
@@ -4021,7 +4175,10 @@ var SETTINGS_LIMITS = {
   expandedContentMaxHeightVh: { min: 30, max: 95, default: 80 },
   maxWorldLoreChars: { min: 0, max: 512e3, default: 12e3 },
   maxCharacterContextChars: { min: 0, max: 512e3, default: 12e3 },
-  maxPersonaContextChars: { min: 0, max: 256e3, default: 6e3 }
+  maxPersonaContextChars: { min: 0, max: 256e3, default: 6e3 },
+  maxOwnerPowerScriptChars: { min: 0, max: 2e5, default: 5e4 },
+  maxOwnerPowerRuntimeErrors: { min: 1, max: 50, default: 5 },
+  ownerPowerCrashDisableThreshold: { min: 1, max: 20, default: 3 }
 };
 var DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -4169,6 +4326,20 @@ var DEFAULT_SETTINGS = {
     manualCharacterContext: "",
     manualPersonaContext: ""
   },
+  ownerPowerMode: {
+    enabled: false,
+    allowRenderLabRuntime: false,
+    allowInstalledPresetRuntime: false,
+    allowScriptBlocks: false,
+    allowTemplateActionHooks: true,
+    allowExternalUrls: false,
+    allowNetwork: false,
+    allowHostDomAccess: false,
+    maxScriptChars: SETTINGS_LIMITS.maxOwnerPowerScriptChars.default,
+    maxRuntimeErrors: SETTINGS_LIMITS.maxOwnerPowerRuntimeErrors.default,
+    crashDisableThreshold: SETTINGS_LIMITS.ownerPowerCrashDisableThreshold.default,
+    autoDisableOnCrash: true
+  },
   history: {
     pageSize: 25,
     showDuplicates: false
@@ -4179,7 +4350,7 @@ var DEFAULT_SETTINGS = {
     cleanupDuplicatesOnly: true
   }
 };
-function isRecord8(value) {
+function isRecord9(value) {
   return typeof value === "object" && value !== null;
 }
 function clampNumber(value, fallback, min, max) {
@@ -4254,6 +4425,38 @@ function stringList(value, maxItems = 100) {
   }
   return result;
 }
+function repairOwnerPowerMode(source) {
+  const defaults = DEFAULT_SETTINGS.ownerPowerMode;
+  return {
+    enabled: typeof source.enabled === "boolean" ? source.enabled : defaults.enabled,
+    allowRenderLabRuntime: typeof source.allowRenderLabRuntime === "boolean" ? source.allowRenderLabRuntime : defaults.allowRenderLabRuntime,
+    allowInstalledPresetRuntime: typeof source.allowInstalledPresetRuntime === "boolean" ? source.allowInstalledPresetRuntime : defaults.allowInstalledPresetRuntime,
+    allowScriptBlocks: typeof source.allowScriptBlocks === "boolean" ? source.allowScriptBlocks : defaults.allowScriptBlocks,
+    allowTemplateActionHooks: typeof source.allowTemplateActionHooks === "boolean" ? source.allowTemplateActionHooks : defaults.allowTemplateActionHooks,
+    allowExternalUrls: typeof source.allowExternalUrls === "boolean" ? source.allowExternalUrls : defaults.allowExternalUrls,
+    allowNetwork: typeof source.allowNetwork === "boolean" ? source.allowNetwork : defaults.allowNetwork,
+    allowHostDomAccess: typeof source.allowHostDomAccess === "boolean" ? source.allowHostDomAccess : defaults.allowHostDomAccess,
+    maxScriptChars: clampNumber(
+      source.maxScriptChars,
+      defaults.maxScriptChars,
+      SETTINGS_LIMITS.maxOwnerPowerScriptChars.min,
+      SETTINGS_LIMITS.maxOwnerPowerScriptChars.max
+    ),
+    maxRuntimeErrors: clampNumber(
+      source.maxRuntimeErrors,
+      defaults.maxRuntimeErrors,
+      SETTINGS_LIMITS.maxOwnerPowerRuntimeErrors.min,
+      SETTINGS_LIMITS.maxOwnerPowerRuntimeErrors.max
+    ),
+    crashDisableThreshold: clampNumber(
+      source.crashDisableThreshold,
+      defaults.crashDisableThreshold,
+      SETTINGS_LIMITS.ownerPowerCrashDisableThreshold.min,
+      SETTINGS_LIMITS.ownerPowerCrashDisableThreshold.max
+    ),
+    autoDisableOnCrash: typeof source.autoDisableOnCrash === "boolean" ? source.autoDisableOnCrash : defaults.autoDisableOnCrash
+  };
+}
 function repairContextFilters(source) {
   const defaults = DEFAULT_SETTINGS.contextFilters;
   return {
@@ -4313,21 +4516,22 @@ function thinkingDisplay(value) {
   return value === "auto" || value === "summarized" || value === "omitted" ? value : DEFAULT_SETTINGS.connection.reasoning.thinkingDisplay;
 }
 function repairSettings(value) {
-  const source = isRecord8(value) ? value : {};
-  const autoSource = isRecord8(source.auto) ? source.auto : {};
-  const historySource = isRecord8(source.history) ? source.history : {};
-  const storageMaintenanceSource = isRecord8(source.storageMaintenance) ? source.storageMaintenance : {};
-  const autoTimingSource = isRecord8(source.autoTiming) ? source.autoTiming : {};
-  const budgetSource = isRecord8(source.budget) ? source.budget : {};
-  const memorySourceObject = isRecord8(source.memory) ? source.memory : {};
-  const injectionSource = isRecord8(source.injection) ? source.injection : {};
-  const rendererSource = isRecord8(source.renderer) ? source.renderer : {};
-  const messageDisplaySource = isRecord8(source.messageDisplay) ? source.messageDisplay : {};
-  const expandedWidthSource = isRecord8(source.expandedWidth) ? source.expandedWidth : {};
-  const connectionSource = isRecord8(source.connection) ? source.connection : {};
-  const contextFiltersSource = isRecord8(source.contextFilters) ? source.contextFilters : {};
-  const connectionParameterSource = isRecord8(connectionSource.parameters) ? connectionSource.parameters : {};
-  const connectionReasoningSource = isRecord8(connectionSource.reasoning) ? connectionSource.reasoning : {};
+  const source = isRecord9(value) ? value : {};
+  const autoSource = isRecord9(source.auto) ? source.auto : {};
+  const historySource = isRecord9(source.history) ? source.history : {};
+  const storageMaintenanceSource = isRecord9(source.storageMaintenance) ? source.storageMaintenance : {};
+  const autoTimingSource = isRecord9(source.autoTiming) ? source.autoTiming : {};
+  const budgetSource = isRecord9(source.budget) ? source.budget : {};
+  const memorySourceObject = isRecord9(source.memory) ? source.memory : {};
+  const injectionSource = isRecord9(source.injection) ? source.injection : {};
+  const rendererSource = isRecord9(source.renderer) ? source.renderer : {};
+  const messageDisplaySource = isRecord9(source.messageDisplay) ? source.messageDisplay : {};
+  const expandedWidthSource = isRecord9(source.expandedWidth) ? source.expandedWidth : {};
+  const connectionSource = isRecord9(source.connection) ? source.connection : {};
+  const contextFiltersSource = isRecord9(source.contextFilters) ? source.contextFilters : {};
+  const ownerPowerModeSource = isRecord9(source.ownerPowerMode) ? source.ownerPowerMode : {};
+  const connectionParameterSource = isRecord9(connectionSource.parameters) ? connectionSource.parameters : {};
+  const connectionReasoningSource = isRecord9(connectionSource.reasoning) ? connectionSource.reasoning : {};
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot" ? rendererSource.previewSource : DEFAULT_SETTINGS.renderer.previewSource;
   const messageDisplayPlacement = messageDisplaySource.placement === "bottom" || messageDisplaySource.placement === "top" ? messageDisplaySource.placement : DEFAULT_SETTINGS.messageDisplay.placement;
   const messageDisplaySourceSetting = messageDisplaySource.source === "latest_chat_snapshot" || messageDisplaySource.source === "message_attached_snapshot" ? messageDisplaySource.source : DEFAULT_SETTINGS.messageDisplay.source;
@@ -4636,6 +4840,7 @@ function repairSettings(value) {
       testPrompt: typeof connectionSource.testPrompt === "string" && connectionSource.testPrompt.trim() ? connectionSource.testPrompt : TRACKER_CONNECTION_DEFAULT_TEST_PROMPT
     },
     contextFilters: repairContextFilters(contextFiltersSource),
+    ownerPowerMode: repairOwnerPowerMode(ownerPowerModeSource),
     history: {
       pageSize: clampNumber(
         historySource.pageSize,
@@ -5022,7 +5227,7 @@ var EMPTY_MEMORY = {
   truncated: false,
   skippedReason: null
 };
-function isRecord9(value) {
+function isRecord10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function primitiveToString3(value) {
@@ -5033,7 +5238,7 @@ function primitiveToString3(value) {
 }
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (isRecord9(value)) {
+  if (isRecord10(value)) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
@@ -5079,14 +5284,14 @@ function compactValue(value) {
     const rendered = value.map((item) => {
       const itemPrimitive = primitiveToString3(item);
       if (itemPrimitive) return itemPrimitive;
-      if (isRecord9(item)) {
+      if (isRecord10(item)) {
         return primitiveToString3(item.name) ?? primitiveToString3(item.title) ?? primitiveToString3(item.id);
       }
       return null;
     }).filter((item) => Boolean(item));
     return rendered.length > 0 ? rendered.slice(0, 5).join("; ") : null;
   }
-  if (isRecord9(value)) {
+  if (isRecord10(value)) {
     for (const key of ["location", "time", "date", "mood", "status", "name", "title", "summary"]) {
       const rendered = primitiveToString3(value[key]);
       if (rendered) return rendered;
@@ -5095,7 +5300,7 @@ function compactValue(value) {
   return null;
 }
 function compactPayloadSummary(payload) {
-  const scene = isRecord9(payload.scene) ? payload.scene : null;
+  const scene = isRecord10(payload.scene) ? payload.scene : null;
   const sceneParts = [
     scene ? compactValue(scene.location) : null,
     scene ? compactValue(scene.time) ?? compactValue(scene.date) : null,
@@ -5308,7 +5513,7 @@ function cleanRecentlyDeletedSnapshots() {
     }
   }
 }
-function isRecord10(value) {
+function isRecord11(value) {
   return typeof value === "object" && value !== null;
 }
 function nowIso() {
@@ -5337,7 +5542,7 @@ function diagnosticError(error, fallbackStage) {
   return result;
 }
 function isFrontendMessage(payload) {
-  if (!isRecord10(payload) || typeof payload.type !== "string") return false;
+  if (!isRecord11(payload) || typeof payload.type !== "string") return false;
   if (![
     "ready",
     "refresh_state",
@@ -5373,6 +5578,9 @@ function isFrontendMessage(payload) {
     "repair_preset_render_locks",
     "clean_orphan_snapshots",
     "clean_broken_embedded_tags",
+    "disable_owner_power",
+    "reset_owner_power_settings",
+    "clear_owner_power_crashes",
     "import_preset_pack",
     "export_preset_pack",
     "validate_preset_report",
@@ -5412,14 +5620,17 @@ function isFrontendMessage(payload) {
     "repair_preset_render_locks",
     "clean_orphan_snapshots",
     "clean_broken_embedded_tags",
+    "disable_owner_power",
+    "reset_owner_power_settings",
+    "clear_owner_power_crashes",
     "import_preset_pack",
     "export_preset_pack",
     "validate_preset_report",
     "generate_sample_snapshot"
   ].includes(payload.type) && typeof payload.requestId !== "string") return false;
-  if (payload.type === "save_settings" && !isRecord10(payload.settings)) return false;
-  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord10(payload.settings)) return false;
-  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset", "validate_preset_report"].includes(payload.type) && !isRecord10(payload.preset)) return false;
+  if (payload.type === "save_settings" && !isRecord11(payload.settings)) return false;
+  if (payload.type === "test_tracker_connection" && "settings" in payload && payload.settings !== void 0 && !isRecord11(payload.settings)) return false;
+  if (["save_preset_as_new", "duplicate_preset", "update_preset", "validate_preset", "validate_preset_report"].includes(payload.type) && !isRecord11(payload.preset)) return false;
   if (["select_preset", "update_preset", "delete_preset"].includes(payload.type) && typeof payload.presetId !== "string") return false;
   if (["import_preset", "import_preset_pack"].includes(payload.type) && typeof payload.importText !== "string") return false;
   if (payload.type === "regenerate_message_tracker" && (typeof payload.messageId !== "string" || "swipeKey" in payload && payload.swipeKey !== null && payload.swipeKey !== void 0 && typeof payload.swipeKey !== "string")) return false;
@@ -5724,6 +5935,21 @@ function defaultDiagnostics(chatId) {
     lastPresetRenderLabResult: null,
     lastPresetRenderLabRenderedChars: null,
     lastPresetRenderLabWarnings: [],
+    ownerPowerModeEnabled: DEFAULT_SETTINGS.ownerPowerMode.enabled,
+    renderLabRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowRenderLabRuntime,
+    installedPresetRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowInstalledPresetRuntime,
+    declarativeHooksEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowTemplateActionHooks,
+    activePresetRequestedOwnerPower: false,
+    activePresetHasOwnerPowerScript: false,
+    lastOwnerPowerRuntimeMode: "static",
+    lastOwnerPowerMountedAt: null,
+    lastOwnerPowerDestroyedAt: null,
+    lastOwnerPowerError: null,
+    lastOwnerPowerEvent: null,
+    ownerPowerCrashCount: 0,
+    ownerPowerDisabledReason: null,
+    lastOwnerPowerSanitizerAction: null,
+    lastOwnerPowerImportWarning: null,
     lastHealthCheckAt: null,
     lastHealthCheckStatus: null,
     lastMaintenanceActionAt: null,
@@ -5747,9 +5973,9 @@ function maintenanceSeverityOrNull(value) {
   return value === "ok" || value === "warning" || value === "repairable" || value === "error" ? value : null;
 }
 function maintenanceReportOrNull(value) {
-  if (!isRecord10(value)) return null;
-  const counts = isRecord10(value.counts) ? value.counts : {};
-  const items = Array.isArray(value.items) ? value.items.filter(isRecord10).map((item) => {
+  if (!isRecord11(value)) return null;
+  const counts = isRecord11(value.counts) ? value.counts : {};
+  const items = Array.isArray(value.items) ? value.items.filter(isRecord11).map((item) => {
     const severity = maintenanceSeverityOrNull(item.severity);
     if (!severity || typeof item.category !== "string" || typeof item.message !== "string") return null;
     return {
@@ -5786,7 +6012,7 @@ function maintenanceReportOrNull(value) {
   };
 }
 function recordOrNull(value) {
-  return isRecord10(value) && !Array.isArray(value) ? value : null;
+  return isRecord11(value) && !Array.isArray(value) ? value : null;
 }
 function sourceKindOrNull(value) {
   return value === "manual" || value === "auto" || value === "widget" ? value : null;
@@ -5839,11 +6065,11 @@ function connectionTestStatus(value) {
 function activeTrackerJobsOrEmpty(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => {
-    return isRecord10(item) && typeof item.jobId === "string" && typeof item.messageId === "string" && typeof item.swipeKey === "string" && typeof item.startedAt === "string";
+    return isRecord11(item) && typeof item.jobId === "string" && typeof item.messageId === "string" && typeof item.swipeKey === "string" && typeof item.startedAt === "string";
   });
 }
 function errorOrNull(value) {
-  if (!isRecord10(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
+  if (!isRecord11(value) || typeof value.stage !== "string" || typeof value.message !== "string") return null;
   const error = {
     stage: value.stage,
     message: value.message,
@@ -5853,7 +6079,7 @@ function errorOrNull(value) {
   return error;
 }
 function cancellationOrNull(value) {
-  if (!isRecord10(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
+  if (!isRecord11(value) || typeof value.jobId !== "string" || typeof value.requestId !== "string" || typeof value.reason !== "string") return null;
   return {
     jobId: value.jobId,
     requestId: value.requestId,
@@ -5863,7 +6089,7 @@ function cancellationOrNull(value) {
 }
 function repairDiagnostics(value, chatId) {
   const base = defaultDiagnostics(chatId);
-  if (!isRecord10(value)) return base;
+  if (!isRecord11(value)) return base;
   return {
     ...base,
     status: value.status === "generating" || value.status === "error" ? value.status : "idle",
@@ -6134,6 +6360,21 @@ function repairDiagnostics(value, chatId) {
     lastPresetRenderLabResult: stringOrNull4(value.lastPresetRenderLabResult),
     lastPresetRenderLabRenderedChars: numberOrNull2(value.lastPresetRenderLabRenderedChars),
     lastPresetRenderLabWarnings: stringArray(value.lastPresetRenderLabWarnings),
+    ownerPowerModeEnabled: typeof value.ownerPowerModeEnabled === "boolean" ? value.ownerPowerModeEnabled : base.ownerPowerModeEnabled,
+    renderLabRuntimeEnabled: typeof value.renderLabRuntimeEnabled === "boolean" ? value.renderLabRuntimeEnabled : base.renderLabRuntimeEnabled,
+    installedPresetRuntimeEnabled: typeof value.installedPresetRuntimeEnabled === "boolean" ? value.installedPresetRuntimeEnabled : base.installedPresetRuntimeEnabled,
+    declarativeHooksEnabled: typeof value.declarativeHooksEnabled === "boolean" ? value.declarativeHooksEnabled : base.declarativeHooksEnabled,
+    activePresetRequestedOwnerPower: typeof value.activePresetRequestedOwnerPower === "boolean" ? value.activePresetRequestedOwnerPower : base.activePresetRequestedOwnerPower,
+    activePresetHasOwnerPowerScript: typeof value.activePresetHasOwnerPowerScript === "boolean" ? value.activePresetHasOwnerPowerScript : base.activePresetHasOwnerPowerScript,
+    lastOwnerPowerRuntimeMode: stringOrNull4(value.lastOwnerPowerRuntimeMode),
+    lastOwnerPowerMountedAt: stringOrNull4(value.lastOwnerPowerMountedAt),
+    lastOwnerPowerDestroyedAt: stringOrNull4(value.lastOwnerPowerDestroyedAt),
+    lastOwnerPowerError: stringOrNull4(value.lastOwnerPowerError),
+    lastOwnerPowerEvent: stringOrNull4(value.lastOwnerPowerEvent),
+    ownerPowerCrashCount: typeof value.ownerPowerCrashCount === "number" && Number.isFinite(value.ownerPowerCrashCount) ? Math.max(0, Math.round(value.ownerPowerCrashCount)) : 0,
+    ownerPowerDisabledReason: stringOrNull4(value.ownerPowerDisabledReason),
+    lastOwnerPowerSanitizerAction: stringOrNull4(value.lastOwnerPowerSanitizerAction),
+    lastOwnerPowerImportWarning: stringOrNull4(value.lastOwnerPowerImportWarning),
     lastHealthCheckAt: stringOrNull4(value.lastHealthCheckAt),
     lastHealthCheckStatus: maintenanceSeverityOrNull(value.lastHealthCheckStatus),
     lastMaintenanceActionAt: stringOrNull4(value.lastMaintenanceActionAt),
@@ -6205,7 +6446,7 @@ async function loadActivePresetState(chatId, userId) {
     fallback: null,
     userId
   });
-  if (!isRecord10(raw) || typeof raw.selectedPresetId !== "string") {
+  if (!isRecord11(raw) || typeof raw.selectedPresetId !== "string") {
     return defaultActivePresetState();
   }
   return {
@@ -6725,6 +6966,7 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
   };
   const injectionPreview = memoryPreviewResult?.entries.length ? formatTrackerInjectionBlock(memoryPreviewResult.entries, injectionSettings2) : null;
   const stateError = error ?? diagnostics.lastError;
+  const ownerPowerSummary = ownerPowerFeatureSummary(presetState.activePreset);
   return {
     version: EXTENSION_VERSION,
     status: status ?? diagnostics.status,
@@ -6795,7 +7037,14 @@ async function buildState(chatId, userId, status, error = null, renderPreview = 
       iframeFallbackVisibleInMainUi: false,
       expandedWidthModeResolved: settings.expandedWidth.expandedWidthMode,
       lastPresetEstimatedTokens: presetStats.estimatedTokens,
-      lastPresetEstimatedRenderedChars: presetStats.estimatedRenderedChars
+      lastPresetEstimatedRenderedChars: presetStats.estimatedRenderedChars,
+      ownerPowerModeEnabled: settings.ownerPowerMode.enabled,
+      renderLabRuntimeEnabled: settings.ownerPowerMode.allowRenderLabRuntime,
+      installedPresetRuntimeEnabled: settings.ownerPowerMode.allowInstalledPresetRuntime,
+      declarativeHooksEnabled: settings.ownerPowerMode.allowTemplateActionHooks,
+      activePresetRequestedOwnerPower: ownerPowerSummary.requested,
+      activePresetHasOwnerPowerScript: ownerPowerSummary.hasScript,
+      lastOwnerPowerRuntimeMode: settings.ownerPowerMode.allowTemplateActionHooks ? "declarative_hooks" : diagnostics.lastOwnerPowerRuntimeMode
     },
     connectionProfiles: connectionCache.profiles
   };
@@ -6882,10 +7131,10 @@ function keywordMatches(text, keywords, caseSensitive) {
   });
 }
 function contextObjectString(value, key) {
-  return isRecord10(value) && typeof value[key] === "string" ? value[key].trim() : "";
+  return isRecord11(value) && typeof value[key] === "string" ? value[key].trim() : "";
 }
 function contextObjectStringArray(value, key) {
-  if (!isRecord10(value) || !Array.isArray(value[key])) return [];
+  if (!isRecord11(value) || !Array.isArray(value[key])) return [];
   return value[key].filter((item) => typeof item === "string" && item.trim().length > 0);
 }
 async function collectWorldLoreContext(chatId, userId, settings) {
@@ -6920,7 +7169,7 @@ async function collectWorldLoreContext(chatId, userId, settings) {
           const comment = contextObjectString(entry, "comment");
           const keys = contextObjectStringArray(entry, "keys");
           const source = contextObjectString(entry, "source");
-          const score = isRecord10(entry) && typeof entry.score === "number" ? ` score=${entry.score}` : "";
+          const score = isRecord11(entry) && typeof entry.score === "number" ? ` score=${entry.score}` : "";
           const rendered = [
             comment ? `Entry: ${comment}` : "Entry: activated world/lore item",
             keys.length ? `Keys: ${keys.join(", ")}` : null,
@@ -6972,7 +7221,7 @@ async function collectCharacterContext(chatId, userId, settings) {
     } else {
       try {
         const chat = await spindle.chats?.get?.(chatId, userId);
-        const characterId = isRecord10(chat) && typeof chat.character_id === "string" ? chat.character_id : null;
+        const characterId = isRecord11(chat) && typeof chat.character_id === "string" ? chat.character_id : null;
         if (!characterId) {
           skippedReason = "Active chat has no character id.";
         } else {
@@ -7082,7 +7331,7 @@ function contextFilterDiagnostics(result) {
 }
 function normalizeGenerationText(result) {
   if (typeof result === "string" && result.trim()) return result;
-  if (!isRecord10(result)) {
+  if (!isRecord11(result)) {
     throw new Error("Lumiverse generation returned an unsupported response.");
   }
   for (const key of ["content", "text", "output", "response"]) {
@@ -7091,19 +7340,19 @@ function normalizeGenerationText(result) {
   }
   const message = result.message;
   if (typeof message === "string" && message.trim()) return message;
-  if (isRecord10(message) && typeof message.content === "string" && message.content.trim()) {
+  if (isRecord11(message) && typeof message.content === "string" && message.content.trim()) {
     return message.content;
   }
   throw new Error("Lumiverse generation completed without textual content.");
 }
 function generationFinishReason(result) {
-  if (!isRecord10(result)) return null;
+  if (!isRecord11(result)) return null;
   for (const key of ["finish_reason", "finishReason", "stop_reason", "stopReason"]) {
     const value = result[key];
     if (typeof value === "string") return value;
   }
   const choice = Array.isArray(result.choices) ? result.choices[0] : null;
-  if (isRecord10(choice)) {
+  if (isRecord11(choice)) {
     for (const key of ["finish_reason", "finishReason"]) {
       const value = choice[key];
       if (typeof value === "string") return value;
@@ -7112,7 +7361,7 @@ function generationFinishReason(result) {
   return null;
 }
 function generationUsage(result) {
-  if (!isRecord10(result)) return null;
+  if (!isRecord11(result)) return null;
   const usage = result.usage ?? result.token_usage ?? result.tokenUsage;
   return recordOrNull(usage);
 }
@@ -7439,11 +7688,11 @@ function targetUsersForChat(chatId, userId) {
   return [...usersByChat.get(chatId) ?? []];
 }
 function isChatMessage(value) {
-  return isRecord10(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
+  return isRecord11(value) && typeof value.id === "string" && typeof value.chat_id === "string" && typeof value.index_in_chat === "number" && typeof value.is_user === "boolean" && typeof value.content === "string";
 }
 function messageFromEventPayload(payload) {
   if (isChatMessage(payload)) return payload;
-  if (isRecord10(payload) && isChatMessage(payload.message)) return payload.message;
+  if (isRecord11(payload) && isChatMessage(payload.message)) return payload.message;
   return null;
 }
 async function queueAutoDebounce(input) {
@@ -7789,7 +8038,7 @@ async function handleMessageSent(payload, userId) {
   }
 }
 async function handleMessageSwiped(payload, userId) {
-  if (!isRecord10(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  if (!isRecord11(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
   const message = payload.message;
   const identity = deriveSwipeTrackerIdentity(payload.chatId, message);
   const users = targetUsersForChat(payload.chatId, userId);
@@ -7828,7 +8077,7 @@ async function handleMessageSwiped(payload, userId) {
   }
 }
 async function handleSwipeEdited(payload, userId) {
-  if (!isRecord10(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
+  if (!isRecord11(payload) || !isChatMessage(payload.message) || typeof payload.chatId !== "string") return;
   await handleMessageSwiped({
     chatId: payload.chatId,
     message: payload.message,
@@ -7836,14 +8085,14 @@ async function handleSwipeEdited(payload, userId) {
   }, userId);
 }
 function handleChatSwitched(payload, userId) {
-  if (!userId || !isRecord10(payload)) return;
+  if (!userId || !isRecord11(payload)) return;
   const chatId = typeof payload.chatId === "string" ? payload.chatId : null;
   rememberActiveChat(userId, chatId);
 }
 function stringAtPath2(value, path) {
   let current = value;
   for (const segment of path) {
-    if (!isRecord10(current)) return null;
+    if (!isRecord11(current)) return null;
     current = current[segment];
   }
   return typeof current === "string" && current.trim() ? current : null;
@@ -8705,13 +8954,16 @@ function normalizePresetDraft(value) {
     name: typeof value.name === "string" ? value.name : "",
     description: typeof value.description === "string" ? value.description : "",
     version: typeof value.version === "string" ? value.version : "1.0",
-    jsonSchema: isRecord10(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
+    jsonSchema: isRecord11(value.jsonSchema) && !Array.isArray(value.jsonSchema) ? value.jsonSchema : {},
     promptInstructions: typeof value.promptInstructions === "string" ? value.promptInstructions : ""
   };
   if (typeof value.id === "string") draft.id = value.id;
   if (typeof value.htmlTemplate === "string") draft.htmlTemplate = value.htmlTemplate;
+  if (typeof value.ownerPowerScript === "string") draft.ownerPowerScript = value.ownerPowerScript;
+  const ownerPowerManifest = repairOwnerPowerManifest(value.ownerPowerManifest);
+  if (ownerPowerManifest) draft.ownerPowerManifest = ownerPowerManifest;
   if (typeof value.notes === "string") draft.notes = value.notes;
-  if (isRecord10(value.capabilities)) {
+  if (isRecord11(value.capabilities)) {
     const capabilities = {};
     if (typeof value.capabilities.supportsHtmlTemplate === "boolean") {
       capabilities.supportsHtmlTemplate = value.capabilities.supportsHtmlTemplate;
@@ -8958,6 +9210,8 @@ async function importPresetPackHandler(chatId, userId, importText, options, requ
     throw new Error(errorMsg);
   }
   const importedPreset = result.preset;
+  const importedOwnerPowerSummary = ownerPowerFeatureSummary(importedPreset);
+  const ownerPowerImportWarning = result.warnings.find((warning) => /Owner Power|script|Dev Mode/i.test(warning)) ?? null;
   if (options.presetName && options.presetName.trim()) {
     importedPreset.name = options.presetName.trim();
   }
@@ -9054,7 +9308,11 @@ async function importPresetPackHandler(chatId, userId, importText, options, requ
     lastPresetPackImportStatus: "success",
     lastPresetPackImportError: null,
     lastPresetPackImportSizeChars: importText.length,
-    lastPresetPackImportEstimatedTokens: stats.estimatedTokens
+    lastPresetPackImportEstimatedTokens: stats.estimatedTokens,
+    activePresetRequestedOwnerPower: importedOwnerPowerSummary.requested,
+    activePresetHasOwnerPowerScript: importedOwnerPowerSummary.hasScript,
+    lastOwnerPowerImportWarning: ownerPowerImportWarning,
+    lastOwnerPowerSanitizerAction: importedOwnerPowerSummary.hasScript ? "Owner Power script source imported inertly; sanitized rendering remains script-free." : null
   });
   await sendState(resolvedChatId, userId, "idle", null, requestId);
 }
@@ -9529,6 +9787,53 @@ async function buildMaintenanceReport(chatId, userId, options = {}) {
       message: "Message display render limit may be lower than the active preset needs.",
       suggestedFix: "Increase Message render chars or use popover/fullscreen display.",
       repairActionId: null
+    });
+  }
+  const activeOwnerPower = ownerPowerFeatureSummary(presetState.activePreset);
+  if (settings.ownerPowerMode.enabled) {
+    items.push({
+      severity: "warning",
+      category: "Owner Power",
+      message: "Owner Power Mode is enabled for this local install.",
+      suggestedFix: "Keep it enabled only for your own approved presets; use Disable Owner Power if the drawer becomes unstable.",
+      repairActionId: "disable_owner_power"
+    });
+  }
+  if (settings.ownerPowerMode.allowInstalledPresetRuntime) {
+    items.push({
+      severity: "warning",
+      category: "Owner Power",
+      message: "Installed preset runtime is enabled; interactive behavior can run outside Render Lab surfaces.",
+      suggestedFix: "Keep installed runtime off unless you are actively testing a preset you authored.",
+      repairActionId: "disable_owner_power"
+    });
+  }
+  if (activeOwnerPower.hasScript && !settings.ownerPowerMode.enabled) {
+    items.push({
+      severity: "warning",
+      category: "Owner Power",
+      message: "The active preset contains Owner Power runtime source, but Owner Power Mode is disabled.",
+      suggestedFix: "Use Render Lab static preview, or enable Owner Power manually for this local preset.",
+      repairActionId: null
+    });
+  }
+  if (settings.ownerPowerMode.allowExternalUrls || settings.ownerPowerMode.allowNetwork || settings.ownerPowerMode.allowHostDomAccess) {
+    items.push({
+      severity: "warning",
+      category: "Owner Power",
+      message: "One or more high-risk Owner Power capability flags are enabled.",
+      suggestedFix: "Reset Owner Power settings unless a specific local preset requires them.",
+      repairActionId: "reset_owner_power_settings"
+    });
+  }
+  const currentDiagnostics = await loadDiagnostics(chatId, userId);
+  if (currentDiagnostics.ownerPowerCrashCount >= settings.ownerPowerMode.crashDisableThreshold) {
+    items.push({
+      severity: "repairable",
+      category: "Owner Power",
+      message: "Owner Power runtime crash count has reached the disable threshold.",
+      suggestedFix: "Clear crash counters after reviewing the preset, or reset Owner Power settings.",
+      repairActionId: "clear_owner_power_crashes"
     });
   }
   const cache = connectionCacheForUser(userId);
@@ -10135,6 +10440,94 @@ async function repairSettingsAction(payload, userId) {
   }, "repair_settings");
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
+async function disableOwnerPowerAction(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const settings = await getSettings(userId);
+  settings.ownerPowerMode = {
+    ...settings.ownerPowerMode,
+    enabled: false,
+    allowRenderLabRuntime: false,
+    allowInstalledPresetRuntime: false,
+    allowScriptBlocks: false,
+    allowTemplateActionHooks: false,
+    allowExternalUrls: false,
+    allowNetwork: false,
+    allowHostDomAccess: false
+  };
+  await saveSettings(settings, userId);
+  const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+  await tryPersistDiagnostics({
+    ...diagnostics,
+    ownerPowerModeEnabled: false,
+    renderLabRuntimeEnabled: false,
+    installedPresetRuntimeEnabled: false,
+    declarativeHooksEnabled: false,
+    ownerPowerDisabledReason: "Owner Power Mode was disabled by maintenance action.",
+    lastOwnerPowerRuntimeMode: "static",
+    lastOwnerPowerEvent: "disabled",
+    lastOwnerPowerError: null
+  }, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Owner Power Mode was disabled and runtime capability flags were cleared."
+  }, "disable_owner_power");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+async function resetOwnerPowerSettingsAction(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const settings = await getSettings(userId);
+  settings.ownerPowerMode = { ...DEFAULT_SETTINGS.ownerPowerMode };
+  await saveSettings(settings, userId);
+  const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+  await tryPersistDiagnostics({
+    ...diagnostics,
+    ownerPowerModeEnabled: DEFAULT_SETTINGS.ownerPowerMode.enabled,
+    renderLabRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowRenderLabRuntime,
+    installedPresetRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowInstalledPresetRuntime,
+    declarativeHooksEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowTemplateActionHooks,
+    ownerPowerCrashCount: 0,
+    ownerPowerDisabledReason: null,
+    lastOwnerPowerRuntimeMode: "static",
+    lastOwnerPowerEvent: "reset",
+    lastOwnerPowerError: null
+  }, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Owner Power settings were reset to safe defaults."
+  }, "reset_owner_power_settings");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+async function clearOwnerPowerCrashesAction(payload, userId) {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+  await tryPersistDiagnostics({
+    ...diagnostics,
+    ownerPowerCrashCount: 0,
+    ownerPowerDisabledReason: null,
+    lastOwnerPowerError: null,
+    lastOwnerPowerEvent: "crash_counters_cleared"
+  }, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Owner Power crash counters were cleared."
+  }, "clear_owner_power_crashes");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
 async function repairSnapshotIndexAction(payload, userId) {
   const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error) => {
     stageError("active_chat", error);
@@ -10407,6 +10800,18 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "repair_settings") {
         await repairSettingsAction(payload, userId);
+        return;
+      }
+      if (payload.type === "disable_owner_power") {
+        await disableOwnerPowerAction(payload, userId);
+        return;
+      }
+      if (payload.type === "reset_owner_power_settings") {
+        await resetOwnerPowerSettingsAction(payload, userId);
+        return;
+      }
+      if (payload.type === "clear_owner_power_crashes") {
+        await clearOwnerPowerCrashesAction(payload, userId);
         return;
       }
       if (payload.type === "repair_snapshot_index") {

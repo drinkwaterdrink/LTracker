@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.25`
+Version: `0.26`
 
-Current release: `0.25 Context Filters, World/Lore Integration Prep, and Character Exclusions`
+Current release: `0.26 Owner Power Mode + Interactive Tracker Runtime`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -27,6 +27,7 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Compact validation UX with grouped reports, clear pack/template/rendered character labels, and reliable copyable validation reports.
 - Maintenance & Repair tools for health checks, settings repair, snapshot index cleanup, preset render-lock diagnostics, orphan scans, broken embedded tag cleanup, and copyable maintenance reports.
 - Context Filters for tracker generation, auto-mode exclusions, manual lore/character/persona notes, and read-only native world/character/persona context when Lumiverse permissions are granted.
+- Owner Power Mode for private/local interactive tracker UIs using LTracker-owned declarative action hooks, inert runtime-source import/export, Render Lab testing, diagnostics, crash recovery, and a global kill switch.
 
 ## Drawer Command Center
 
@@ -135,6 +136,59 @@ v0.25 adds a clear context assembly layer before tracker prompt construction:
 - Prompt preview diagnostics now include included context sections and an exclusion report, with copy actions for full prompt preview, included context, lore context, and filter reports.
 
 Health Check now warns when context filters remove all normal sources, native world/character/persona context is enabled without an available API/permission, or additional context budgets are unusually high.
+
+## v0.26 Owner Power Mode + Interactive Tracker Runtime
+
+Owner Power Mode is a private/local layer for presets you personally make or approve. It does not replace Safe Mode or Trusted Mode:
+
+- Safe Mode: strict shared-preset mode. Style blocks, SVG, scripts, event handlers, external URLs, and action hooks are stripped.
+- Trusted Mode: user-authored static HUD mode. Scoped CSS, safe inline styles, safe SVG, template helpers, details/summary, loops, and conditionals are allowed. Script execution remains disabled.
+- Owner Power Mode: local interactive mode. Presets may carry inert `ownerPowerScript` / `ownerPowerManifest` metadata, and LTracker can run scoped declarative action hooks for tabs, menus, panels, class toggles, copy buttons, fullscreen actions, reset view, expand all, and collapse all.
+
+Imported packs cannot enable Owner Power automatically. If a pack contains Owner Power runtime source or asks for Dev/Owner mode, LTracker imports it inertly, strips any recommended setting that tries to enable Owner Power, downgrades recommended Dev renderer mode to Trusted, and shows an import-review warning. The runtime source is preserved for your own presets but does not run in Safe or Trusted Mode.
+
+Render Lab is the first testing surface:
+
+- Static preview remains the default.
+- Interactive preview uses LTracker-owned declarative hooks when `allowTemplateActionHooks` is enabled.
+- The overlay keeps the fixed close button and static fallback. A failed action cannot trap the drawer.
+- Diagnostics show runtime mode, detected script source, script chars, last runtime event, crash count, and the last Owner Power error.
+
+Declarative hook examples:
+
+```html
+<button type="button" data-ltracker-power-action="show-panel" data-target="cast">Cast</button>
+<section data-ltracker-power-panel="cast">...</section>
+
+<button type="button" data-ltracker-power-action="toggle-class" data-target=".hud" data-class="compact">Compact</button>
+<button type="button" data-ltracker-power-action="copy-field" data-path="imgFull">Copy Image Prompt</button>
+<button type="button" data-ltracker-power-action="open-fullscreen">Fullscreen</button>
+<button type="button" data-ltracker-power-action="reset-view">Reset View</button>
+```
+
+Supported actions in this build:
+
+- `show-panel`
+- `toggle-panel`
+- `toggle-class`
+- `copy-field`
+- `copy-text`
+- `open-fullscreen`
+- `close-overlay`
+- `reset-view`
+- `expand-all`
+- `collapse-all`
+
+Full arbitrary preset JavaScript is intentionally deferred in `0.26`. The current scanner/runtime constraints prohibit runtime code generation and the extension should not expose Lumiverse host DOM, storage, generation, API keys, connection details, or unrestricted network access to a template. Owner Power script fields are therefore importable/exportable as inert source, while this release ships the stable declarative hook runtime.
+
+Recovery controls live under Advanced > Owner Power Mode:
+
+- Disable Owner Power now.
+- Reset Owner Power settings.
+- Clear Owner Power crash counters.
+- Copy Owner Power report.
+
+Maintenance & Repair warns when Owner Power is enabled, installed runtime is enabled, a preset contains inert runtime source while Owner Power is disabled, crash count reaches the disable threshold, or external/network/host DOM flags are enabled. Repair actions can disable Owner Power, reset settings, and clear crash counters.
 
 ## Preset-Locked Snapshot Rendering
 
@@ -537,6 +591,16 @@ Common settings are repaired back to safe defaults if missing or malformed.
 | `contextFilters.manualWorldLoreContext` | empty | Manual extra lore text for tracker generation only. |
 | `contextFilters.manualCharacterContext` | empty | Manual character notes for tracker generation only. |
 | `contextFilters.manualPersonaContext` | empty | Manual persona notes for tracker generation only. |
+| `ownerPowerMode.enabled` | `false` | Global private-use Owner Power switch. Imported packs cannot turn it on. |
+| `ownerPowerMode.allowRenderLabRuntime` | `false` | Allows interactive Render Lab testing when Owner Power is enabled. |
+| `ownerPowerMode.allowInstalledPresetRuntime` | `false` | Reserved installed-preset runtime gate; keep off unless testing your own preset. |
+| `ownerPowerMode.allowScriptBlocks` | `false` | Preserves script source as inert metadata only; it is not executed in this build. |
+| `ownerPowerMode.allowTemplateActionHooks` | `true` | Enables LTracker-owned scoped declarative actions. |
+| `ownerPowerMode.allowExternalUrls` | `false` | External URLs remain blocked by default. |
+| `ownerPowerMode.allowNetwork` | `false` | Network access remains blocked by default. |
+| `ownerPowerMode.allowHostDomAccess` | `false` | Host DOM access is unsupported and should stay off. |
+| `ownerPowerMode.maxScriptChars` | `50000` | Import/export cap for inert Owner Power source metadata. |
+| `ownerPowerMode.crashDisableThreshold` | `3` | Repeated runtime errors disable hooks when auto-disable is enabled. |
 
 ## Install And Development
 
@@ -571,7 +635,7 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 ## Known Limitations
 
-- JavaScript remains disabled outside future explicit Dev Mode.
+- Arbitrary preset JavaScript remains deferred; v0.26 ships inert runtime-source import/export and scoped declarative hooks.
 - Sequential generation, partial regeneration, and Preset Authoring Studio 2.0 are lower-priority optional future items rather than active roadmap work.
 - Full native World Book entry body ingestion is deferred until Lumiverse exposes a verified read API beyond activated entry metadata.
 - Full native Character API integration remains read-only and depends on granted `characters` permission; manual notes are the fallback.
@@ -584,10 +648,9 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 ## Roadmap
 
-1. `0.25 Context Filters, World/Lore Integration Prep, and Character Exclusions`
-2. `0.26 Dev Mode JS Sandbox Experiments`
-3. `0.27 Preset Marketplace / Pack Collections / Advanced Export Polish`
-4. `0.28 Final UX Polish / Stabilization`
+1. `0.26 Owner Power Mode + Interactive Tracker Runtime`
+2. `0.27 Preset Pack Collections / Advanced Export Polish`
+3. `0.28 Final UX Polish / Stabilization`
 
 ### Optional Future / Backlog
 
@@ -595,7 +658,8 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 - Preset Authoring Studio 2.0
 - Native World Book body integration pending verified Spindle support
 - Native Character write/update integration remains out of scope
+- Public marketplace hardening, if LTracker ever becomes public
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.25`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.26`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

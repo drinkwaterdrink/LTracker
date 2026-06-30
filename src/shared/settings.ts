@@ -11,6 +11,7 @@ import {
   type LTrackerMessageDisplayDisplayMode,
   type LTrackerMemoryOrder,
   type LTrackerMemorySource,
+  type LTrackerOwnerPowerSettings,
   type LTrackerReasoningEffort,
   type LTrackerReasoningSource,
   type LTrackerSettings,
@@ -56,6 +57,9 @@ export const SETTINGS_LIMITS = {
   maxWorldLoreChars: { min: 0, max: 512_000, default: 12_000 },
   maxCharacterContextChars: { min: 0, max: 512_000, default: 12_000 },
   maxPersonaContextChars: { min: 0, max: 256_000, default: 6_000 },
+  maxOwnerPowerScriptChars: { min: 0, max: 200_000, default: 50_000 },
+  maxOwnerPowerRuntimeErrors: { min: 1, max: 50, default: 5 },
+  ownerPowerCrashDisableThreshold: { min: 1, max: 20, default: 3 },
 } as const;
 
 export const DEFAULT_SETTINGS: LTrackerSettings = {
@@ -204,6 +208,20 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     manualCharacterContext: "",
     manualPersonaContext: "",
   },
+  ownerPowerMode: {
+    enabled: false,
+    allowRenderLabRuntime: false,
+    allowInstalledPresetRuntime: false,
+    allowScriptBlocks: false,
+    allowTemplateActionHooks: true,
+    allowExternalUrls: false,
+    allowNetwork: false,
+    allowHostDomAccess: false,
+    maxScriptChars: SETTINGS_LIMITS.maxOwnerPowerScriptChars.default,
+    maxRuntimeErrors: SETTINGS_LIMITS.maxOwnerPowerRuntimeErrors.default,
+    crashDisableThreshold: SETTINGS_LIMITS.ownerPowerCrashDisableThreshold.default,
+    autoDisableOnCrash: true,
+  },
   history: {
     pageSize: 25,
     showDuplicates: false,
@@ -346,6 +364,39 @@ function stringList(value: unknown, maxItems = 100): string[] {
   return result;
 }
 
+function repairOwnerPowerMode(source: Record<string, unknown>): LTrackerOwnerPowerSettings {
+  const defaults = DEFAULT_SETTINGS.ownerPowerMode;
+  return {
+    enabled: typeof source.enabled === "boolean" ? source.enabled : defaults.enabled,
+    allowRenderLabRuntime: typeof source.allowRenderLabRuntime === "boolean" ? source.allowRenderLabRuntime : defaults.allowRenderLabRuntime,
+    allowInstalledPresetRuntime: typeof source.allowInstalledPresetRuntime === "boolean" ? source.allowInstalledPresetRuntime : defaults.allowInstalledPresetRuntime,
+    allowScriptBlocks: typeof source.allowScriptBlocks === "boolean" ? source.allowScriptBlocks : defaults.allowScriptBlocks,
+    allowTemplateActionHooks: typeof source.allowTemplateActionHooks === "boolean" ? source.allowTemplateActionHooks : defaults.allowTemplateActionHooks,
+    allowExternalUrls: typeof source.allowExternalUrls === "boolean" ? source.allowExternalUrls : defaults.allowExternalUrls,
+    allowNetwork: typeof source.allowNetwork === "boolean" ? source.allowNetwork : defaults.allowNetwork,
+    allowHostDomAccess: typeof source.allowHostDomAccess === "boolean" ? source.allowHostDomAccess : defaults.allowHostDomAccess,
+    maxScriptChars: clampNumber(
+      source.maxScriptChars,
+      defaults.maxScriptChars,
+      SETTINGS_LIMITS.maxOwnerPowerScriptChars.min,
+      SETTINGS_LIMITS.maxOwnerPowerScriptChars.max,
+    ),
+    maxRuntimeErrors: clampNumber(
+      source.maxRuntimeErrors,
+      defaults.maxRuntimeErrors,
+      SETTINGS_LIMITS.maxOwnerPowerRuntimeErrors.min,
+      SETTINGS_LIMITS.maxOwnerPowerRuntimeErrors.max,
+    ),
+    crashDisableThreshold: clampNumber(
+      source.crashDisableThreshold,
+      defaults.crashDisableThreshold,
+      SETTINGS_LIMITS.ownerPowerCrashDisableThreshold.min,
+      SETTINGS_LIMITS.ownerPowerCrashDisableThreshold.max,
+    ),
+    autoDisableOnCrash: typeof source.autoDisableOnCrash === "boolean" ? source.autoDisableOnCrash : defaults.autoDisableOnCrash,
+  };
+}
+
 function repairContextFilters(source: Record<string, unknown>): LTrackerContextFiltersSettings {
   const defaults = DEFAULT_SETTINGS.contextFilters;
   return {
@@ -452,6 +503,7 @@ export function repairSettings(value: unknown): LTrackerSettings {
   const expandedWidthSource = isRecord(source.expandedWidth) ? source.expandedWidth : {};
   const connectionSource = isRecord(source.connection) ? source.connection : {};
   const contextFiltersSource = isRecord(source.contextFilters) ? source.contextFilters : {};
+  const ownerPowerModeSource = isRecord(source.ownerPowerMode) ? source.ownerPowerMode : {};
   const connectionParameterSource = isRecord(connectionSource.parameters) ? connectionSource.parameters : {};
   const connectionReasoningSource = isRecord(connectionSource.reasoning) ? connectionSource.reasoning : {};
   const previewSource = rendererSource.previewSource === "latest_message_snapshot" || rendererSource.previewSource === "latest_chat_snapshot"
@@ -886,6 +938,7 @@ export function repairSettings(value: unknown): LTrackerSettings {
         : TRACKER_CONNECTION_DEFAULT_TEST_PROMPT,
     },
     contextFilters: repairContextFilters(contextFiltersSource),
+    ownerPowerMode: repairOwnerPowerMode(ownerPowerModeSource),
     history: {
       pageSize: clampNumber(
         historySource.pageSize,

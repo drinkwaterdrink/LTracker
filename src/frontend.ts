@@ -19,6 +19,11 @@ import {
 } from "./shared/presetPack";
 import { detectTemplateRendererRequirements, renderHtmlTemplate } from "./shared/htmlTemplateRenderer";
 import {
+  ownerPowerFeatureSummary,
+  ownerPowerReport,
+  ownerPowerStatusLabel,
+} from "./shared/ownerPower";
+import {
   groupMessageTrackerHistory,
   MESSAGE_NATIVE_TOOLBAR_FALLBACK_REASON,
   MESSAGE_NATIVE_TOOLBAR_SUPPORTED,
@@ -1428,6 +1433,21 @@ function emptyState(): FrontendState {
       lastPresetRenderLabResult: null,
       lastPresetRenderLabRenderedChars: null,
       lastPresetRenderLabWarnings: [],
+      ownerPowerModeEnabled: DEFAULT_SETTINGS.ownerPowerMode.enabled,
+      renderLabRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowRenderLabRuntime,
+      installedPresetRuntimeEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowInstalledPresetRuntime,
+      declarativeHooksEnabled: DEFAULT_SETTINGS.ownerPowerMode.allowTemplateActionHooks,
+      activePresetRequestedOwnerPower: false,
+      activePresetHasOwnerPowerScript: false,
+      lastOwnerPowerRuntimeMode: "static",
+      lastOwnerPowerMountedAt: null,
+      lastOwnerPowerDestroyedAt: null,
+      lastOwnerPowerError: null,
+      lastOwnerPowerEvent: null,
+      ownerPowerCrashCount: 0,
+      ownerPowerDisabledReason: null,
+      lastOwnerPowerSanitizerAction: null,
+      lastOwnerPowerImportWarning: null,
       lastHealthCheckAt: null,
       lastHealthCheckStatus: null,
       lastMaintenanceActionAt: null,
@@ -1872,7 +1892,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   function isSettingsControl(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
-    return Boolean(target.closest("[data-setting], [data-auto-timing-setting], [data-budget-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-expanded-width-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning], [data-context-filter-setting]"));
+    return Boolean(target.closest("[data-setting], [data-auto-timing-setting], [data-budget-setting], [data-memory-setting], [data-injection-setting], [data-renderer-setting], [data-message-display-setting], [data-expanded-width-setting], [data-connection-setting], [data-connection-parameter], [data-connection-reasoning], [data-context-filter-setting], [data-owner-power-setting]"));
   }
 
   function isDisplaySurfaceControl(target: EventTarget | null): boolean {
@@ -2077,6 +2097,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   function handleDomTrackerAction(event: Event): void {
+    if (handleOwnerPowerAction(event)) return;
     const target = event.target instanceof HTMLElement
       ? event.target.closest<HTMLElement>("[data-ltracker-dom-action]")
       : null;
@@ -2108,6 +2129,149 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       noteInlineAction("delete", messageId, swipeKey);
       void deleteMessageTracker(messageId, swipeKey);
     }
+  }
+
+  function ownerPowerRootFor(target: HTMLElement): HTMLElement | null {
+    return target.closest<HTMLElement>("[data-render-lab-preview], .ltracker-dom-tracker, .ltracker-display-preview-body, .ltracker-popover-panel, .ltracker-reader-content-wrapper, .ltracker-render-lab-preview");
+  }
+
+  function scopedOwnerPowerTargets(root: HTMLElement, target: string | undefined): HTMLElement[] {
+    if (!target?.trim()) return [root];
+    const trimmed = target.trim();
+    if (!trimmed.startsWith(".") && !trimmed.startsWith("#") && !trimmed.startsWith("[") && !trimmed.includes(" ")) {
+      const panels = Array.from(root.querySelectorAll<HTMLElement>("[data-ltracker-power-panel]"));
+      const matchedPanels = panels.filter((panel) => panel.dataset.ltrackerPowerPanel === trimmed);
+      if (matchedPanels.length > 0) return matchedPanels;
+    }
+    try {
+      return Array.from(root.querySelectorAll<HTMLElement>(trimmed));
+    } catch {
+      return [];
+    }
+  }
+
+  function valueAtPath(source: unknown, path: string | undefined): unknown {
+    if (!path?.trim()) return undefined;
+    let current: unknown = source;
+    for (const segment of path.split(".").map((part) => part.trim()).filter(Boolean)) {
+      if (!isRecord(current) && !Array.isArray(current)) return undefined;
+      if (Array.isArray(current)) {
+        const index = Number(segment);
+        current = Number.isInteger(index) ? current[index] : undefined;
+      } else {
+        current = current[segment];
+      }
+    }
+    return current;
+  }
+
+  function ownerPowerDataForRoot(root: HTMLElement): Record<string, unknown> | null {
+    const tracker = root.closest<HTMLElement>("[data-ltracker-message-id][data-ltracker-swipe-key]");
+    const messageId = tracker?.dataset.ltrackerMessageId;
+    const swipeKey = tracker?.dataset.ltrackerSwipeKey;
+    if (messageId && swipeKey) {
+      return findHistoryEntry(messageId, swipeKey)?.snapshot?.snapshot.data ?? null;
+    }
+    if (root.closest("[data-render-lab-preview]")) {
+      return buildRenderLabPreview().sampleData;
+    }
+    return state.snapshot?.data ?? null;
+  }
+
+  function resetOwnerPowerView(root: HTMLElement): void {
+    for (const panel of Array.from(root.querySelectorAll<HTMLElement>("[data-ltracker-power-panel]"))) {
+      panel.hidden = false;
+    }
+    for (const element of Array.from(root.querySelectorAll<HTMLElement>(".ltracker-power-active"))) {
+      element.classList.remove("ltracker-power-active");
+    }
+    for (const detail of Array.from(root.querySelectorAll<HTMLDetailsElement>("details"))) {
+      detail.open = false;
+    }
+  }
+
+  function handleOwnerPowerAction(event: Event): boolean {
+    const control = event.target instanceof HTMLElement
+      ? event.target.closest<HTMLElement>("[data-ltracker-power-action]")
+      : null;
+    if (!control) return false;
+    const root = ownerPowerRootFor(control);
+    if (!root) return false;
+    if (!state.settings.ownerPowerMode.allowTemplateActionHooks) {
+      localDiagnostics({
+        lastOwnerPowerError: "Declarative action hooks are disabled in Owner Power settings.",
+        lastOwnerPowerEvent: "blocked",
+      });
+      return true;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const action = control.dataset.ltrackerPowerAction ?? "";
+    const target = control.dataset.target;
+    try {
+      if (action === "show-panel") {
+        const panels = Array.from(root.querySelectorAll<HTMLElement>("[data-ltracker-power-panel]"));
+        const targets = scopedOwnerPowerTargets(root, target);
+        const targetSet = new Set(targets);
+        for (const panel of panels) panel.hidden = !targetSet.has(panel);
+      } else if (action === "toggle-panel") {
+        for (const element of scopedOwnerPowerTargets(root, target)) element.hidden = !element.hidden;
+      } else if (action === "toggle-class") {
+        const className = control.dataset.class?.trim() ?? "";
+        if (!/^[A-Za-z_][\w-]{0,80}$/.test(className)) throw new Error("Invalid class name for toggle-class.");
+        for (const element of scopedOwnerPowerTargets(root, target)) element.classList.toggle(className);
+      } else if (action === "copy-field") {
+        const value = valueAtPath(ownerPowerDataForRoot(root), control.dataset.path);
+        const text = typeof value === "string" ? value : value === undefined ? null : JSON.stringify(value, null, 2);
+        void copyText(text, "Owner Power field");
+      } else if (action === "copy-text") {
+        const targets = scopedOwnerPowerTargets(root, target);
+        const text = (control.dataset.text ?? targets.map((element) => element.textContent?.trim() ?? "").filter(Boolean).join("\n")) || control.textContent?.trim() || null;
+        void copyText(text, "Owner Power text");
+      } else if (action === "open-fullscreen") {
+        const entry = latestPreviewEntry();
+        if (entry) openFullscreenReader(entry, true);
+      } else if (action === "close-overlay") {
+        closeRenderLabPreview();
+        closeDisplayPreview();
+        closePopover();
+        closeFullscreenReader();
+      } else if (action === "reset-view") {
+        resetOwnerPowerView(root);
+      } else if (action === "expand-all" || action === "collapse-all") {
+        for (const detail of Array.from(root.querySelectorAll<HTMLDetailsElement>("details"))) {
+          detail.open = action === "expand-all";
+        }
+      } else {
+        throw new Error(`Unsupported Owner Power action: ${action || "missing action"}.`);
+      }
+      localDiagnostics({
+        lastOwnerPowerRuntimeMode: "declarative_hooks",
+        lastOwnerPowerEvent: action,
+        lastOwnerPowerError: null,
+      });
+    } catch (error) {
+      const crashCount = state.diagnostics.ownerPowerCrashCount + 1;
+      localDiagnostics({
+        lastOwnerPowerRuntimeMode: "declarative_hooks",
+        lastOwnerPowerEvent: action || "failed",
+        lastOwnerPowerError: errorMessage(error),
+        ownerPowerCrashCount: crashCount,
+        ownerPowerDisabledReason: state.settings.ownerPowerMode.autoDisableOnCrash && crashCount >= state.settings.ownerPowerMode.crashDisableThreshold
+          ? "Owner Power action hooks were disabled after repeated runtime errors."
+          : state.diagnostics.ownerPowerDisabledReason,
+      });
+      if (state.settings.ownerPowerMode.autoDisableOnCrash && crashCount >= state.settings.ownerPowerMode.crashDisableThreshold) {
+        saveSettingsValue({
+          ...state.settings,
+          ownerPowerMode: {
+            ...state.settings.ownerPowerMode,
+            allowTemplateActionHooks: false,
+          },
+        }, "owner-power-crash-disable");
+      }
+    }
+    return true;
   }
 
   function renderInlineTrackerHtml(entry: MessageTrackerHistoryEntry): string {
@@ -2359,6 +2523,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
 
     panel.addEventListener("click", (e) => {
+      if (handleOwnerPowerAction(e)) return;
       const btn = e.target instanceof HTMLElement ? e.target.closest("[data-popover-action]") : null;
       if (!btn) return;
       const action = (btn as HTMLElement).dataset.popoverAction;
@@ -2482,6 +2647,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     `;
 
     overlay.addEventListener("click", (e) => {
+      if (handleOwnerPowerAction(e)) return;
       const btn = e.target instanceof HTMLElement ? e.target.closest("[data-reader-action]") : null;
       if (!btn) return;
       const action = (btn as HTMLElement).dataset.readerAction;
@@ -2540,6 +2706,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     closeRenderLabPreview();
 
     const lab = buildRenderLabPreview();
+    const labOwnerPowerSummary = ownerPowerFeatureSummary(lab.preset);
     const width = renderLabWidthPx();
     const presetName = lab.preset.name ?? "Render Lab Preset";
     const warningCount = lab.warnings.length;
@@ -2576,6 +2743,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     `;
 
     overlay.addEventListener("click", (event) => {
+      if (handleOwnerPowerAction(event)) return;
       const closeTarget = event.target instanceof HTMLElement
         ? event.target.closest("[data-render-lab-preview-close]")
         : null;
@@ -2595,6 +2763,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       lastPresetRenderLabResult: fullscreen ? "fullscreen_preview_opened" : "preview_overlay_opened",
       lastPresetRenderLabRenderedChars: lab.html.length,
       lastPresetRenderLabWarnings: lab.warnings.slice(0, 20),
+      lastOwnerPowerRuntimeMode: state.settings.ownerPowerMode.allowTemplateActionHooks ? "declarative_hooks" : "static",
+      lastOwnerPowerMountedAt: new Date().toISOString(),
+      lastOwnerPowerSanitizerAction: labOwnerPowerSummary.hasScript ? "script source preserved inertly; sanitized HTML remains script-free" : state.diagnostics.lastOwnerPowerSanitizerAction,
     });
   }
 
@@ -2604,6 +2775,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     activeRenderLabPreviewElement = null;
     localDiagnostics({
       lastPresetRenderLabResult: "preview_closed",
+      lastOwnerPowerDestroyedAt: new Date().toISOString(),
     });
   }
 
@@ -2679,6 +2851,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       </div>
     `;
     panel.addEventListener("click", (event) => {
+      if (handleOwnerPowerAction(event)) return;
       const button = event.target instanceof HTMLElement ? event.target.closest("[data-preview-action]") : null;
       if (button) {
         closeDisplayPreview();
@@ -3285,6 +3458,29 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       if (!input) return state.settings.contextFilters[name];
       return input.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
     };
+    const ownerPowerBooleanValue = (
+      name: keyof Pick<
+        LTrackerSettings["ownerPowerMode"],
+        | "enabled"
+        | "allowRenderLabRuntime"
+        | "allowInstalledPresetRuntime"
+        | "allowScriptBlocks"
+        | "allowTemplateActionHooks"
+        | "allowExternalUrls"
+        | "allowNetwork"
+        | "allowHostDomAccess"
+        | "autoDisableOnCrash"
+      >,
+    ): boolean => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-owner-power-setting="${name}"]`);
+      return input ? input.checked : state.settings.ownerPowerMode[name];
+    };
+    const ownerPowerNumberValue = (
+      name: keyof Pick<LTrackerSettings["ownerPowerMode"], "maxScriptChars" | "maxRuntimeErrors" | "crashDisableThreshold">,
+    ): number => {
+      const input = tab.root.querySelector<HTMLInputElement>(`[data-owner-power-setting="${name}"]`);
+      return input ? Number(input.value) : state.settings.ownerPowerMode[name];
+    };
     const injectionNumberValue = (name: keyof Pick<LTrackerSettings["injection"], "retainCount" | "maxInjectedChars">): number => {
       const input = tab.root.querySelector<HTMLInputElement>(`[data-injection-setting="${name}"]`);
       return input ? Number(input.value) : state.settings.injection[name];
@@ -3564,6 +3760,20 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         manualWorldLoreContext: contextFilterTextValue("manualWorldLoreContext"),
         manualCharacterContext: contextFilterTextValue("manualCharacterContext"),
         manualPersonaContext: contextFilterTextValue("manualPersonaContext"),
+      },
+      ownerPowerMode: {
+        enabled: ownerPowerBooleanValue("enabled"),
+        allowRenderLabRuntime: ownerPowerBooleanValue("allowRenderLabRuntime"),
+        allowInstalledPresetRuntime: ownerPowerBooleanValue("allowInstalledPresetRuntime"),
+        allowScriptBlocks: ownerPowerBooleanValue("allowScriptBlocks"),
+        allowTemplateActionHooks: ownerPowerBooleanValue("allowTemplateActionHooks"),
+        allowExternalUrls: ownerPowerBooleanValue("allowExternalUrls"),
+        allowNetwork: ownerPowerBooleanValue("allowNetwork"),
+        allowHostDomAccess: ownerPowerBooleanValue("allowHostDomAccess"),
+        maxScriptChars: ownerPowerNumberValue("maxScriptChars"),
+        maxRuntimeErrors: ownerPowerNumberValue("maxRuntimeErrors"),
+        crashDisableThreshold: ownerPowerNumberValue("crashDisableThreshold"),
+        autoDisableOnCrash: ownerPowerBooleanValue("autoDisableOnCrash"),
       },
       history: {
         pageSize: state.settings.history?.pageSize ?? 25,
@@ -3885,6 +4095,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         supportsHtmlTemplate: htmlTemplate.trim().length > 0,
       },
     };
+    if (state.activePreset.ownerPowerScript !== undefined) draft.ownerPowerScript = state.activePreset.ownerPowerScript;
+    if (state.activePreset.ownerPowerManifest !== undefined) draft.ownerPowerManifest = state.activePreset.ownerPowerManifest;
     return draft;
   }
 
@@ -4724,6 +4936,21 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const statusTone = (tone: "success" | "warning" | "error" | "active", label: string): string =>
       `<span class="ltracker-status-chip" data-tone="${tone}">${escapeHtml(label)}</span>`;
 
+    const activeOwnerPowerSummary = ownerPowerFeatureSummary(activePreset);
+    const ownerPowerReportText = ownerPowerReport({
+      settings: state.settings.ownerPowerMode,
+      preset: activePreset,
+      crashCount: diagnostics.ownerPowerCrashCount,
+      disabledReason: diagnostics.ownerPowerDisabledReason,
+      lastError: diagnostics.lastOwnerPowerError,
+      lastEvent: diagnostics.lastOwnerPowerEvent,
+    });
+    const ownerPowerStatusChip = state.settings.ownerPowerMode.enabled
+      ? statusTone("warning", "Owner Power on")
+      : activeOwnerPowerSummary.requested
+        ? statusTone("warning", "Owner Power available")
+        : statusTone("success", "Static safe");
+
     const renderLab = buildRenderLabPreview();
     const renderLabWidth = renderLabWidthPx();
     const renderLabRequirements = renderLab.report.rendererRequirements.features.length > 0
@@ -4778,6 +5005,34 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               <option value="checker"${selected(renderLabBackground === "checker")}>Transparent checker</option>
             </select>
           </label>
+        </div>
+        <div class="ltracker-command-card" style="margin-top: 12px;">
+          <div class="ltracker-command-card-header">
+            <span class="ltracker-card-title">Owner Power Preview</span>
+            ${ownerPowerStatusChip}
+          </div>
+          <div class="ltracker-grid">
+            ${renderRow("Runtime mode", state.settings.ownerPowerMode.allowTemplateActionHooks ? "Declarative hooks" : "Static only")}
+            ${renderRow("Script detected", activeOwnerPowerSummary.hasScript ? "yes" : "no")}
+            ${renderRow("Script chars", activeOwnerPowerSummary.scriptChars)}
+            ${renderRow("Last runtime event", diagnostics.lastOwnerPowerEvent)}
+            ${renderRow("Runtime errors", diagnostics.ownerPowerCrashCount)}
+          </div>
+          <div class="ltracker-settings" style="margin-top: 10px;">
+            <label class="ltracker-check">
+              <input type="checkbox" data-owner-power-setting="enabled"${checked(state.settings.ownerPowerMode.enabled)}>
+              Owner Power enabled for this local install
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-owner-power-setting="allowRenderLabRuntime"${checked(state.settings.ownerPowerMode.allowRenderLabRuntime)}>
+              Allow Render Lab interactive preview
+            </label>
+            <label class="ltracker-check">
+              <input type="checkbox" data-owner-power-setting="allowTemplateActionHooks"${checked(state.settings.ownerPowerMode.allowTemplateActionHooks)}>
+              Enable declarative action hooks
+            </label>
+          </div>
+          <p class="ltracker-note">Script source stays inert in this build. Interactive preview uses LTracker-owned declarative hooks inside the preset root.</p>
         </div>
         <div class="ltracker-command-card" style="margin-top: 12px;">
           <div class="ltracker-command-card-header">
@@ -4877,6 +5132,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           </div>
         `
         : "";
+      const importOwnerPowerSummary = preset ? ownerPowerFeatureSummary(preset) : null;
+      const importOwnerPowerHtml = importOwnerPowerSummary?.requested || importOwnerPowerSummary?.hasScript
+        ? `
+          <div class="ltracker-themed-callout">
+            <strong>Owner Power review</strong>
+            <div class="ltracker-grid">
+              ${renderRow("Owner Power requested", importOwnerPowerSummary.requested ? "yes" : "no")}
+              ${renderRow("Script-like source detected", importOwnerPowerSummary.hasScript ? "yes" : "no")}
+              ${renderRow("Runtime installed", "disabled until you enable Owner Power manually")}
+              ${renderRow("Script chars", importOwnerPowerSummary.scriptChars)}
+              ${renderRow("External/network access", "blocked by default")}
+            </div>
+            <div class="ltracker-warning-text">Preset packs cannot enable Owner Power automatically. Runtime source imports inertly and never runs during review.</div>
+            ${pack.warnings.filter((warning) => /Owner Power|script|Dev Mode/i.test(warning)).map((warning) => `<div class="ltracker-warning-text">${escapeHtml(warning)}</div>`).join("")}
+          </div>
+        `
+        : "";
 
       importReviewHtml = `
         <div class="ltracker-import-review">
@@ -4890,6 +5162,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             ${renderRow("Min. LTracker version", meta?.minVersion ?? "None")}
           </div>
           ${rendererRequirementsHtml}
+          ${importOwnerPowerHtml}
 
           <div class="ltracker-settings">
             <label class="ltracker-field">
@@ -5188,6 +5461,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       <button class="ltracker-button" type="button" data-action="copy-last-error">Copy last error</button>
       <button class="ltracker-button" type="button" data-action="copy-health-check-report" ${disabled(!maintenanceReport)}>Copy health check report</button>
       <button class="ltracker-button" type="button" data-action="copy-maintenance-report" ${disabled(!maintenanceReport)}>Copy maintenance report</button>
+      <button class="ltracker-button" type="button" data-action="copy-owner-power-report">Copy Owner Power report</button>
       <button class="ltracker-button" type="button" data-action="copy-prompt" ${disabled(!prompt)}>Copy last prompt preview</button>
       <button class="ltracker-button" type="button" data-action="copy-raw" ${disabled(!rawOutput)}>Copy last raw model output</button>
       <button class="ltracker-button" type="button" data-action="copy-included-context" ${disabled(!diagnostics.lastIncludedContextPreview)}>Copy included context</button>
@@ -6059,6 +6333,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             </div>
           </details>
           <details class="ltracker-details" data-diagnostics-group>
+            <summary>Owner Power / Runtime</summary>
+            <div class="ltracker-grid">
+              ${renderRow("Owner Power enabled", diagnostics.ownerPowerModeEnabled ? "yes" : "no")}
+              ${renderRow("Render Lab runtime enabled", diagnostics.renderLabRuntimeEnabled ? "yes" : "no")}
+              ${renderRow("Installed preset runtime enabled", diagnostics.installedPresetRuntimeEnabled ? "yes" : "no")}
+              ${renderRow("Declarative hooks enabled", diagnostics.declarativeHooksEnabled ? "yes" : "no")}
+              ${renderRow("Active preset requested Owner Power", diagnostics.activePresetRequestedOwnerPower ? "yes" : "no")}
+              ${renderRow("Active preset has script source", diagnostics.activePresetHasOwnerPowerScript ? "yes" : "no")}
+              ${renderRow("Last runtime mode", diagnostics.lastOwnerPowerRuntimeMode)}
+              ${renderRow("Last mounted", diagnostics.lastOwnerPowerMountedAt)}
+              ${renderRow("Last destroyed", diagnostics.lastOwnerPowerDestroyedAt)}
+              ${renderRow("Last runtime event", diagnostics.lastOwnerPowerEvent)}
+              ${renderRow("Last runtime error", diagnostics.lastOwnerPowerError)}
+              ${renderRow("Crash count", diagnostics.ownerPowerCrashCount)}
+              ${renderRow("Disabled reason", diagnostics.ownerPowerDisabledReason)}
+              ${renderRow("Sanitizer action", diagnostics.lastOwnerPowerSanitizerAction)}
+              ${renderRow("Import warning", diagnostics.lastOwnerPowerImportWarning)}
+            </div>
+          </details>
+          <details class="ltracker-details" data-diagnostics-group>
             <summary>Presets / import</summary>
             <div class="ltracker-grid">
               ${renderRow("Selected preset id", diagnostics.selectedPresetId ?? activePreset.id)}
@@ -6182,6 +6476,79 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             </div>
           </details>
           <details class="ltracker-details">
+            <summary>Owner Power Mode - Private Interactive Runtime</summary>
+            <div class="ltracker-themed-callout">
+              <strong>For your own approved presets only.</strong>
+              <div>Current mode: ${escapeHtml(ownerPowerStatusLabel(state.settings.ownerPowerMode))}</div>
+              <div>Imported packs cannot enable this automatically. If runtime fails repeatedly, LTracker disables action hooks and falls back to static HTML.</div>
+            </div>
+            <div class="ltracker-settings">
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="enabled"${checked(state.settings.ownerPowerMode.enabled)}>
+                Enable Owner Power Mode
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowRenderLabRuntime"${checked(state.settings.ownerPowerMode.allowRenderLabRuntime)}>
+                Allow Render Lab runtime
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowInstalledPresetRuntime"${checked(state.settings.ownerPowerMode.allowInstalledPresetRuntime)}>
+                Allow installed preset runtime
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowTemplateActionHooks"${checked(state.settings.ownerPowerMode.allowTemplateActionHooks)}>
+                Allow declarative template action hooks
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowScriptBlocks"${checked(state.settings.ownerPowerMode.allowScriptBlocks)}>
+                Preserve owner script blocks as inert source
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowExternalUrls"${checked(state.settings.ownerPowerMode.allowExternalUrls)}>
+                Allow external URLs (default off)
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowNetwork"${checked(state.settings.ownerPowerMode.allowNetwork)}>
+                Allow network access (default off)
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="allowHostDomAccess"${checked(state.settings.ownerPowerMode.allowHostDomAccess)}>
+                Allow host DOM access (unsupported; keep off)
+              </label>
+              <label class="ltracker-field">
+                Max script chars
+                <input type="number" min="0" max="200000" step="1000" data-owner-power-setting="maxScriptChars" value="${escapeHtml(String(state.settings.ownerPowerMode.maxScriptChars))}">
+              </label>
+              <label class="ltracker-field">
+                Max runtime errors
+                <input type="number" min="1" max="50" step="1" data-owner-power-setting="maxRuntimeErrors" value="${escapeHtml(String(state.settings.ownerPowerMode.maxRuntimeErrors))}">
+              </label>
+              <label class="ltracker-field">
+                Crash disable threshold
+                <input type="number" min="1" max="20" step="1" data-owner-power-setting="crashDisableThreshold" value="${escapeHtml(String(state.settings.ownerPowerMode.crashDisableThreshold))}">
+              </label>
+              <label class="ltracker-check">
+                <input type="checkbox" data-owner-power-setting="autoDisableOnCrash"${checked(state.settings.ownerPowerMode.autoDisableOnCrash)}>
+                Auto-disable hooks after repeated errors
+              </label>
+            </div>
+            <div class="ltracker-toolbar" style="margin-top: 10px;">
+              <button class="ltracker-button" type="button" data-action="disable-owner-power">Disable Owner Power now</button>
+              <button class="ltracker-button" type="button" data-action="reset-owner-power-settings">Reset Owner Power settings</button>
+              <button class="ltracker-button" type="button" data-action="clear-owner-power-crashes">Clear crash counters</button>
+              <button class="ltracker-button" type="button" data-action="copy-owner-power-report">Copy Owner Power report</button>
+            </div>
+            <div class="ltracker-grid ltracker-details">
+              ${renderRow("Active preset requested Owner Power", activeOwnerPowerSummary.requested ? "yes" : "no")}
+              ${renderRow("Active preset script source", activeOwnerPowerSummary.hasScript ? `${activeOwnerPowerSummary.scriptChars} chars` : "none")}
+              ${renderRow("Last runtime mode", diagnostics.lastOwnerPowerRuntimeMode)}
+              ${renderRow("Last runtime event", diagnostics.lastOwnerPowerEvent)}
+              ${renderRow("Last runtime error", diagnostics.lastOwnerPowerError)}
+              ${renderRow("Crash count", diagnostics.ownerPowerCrashCount)}
+              ${renderRow("Disabled reason", diagnostics.ownerPowerDisabledReason)}
+            </div>
+          </details>
+          <details class="ltracker-details">
             <summary>Renderer and legacy compatibility</summary>
             <div class="ltracker-settings">
               <label class="ltracker-check">
@@ -6296,6 +6663,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   const onClick = (event: Event): void => {
+    if (handleOwnerPowerAction(event)) return;
     const panelTarget = event.target instanceof HTMLElement
       ? event.target.closest<HTMLElement>("[data-panel-target]")
       : null;
@@ -6352,6 +6720,27 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         requestId: requestId("repair-settings"),
       });
     }
+    if (action === "disable-owner-power") {
+      send({
+        type: "disable_owner_power",
+        chatId: activeChatId(),
+        requestId: requestId("owner-power-disable"),
+      });
+    }
+    if (action === "reset-owner-power-settings") {
+      send({
+        type: "reset_owner_power_settings",
+        chatId: activeChatId(),
+        requestId: requestId("owner-power-reset"),
+      });
+    }
+    if (action === "clear-owner-power-crashes") {
+      send({
+        type: "clear_owner_power_crashes",
+        chatId: activeChatId(),
+        requestId: requestId("owner-power-clear-crashes"),
+      });
+    }
     if (action === "repair-snapshot-index") {
       send({
         type: "repair_snapshot_index",
@@ -6404,6 +6793,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (action === "copy-included-context") void copyText(state.diagnostics.lastIncludedContextPreview, "included context");
     if (action === "copy-exclusion-report") void copyText(state.diagnostics.lastContextExclusionReport, "context exclusion report");
     if (action === "copy-lore-context") void copyText(state.diagnostics.lastWorldLoreContextPreview, "world lore context");
+    if (action === "copy-owner-power-report") {
+      void copyText(ownerPowerReport({
+        settings: state.settings.ownerPowerMode,
+        preset: state.activePreset,
+        crashCount: state.diagnostics.ownerPowerCrashCount,
+        disabledReason: state.diagnostics.ownerPowerDisabledReason,
+        lastError: state.diagnostics.lastOwnerPowerError,
+        lastEvent: state.diagnostics.lastOwnerPowerEvent,
+      }), "Owner Power report");
+    }
     if (action === "copy-storage-report") {
       const report = [
         `Storage key: ${state.diagnostics.storageKey}`,

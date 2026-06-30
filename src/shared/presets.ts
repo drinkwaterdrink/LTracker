@@ -9,6 +9,7 @@ import type {
   TrackerPresetRecommendedConnection,
   TrackerSchemaPreset,
 } from "./types";
+import { repairOwnerPowerManifest } from "./ownerPower";
 
 export const DEFAULT_TRACKER_PRESET_ID = "default_scene_tracker";
 export const PRESET_EXPORT_KIND = "ltracker_schema_preset";
@@ -169,6 +170,12 @@ export function validateTrackerPreset(value: unknown): PresetValidationResult {
   if ("htmlTemplate" in value && typeof value.htmlTemplate !== "string") {
     return { ok: false, error: "HTML template must be text." };
   }
+  if ("ownerPowerScript" in value && value.ownerPowerScript !== undefined && typeof value.ownerPowerScript !== "string") {
+    return { ok: false, error: "Owner Power script source must be text." };
+  }
+  if ("ownerPowerManifest" in value && value.ownerPowerManifest !== undefined && !isRecord(value.ownerPowerManifest)) {
+    return { ok: false, error: "Owner Power manifest must be an object." };
+  }
   if ("recommendedConnection" in value && value.recommendedConnection !== undefined && !isRecord(value.recommendedConnection)) {
     return { ok: false, error: "Recommended connection must be an object." };
   }
@@ -192,6 +199,10 @@ export function repairTrackerPreset(value: unknown): TrackerSchemaPreset | null 
   };
   const htmlTemplate = optionalString(value.htmlTemplate);
   if (htmlTemplate !== undefined) preset.htmlTemplate = htmlTemplate;
+  const ownerPowerScript = optionalString(value.ownerPowerScript);
+  if (ownerPowerScript !== undefined) preset.ownerPowerScript = ownerPowerScript;
+  const ownerPowerManifest = repairOwnerPowerManifest(value.ownerPowerManifest);
+  if (ownerPowerManifest) preset.ownerPowerManifest = ownerPowerManifest;
   const notes = optionalString(value.notes);
   if (notes !== undefined) preset.notes = notes;
   const capabilities = repairCapabilities(value.capabilities);
@@ -222,6 +233,8 @@ export function draftToPreset(
     origin: options.origin,
   };
   if (draft.htmlTemplate !== undefined) preset.htmlTemplate = draft.htmlTemplate;
+  if (draft.ownerPowerScript !== undefined) preset.ownerPowerScript = draft.ownerPowerScript;
+  if (draft.ownerPowerManifest !== undefined) preset.ownerPowerManifest = draft.ownerPowerManifest;
   if (draft.notes !== undefined) preset.notes = draft.notes;
   if (draft.capabilities) preset.capabilities = draft.capabilities;
   if (draft.recommendedConnection) preset.recommendedConnection = draft.recommendedConnection;

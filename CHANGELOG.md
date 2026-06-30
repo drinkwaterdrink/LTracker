@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.26 - Owner Power Mode + Interactive Tracker Runtime
+- Added private/local Owner Power Mode settings with a global kill switch, Render Lab runtime gate, installed runtime gate, declarative hook toggle, script-source cap, crash threshold, and recovery controls.
+- Added inert `ownerPowerScript` and `ownerPowerManifest` preset pack fields for user-authored power presets.
+- Added import guardrails so preset packs cannot enable Owner Power automatically and recommended Dev/Owner settings are stripped or downgraded to Trusted.
+- Added scoped declarative action hooks for tabs, panel switching, class toggles, copy buttons, fullscreen actions, reset view, expand all, and collapse all.
+- Added Render Lab Owner Power status, interactive preview controls, runtime diagnostics, and copyable Owner Power reports.
+- Added Owner Power diagnostics and Maintenance / Repair actions for disabling Owner Power, resetting Owner Power settings, and clearing crash counters.
+- Kept arbitrary preset JavaScript deferred; scripts remain inert source and never execute in Safe or Trusted Mode.
+- Preserved v0.25 context filters, v0.24 maintenance tools, preset render locks, display surfaces, Render Lab overlays, Trusted renderer behavior, selected tracker profiles, and the always-on generation timer.
+
 ## 0.25 - Context Filters, World/Lore Integration Prep, and Character Exclusions
 - Added Memory & Context Filters controls for tracker generation context, tracker memory, prompt injection, and source-specific diagnostics.
 - Added message/name exclusions for tracker prompts with exact/case-insensitive matching, text/name pattern matching, OOC/system-like filtering, and role-based exclusions.

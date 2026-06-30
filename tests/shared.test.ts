@@ -126,6 +126,11 @@ import {
   generateSampleSnapshot,
   PRESET_PACK_KIND,
 } from "../src/shared/presetPack";
+import {
+  ownerPowerFeatureSummary,
+  ownerPowerReport,
+  stripOwnerPowerRecommendedSettings,
+} from "../src/shared/ownerPower";
 
 const sampleSnapshot: TrackerSnapshot = {
   schemaVersion: 1,
@@ -2958,8 +2963,8 @@ test("frontend exposes a storage-free Preset Render Lab", () => {
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
-    "Version: `0.25`",
-    "Current release: `0.25 Context Filters, World/Lore Integration Prep, and Character Exclusions`",
+    "Version: `0.26`",
+    "Current release: `0.26 Owner Power Mode + Interactive Tracker Runtime`",
     "Drawer Command Center",
     "Sticky Command Header",
     "Scrollable Active Panel",
@@ -3045,6 +3050,14 @@ test("README settings reference covers the major setting groups", () => {
     "Preset Import Review And Validation",
     "v0.23 Import And Validation Cleanup",
     "v0.24 Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes",
+    "v0.26 Owner Power Mode + Interactive Tracker Runtime",
+    "Owner Power Mode",
+    "Imported packs cannot enable Owner Power automatically",
+    "data-ltracker-power-action",
+    "copy-field",
+    "Full arbitrary preset JavaScript is intentionally deferred",
+    "Disable Owner Power now",
+    "Reset Owner Power settings",
     "Maintenance & Repair",
     "Run Health Check",
     "Repair Settings",
@@ -3110,9 +3123,8 @@ test("README settings reference covers the major setting groups", () => {
     "template CSS stripped",
     "tracker generated for wrong swipe",
     "old tracker changed appearance",
-    "0.25 Context Filters, World/Lore Integration Prep, and Character Exclusions",
-    "0.26 Dev Mode JS Sandbox Experiments",
-    "0.27 Preset Marketplace / Pack Collections / Advanced Export Polish",
+    "0.26 Owner Power Mode + Interactive Tracker Runtime",
+    "0.27 Preset Pack Collections / Advanced Export Polish",
     "0.28 Final UX Polish / Stabilization",
     "Optional Future / Backlog",
     "Sequential + Partial Regeneration",
@@ -3575,19 +3587,188 @@ test("exported preset packs never include connection ids or credential-like fiel
   assert.doesNotMatch(serialized, /apiKey|secretKey|password|privateKey|accessKey|bearer/i);
 });
 
-test("v0.25 Release Completion Verification", () => {
+test("Owner Power defaults are disabled and settings repair clamps runtime limits", () => {
+  assert.equal(DEFAULT_SETTINGS.ownerPowerMode.enabled, false);
+  assert.equal(DEFAULT_SETTINGS.ownerPowerMode.allowRenderLabRuntime, false);
+  assert.equal(DEFAULT_SETTINGS.ownerPowerMode.allowInstalledPresetRuntime, false);
+  assert.equal(DEFAULT_SETTINGS.ownerPowerMode.allowScriptBlocks, false);
+  assert.equal(DEFAULT_SETTINGS.ownerPowerMode.allowTemplateActionHooks, true);
+  assert.equal(DEFAULT_SETTINGS.ownerPowerMode.allowExternalUrls, false);
+  assert.equal(DEFAULT_SETTINGS.ownerPowerMode.allowNetwork, false);
+  assert.equal(DEFAULT_SETTINGS.ownerPowerMode.allowHostDomAccess, false);
+
+  const repaired = repairSettings({
+    ...DEFAULT_SETTINGS,
+    ownerPowerMode: {
+      enabled: true,
+      allowRenderLabRuntime: true,
+      allowInstalledPresetRuntime: true,
+      allowScriptBlocks: true,
+      allowTemplateActionHooks: false,
+      allowExternalUrls: true,
+      allowNetwork: true,
+      allowHostDomAccess: true,
+      maxScriptChars: 999_999_999,
+      maxRuntimeErrors: 0,
+      crashDisableThreshold: 999,
+      autoDisableOnCrash: false,
+    },
+  });
+  assert.equal(repaired.ownerPowerMode.enabled, true);
+  assert.equal(repaired.ownerPowerMode.maxScriptChars, 200_000);
+  assert.equal(repaired.ownerPowerMode.maxRuntimeErrors, 1);
+  assert.equal(repaired.ownerPowerMode.crashDisableThreshold, 20);
+  assert.equal(repaired.ownerPowerMode.autoDisableOnCrash, false);
+});
+
+test("Owner Power preset packs import runtime source inertly and cannot auto-enable settings", () => {
+  const powerPack = {
+    kind: PRESET_PACK_KIND,
+    formatVersion: 1,
+    exportedAt: "2026-06-29T00:00:00.000Z",
+    appCompatibility: {
+      extension: "LTracker",
+      minVersion: "0.26",
+      recommendedVersion: "0.26",
+    },
+    preset: {
+      id: "owner-power-preset",
+      name: "Owner Power Preset",
+      version: "1.0",
+      jsonSchema: { type: "object", properties: { imgFull: { type: "string" } } },
+      promptInstructions: "Return imgFull.",
+      htmlTemplate: `<div><script type="application/ltracker-owner-power">LTrackerPower.register({});</script><button type="button" data-ltracker-power-action="copy-field" data-path="imgFull">Copy</button></div>`,
+      ownerPowerManifest: {
+        version: 1,
+        usesRuntime: true,
+        requiredMode: "owner_power",
+        capabilities: ["tabs", "copy-field"],
+      },
+    },
+    recommendedSettings: {
+      ownerPowerMode: { enabled: true, allowInstalledPresetRuntime: true },
+      renderer: { templateTrustMode: "dev" },
+      connection: { selectedConnectionId: "conn-id", selectedConnectionName: "profile", apiKey: "secret" },
+    },
+  };
+
+  const result = importPresetPack(powerPack, [], "2026-06-29T00:00:00.000Z");
+  assert.equal(result.ok, true);
+  assert.ok(result.preset?.ownerPowerScript?.includes("LTrackerPower.register"));
+  assert.equal(result.preset?.ownerPowerManifest?.requiredMode, "owner_power");
+  assert.doesNotMatch(result.preset?.htmlTemplate ?? "", /<script/i);
+  assert.equal(result.recommendedSettings?.renderer?.templateTrustMode, "trusted");
+  assert.equal(result.recommendedSettings?.ownerPowerMode, undefined);
+  assert.equal(result.recommendedSettings?.connection?.selectedConnectionId, "conn-id");
+  assert.equal(result.recommendedSettings?.connection?.selectedConnectionName, "profile");
+  assert.equal((result.recommendedSettings?.connection as Record<string, unknown>)?.apiKey, undefined);
+  assert.match(result.warnings.join("\n"), /Owner Power Mode/);
+  assert.match(result.warnings.join("\n"), /cannot enable Owner Power Mode automatically/);
+  assert.match(result.warnings.join("\n"), /Recommended settings that attempted to enable Owner Power Mode were stripped/);
+
+  const summary = ownerPowerFeatureSummary(result.preset!);
+  assert.equal(summary.requested, true);
+  assert.equal(summary.hasScript, true);
+  assert.ok(summary.scriptChars > 0);
+
+  const stripped = stripOwnerPowerRecommendedSettings(powerPack.recommendedSettings);
+  assert.equal("ownerPowerMode" in stripped.value, false);
+  assert.equal((stripped.value.renderer as Record<string, unknown>).templateTrustMode, "trusted");
+});
+
+test("Owner Power sanitizer keeps trusted declarative hooks but strips scripts", () => {
+  const template = `<script type="application/ltracker-owner-power">ignored()</script><button type="button" data-ltracker-power-action="show-panel" data-target="cast">Cast</button><section data-ltracker-power-panel="cast">OK</section>`;
+  const trusted = sanitizeHtml(template, { templateTrustMode: "trusted", allowInlineStyles: true });
+  assert.doesNotMatch(trusted.html, /<script/i);
+  assert.match(trusted.html, /data-ltracker-power-action="show-panel"/);
+  assert.match(trusted.html, /data-ltracker-power-panel="cast"/);
+  assert.match(trusted.warnings.join("\n"), /JavaScript requires Dev Mode|Removed unsafe <script>/);
+
+  const safe = sanitizeHtml(template, { templateTrustMode: "safe", allowInlineStyles: false });
+  assert.doesNotMatch(safe.html, /data-ltracker-power-action/);
+  assert.doesNotMatch(safe.html, /data-ltracker-power-panel/);
+});
+
+test("Owner Power export keeps runtime source but not global Owner Power settings", () => {
+  const preset: TrackerSchemaPreset = {
+    ...DEFAULT_TRACKER_PRESET,
+    id: "power-export",
+    name: "Power Export",
+    origin: "user_created",
+    htmlTemplate: `<button type="button" data-ltracker-power-action="reset-view">Reset</button>`,
+    ownerPowerScript: "LTrackerPower.register({ mount() {} });",
+    ownerPowerManifest: { version: 1, usesRuntime: true, requiredMode: "owner_power" },
+  };
+  const pack = exportPresetPack(preset, {
+    includeRecommendedSettings: true,
+    settings: {
+      ...DEFAULT_SETTINGS,
+      ownerPowerMode: {
+        ...DEFAULT_SETTINGS.ownerPowerMode,
+        enabled: true,
+        allowInstalledPresetRuntime: true,
+      },
+    },
+  });
+  assert.equal(pack.preset.ownerPowerScript, preset.ownerPowerScript);
+  assert.equal((pack.preset.ownerPowerManifest as Record<string, unknown>).requiredMode, "owner_power");
+  assert.equal(pack.recommendedSettings?.ownerPowerMode, undefined);
+  assert.doesNotMatch(JSON.stringify(pack.recommendedSettings), /allowInstalledPresetRuntime|ownerPowerMode/);
+});
+
+test("Owner Power reports and UI/backend wiring are present", () => {
+  const report = ownerPowerReport({
+    settings: {
+      ...DEFAULT_SETTINGS.ownerPowerMode,
+      enabled: true,
+      allowTemplateActionHooks: true,
+    },
+    preset: {
+      ...DEFAULT_TRACKER_PRESET,
+      ownerPowerScript: "source",
+      ownerPowerManifest: { version: 1, usesRuntime: true, requiredMode: "owner_power" },
+    },
+    crashCount: 2,
+    lastEvent: "show-panel",
+  });
+  assert.match(report, /LTracker Owner Power Report/);
+  assert.match(report, /Global enabled: yes/);
+  assert.match(report, /Declarative hooks: yes/);
+  assert.match(report, /Preset requested Owner Power: yes/);
+
+  const frontend = readFileSync("src/frontend.ts", "utf8");
+  assert.match(frontend, /function handleOwnerPowerAction/);
+  assert.match(frontend, /data-ltracker-power-action/);
+  assert.match(frontend, /data-owner-power-setting="enabled"/);
+  assert.match(frontend, /data-action="disable-owner-power"/);
+  assert.match(frontend, /data-action="reset-owner-power-settings"/);
+  assert.match(frontend, /data-action="clear-owner-power-crashes"/);
+  assert.match(frontend, /copy-owner-power-report/);
+  assert.match(frontend, /ownerPowerCrashCount/);
+  assert.match(frontend, /autoDisableOnCrash/);
+
+  const backend = readFileSync("src/backend.ts", "utf8");
+  assert.match(backend, /disable_owner_power/);
+  assert.match(backend, /reset_owner_power_settings/);
+  assert.match(backend, /clear_owner_power_crashes/);
+  assert.match(backend, /Owner Power Mode is enabled/);
+  assert.match(backend, /activePresetHasOwnerPowerScript/);
+});
+
+test("v0.26 Release Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.25");
-  assert.equal(spindleJson.version, "0.25");
-  assert.equal(EXTENSION_VERSION, "0.25");
+  assert.equal(packageJson.version, "0.26");
+  assert.equal(spindleJson.version, "0.26");
+  assert.equal(EXTENSION_VERSION, "0.26");
   assert.ok(spindleJson.permissions.includes("world_books"));
   assert.ok(spindleJson.permissions.includes("characters"));
   assert.ok(spindleJson.permissions.includes("personas"));
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.26 - Owner Power Mode \+ Interactive Tracker Runtime/);
   assert.match(changelog, /## 0\.25 - Context Filters, World\/Lore Integration Prep, and Character Exclusions/);
   assert.match(changelog, /## 0\.24 - Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes/);
   assert.match(changelog, /## 0\.23 - Preset Import Fixes, Drawer Shell Polish, and Validation UX Cleanup/);
@@ -3600,9 +3781,14 @@ test("v0.25 Release Completion Verification", () => {
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.25`/);
-  assert.match(readme, /Current release: `0\.25 Context Filters, World\/Lore Integration Prep, and Character Exclusions`/);
+  assert.match(readme, /Version: `0\.26`/);
+  assert.match(readme, /Current release: `0\.26 Owner Power Mode \+ Interactive Tracker Runtime`/);
   assert.match(readme, /Drawer Command Center/);
+  assert.match(readme, /v0\.26 Owner Power Mode \+ Interactive Tracker Runtime/);
+  assert.match(readme, /Imported packs cannot enable Owner Power automatically/);
+  assert.match(readme, /data-ltracker-power-action/);
+  assert.match(readme, /Full arbitrary preset JavaScript is intentionally deferred/);
+  assert.match(readme, /Disable Owner Power now/);
   assert.match(readme, /v0\.25 Context Filters, World\/Lore Integration Prep, and Character Exclusions/);
   assert.match(readme, /Memory & Context Filters/);
   assert.match(readme, /Tracker Generation Context controls/);
@@ -3644,9 +3830,18 @@ test("v0.25 Release Completion Verification", () => {
   assert.match(frontendSource, /data-context-filter-setting="manualWorldLoreContext"/);
   assert.match(frontendSource, /data-action="copy-included-context"/);
   assert.match(frontendSource, /data-action="copy-exclusion-report"/);
+  assert.match(frontendSource, /data-owner-power-setting="enabled"/);
+  assert.match(frontendSource, /data-ltracker-power-action/);
+  assert.match(frontendSource, /function handleOwnerPowerAction/);
+  assert.match(frontendSource, /copy-owner-power-report/);
+  assert.match(frontendSource, /disable_owner_power/);
 
   // 5. Check size guard validation in backend importPreset
   const backendSource = readFileSync("src/backend.ts", "utf8");
+  assert.match(backendSource, /ownerPowerFeatureSummary/);
+  assert.match(backendSource, /async function disableOwnerPowerAction/);
+  assert.match(backendSource, /async function resetOwnerPowerSettingsAction/);
+  assert.match(backendSource, /async function clearOwnerPowerCrashesAction/);
   assert.match(backendSource, /applyContextFiltersToTranscript/);
   assert.match(backendSource, /autoSkipReasonForContextFilters/);
   assert.match(backendSource, /spindle\.world_books\.getActivated/);

@@ -33,6 +33,7 @@ const ALLOWED_TAGS = new Set([
   "td",
   "details",
   "summary",
+  "button",
   "code",
   "pre",
 ]);
@@ -56,7 +57,15 @@ const ALLOWED_SVG_TAGS = new Set([
 ]);
 
 const VOID_TAGS = new Set(["br", "hr"]);
-const ALLOWED_ATTRIBUTES = new Set(["class", "title", "aria-label", "data-ltracker-section", "role", "aria-hidden"]);
+const ALLOWED_ATTRIBUTES = new Set(["class", "title", "aria-label", "data-ltracker-section", "role", "aria-hidden", "type"]);
+const OWNER_POWER_ACTION_ATTRIBUTES = new Set([
+  "data-ltracker-power-action",
+  "data-target",
+  "data-class",
+  "data-path",
+  "data-text",
+  "data-ltracker-power-panel",
+]);
 const SVG_ATTRIBUTES = new Set([
   "viewbox",
   "fill",
@@ -93,7 +102,6 @@ const DANGEROUS_CONTAINER_TAGS = [
   "meta",
   "form",
   "input",
-  "button",
   "textarea",
   "select",
   "foreignobject",
@@ -757,7 +765,7 @@ function hashString(value: string): string {
 }
 
 function detectJavaScriptLike(value: string): boolean {
-  return /<\s*script\b|on[a-z]+\s*=|javascript:|<\s*(?:iframe|object|embed|form|input|button|textarea|select)\b/i.test(value);
+  return /<\s*script\b|on[a-z]+\s*=|javascript:|<\s*(?:iframe|object|embed|form|input|textarea|select)\b/i.test(value);
 }
 
 function stripStyleBlocks(html: string, warnings: string[]): string {
@@ -1012,7 +1020,7 @@ function safeSvgUrlReference(value: string): boolean {
 function sanitizeAttributes(
   raw: string,
   tag: string,
-  options: { allowInlineStyles: boolean; allowSvg: boolean },
+  options: { allowInlineStyles: boolean; allowSvg: boolean; allowActionHooks: boolean },
   warnings: string[],
 ): string {
   const attributes: string[] = [];
@@ -1059,8 +1067,25 @@ function sanitizeAttributes(
       attributes.push(`${svgAttributeName(attribute.lowerName)}="${escapeHtml(attribute.value)}"`);
       continue;
     }
+    if (OWNER_POWER_ACTION_ATTRIBUTES.has(attribute.lowerName)) {
+      if (!options.allowActionHooks) {
+        warnings.push(`Removed Owner Power action attribute ${attribute.lowerName}.`);
+        continue;
+      }
+      if (/javascript:|data:|<|>/i.test(attribute.value)) {
+        warnings.push(`Removed unsafe Owner Power action attribute ${attribute.lowerName}.`);
+        continue;
+      }
+      attributes.push(`${attribute.lowerName}="${escapeHtml(attribute.value)}"`);
+      continue;
+    }
     if (!ALLOWED_ATTRIBUTES.has(attribute.lowerName)) {
       warnings.push(`Removed unsupported attribute ${attribute.lowerName}.`);
+      continue;
+    }
+    if (attribute.lowerName === "type" && tag === "button") {
+      const buttonType = attribute.value === "button" || attribute.value === "reset" ? attribute.value : "button";
+      attributes.push(`type="${buttonType}"`);
       continue;
     }
     attributes.push(`${attribute.lowerName}="${escapeHtml(attribute.value)}"`);
@@ -1076,6 +1101,7 @@ export function sanitizeHtml(
   const trustMode = options.templateTrustMode ?? (options.allowInlineStyles === true ? "trusted" : "safe");
   const trusted = trustMode === "trusted" || trustMode === "dev";
   const allowInlineStyles = trusted && options.allowInlineStyles === true;
+  const allowActionHooks = trusted;
   if (detectJavaScriptLike(html)) {
     warnings.push("JavaScript requires Dev Mode and was not executed.");
   }
@@ -1102,7 +1128,7 @@ export function sanitizeHtml(
       }
       if (closing) return `</${tag}>`;
       if (VOID_TAGS.has(tag)) return `<${tag}>`;
-      return `<${tag}${sanitizeAttributes(rawAttributes, tag, { allowInlineStyles, allowSvg: allowedSvg }, warnings)}>`;
+      return `<${tag}${sanitizeAttributes(rawAttributes, tag, { allowInlineStyles, allowSvg: allowedSvg, allowActionHooks }, warnings)}>`;
     },
   );
 
@@ -1126,6 +1152,7 @@ export function detectTemplateRendererRequirements(template: string): TemplateRe
   const helperPattern = new RegExp(`\\{\\{\\s*(?:${[...INLINE_HELPERS].map((helper) => helper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
   const usesHelpers = helperPattern.test(template);
   const usesNestedLoops = /\{\{\s*#each\b[\s\S]*\{\{\s*#each\b/i.test(template);
+  const usesDeclarativeActions = /data-ltracker-power-action\s*=/i.test(template);
   const hasJavaScriptLikeContent = detectJavaScriptLike(template);
   const features = [
     usesScopedCss ? "Scoped CSS" : null,
@@ -1134,6 +1161,7 @@ export function detectTemplateRendererRequirements(template: string): TemplateRe
     usesConditionals ? "Conditionals" : null,
     usesNestedLoops ? "Nested loops" : null,
     usesHelpers ? "Template helpers" : null,
+    usesDeclarativeActions ? "Declarative actions" : null,
   ].filter((item): item is string => Boolean(item));
   const warnings = hasJavaScriptLikeContent
     ? ["This preset contains JavaScript-like content. JavaScript will be stripped unless Dev Mode is explicitly enabled in a future phase."]
