@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.26.1 - Prompt Injection Swipe Isolation + Stale Tracker Leak Fix
+- Added swipe-isolated Prompt Injection modes so normal roleplay prompts only receive tracker state from verified selected-swipe context.
+- Changed new/default Prompt Injection settings to disabled, minimal, retain-one, and `latest_selected_swipe_only`.
+- Changed new/default Tracker Memory settings toward sidecar-index, same-swipe-safe, retain-two behavior for tracker generation continuity.
+- Added prompt-boundary and selected-swipe resolution before interceptor injection, with safe skip behavior when the prompt boundary cannot be verified.
+- Blocked unverified global latest-chat snapshot fallback during normal Prompt Injection.
+- Added stale/future-state rejection for non-selected swipes, future message indexes, messages outside the prompt boundary, unverified global snapshots, and ambiguous boundaries.
+- Added Prompt Injection Safety diagnostics and a copyable safety report.
+- Added Health Check warnings and repair actions for unsafe Prompt Injection and Tracker Memory settings.
+- Updated Memory & Context UI copy to clearly separate Tracker Memory from normal roleplay Prompt Injection.
+- Preserved v0.26 Owner Power behavior, v0.25 context filters, v0.24 maintenance tools, preset render locks, display surfaces, Render Lab overlays, Trusted renderer behavior, selected tracker profiles, and the always-on generation timer.
+
 ## 0.26 - Owner Power Mode + Interactive Tracker Runtime
 - Added private/local Owner Power Mode settings with a global kill switch, Render Lab runtime gate, installed runtime gate, declarative hook toggle, script-source cap, crash threshold, and recovery controls.
 - Added inert `ownerPowerScript` and `ownerPowerManifest` preset pack fields for user-authored power presets.

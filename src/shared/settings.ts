@@ -4,6 +4,7 @@ import {
   type LTrackerDisplaySurface,
   type LTrackerExpandedWidthMode,
   type LTrackerInjectionFormat,
+  type LTrackerInjectionIsolationMode,
   type LTrackerInjectionPlacement,
   type LTrackerInjectionRoleFallback,
   type LTrackerConnectionMode,
@@ -38,10 +39,10 @@ export const SETTINGS_LIMITS = {
   skipFirstMessages: { min: 0, max: 100, default: 2 },
   postCompletionSettleMs: { min: 0, max: 10_000, default: 750 },
   stableContentCheckMs: { min: 0, max: 5_000, default: 400 },
-  memoryRetainCount: { min: 0, max: 10, default: 3 },
-  memoryFullSnapshotCount: { min: 0, max: 10, default: 3 },
+  memoryRetainCount: { min: 0, max: 10, default: 2 },
+  memoryFullSnapshotCount: { min: 0, max: 10, default: 1 },
   maxMemoryChars: { min: 1_000, max: 512_000, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.trackerMemoryBudgetTokens) },
-  injectionRetainCount: { min: 0, max: 10, default: 3 },
+  injectionRetainCount: { min: 0, max: 10, default: 1 },
   maxInjectedChars: { min: 1_000, max: 512_000, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.promptInjectionBudgetTokens) },
   maxRenderedChars: { min: 1_000, max: 2_000_000, default: NORMAL_BUDGET_DEFAULTS.renderedHtmlMaxChars },
   maxMessageDisplayRenderedChars: { min: 1_000, max: 2_000_000, default: NORMAL_BUDGET_DEFAULTS.renderedHtmlMaxChars },
@@ -97,17 +98,18 @@ export const DEFAULT_SETTINGS: LTrackerSettings = {
     fullSnapshotCount: SETTINGS_LIMITS.memoryFullSnapshotCount.default,
     compactOlderSnapshots: false,
     maxMemoryChars: SETTINGS_LIMITS.maxMemoryChars.default,
-    source: "hybrid",
+    source: "sidecar_index",
     excludeTargetMessage: true,
     order: "oldest_to_newest",
     requireSamePreset: false,
-    requireSameSwipeWhenAvailable: false,
+    requireSameSwipeWhenAvailable: true,
   },
   injection: {
     enabled: false,
     retainCount: SETTINGS_LIMITS.injectionRetainCount.default,
-    format: "embedded_tag",
-    injectionPlacement: "append_to_last_assistant",
+    format: "minimal",
+    injectionPlacement: "system_before_last",
+    isolationMode: "latest_selected_swipe_only",
     includeOnlyIfMissingFromPrompt: true,
     stripOlderTrackerBlocks: true,
     maxInjectedChars: SETTINGS_LIMITS.maxInjectedChars.default,
@@ -328,6 +330,16 @@ function injectionPlacement(value: unknown): LTrackerInjectionPlacement {
     || value === "system_after_history"
     ? value
     : DEFAULT_SETTINGS.injection.injectionPlacement;
+}
+
+function injectionIsolationMode(value: unknown): LTrackerInjectionIsolationMode {
+  return value === "off"
+    || value === "latest_selected_swipe_only"
+    || value === "same_message_selected_swipe_only"
+    || value === "same_swipe_chain"
+    || value === "legacy_recent"
+    ? value
+    : DEFAULT_SETTINGS.injection.isolationMode;
 }
 
 function injectionRoleFallback(value: unknown): LTrackerInjectionRoleFallback {
@@ -724,6 +736,7 @@ export function repairSettings(value: unknown): LTrackerSettings {
       ),
       format: injectionFormat(injectionSource.format),
       injectionPlacement: injectionPlacement(injectionSource.injectionPlacement),
+      isolationMode: injectionIsolationMode(injectionSource.isolationMode),
       includeOnlyIfMissingFromPrompt: typeof injectionSource.includeOnlyIfMissingFromPrompt === "boolean"
         ? injectionSource.includeOnlyIfMissingFromPrompt
         : DEFAULT_SETTINGS.injection.includeOnlyIfMissingFromPrompt,

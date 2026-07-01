@@ -236,7 +236,10 @@ function applyPromptInjectionUnsafe(input: PromptInjectionApplyInput): PromptInj
   let working = cloneMessages(input.messages);
   let strippedCount = 0;
   if (input.settings.stripOlderTrackerBlocks) {
-    const stripped = stripTrackerBlocks(working, input.settings.retainCount);
+    const retainedExistingBlocks = input.settings.isolationMode === "legacy_recent"
+      ? input.settings.retainCount
+      : 0;
+    const stripped = stripTrackerBlocks(working, retainedExistingBlocks);
     working = stripped.messages;
     strippedCount = stripped.strippedCount;
   }

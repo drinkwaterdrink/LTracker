@@ -46,6 +46,11 @@ import {
   formatTrackerInjectionBlock,
 } from "../src/shared/promptInjection";
 import {
+  buildPromptInjectionSafetyReport,
+  isolatePromptInjectionEntries,
+  type PromptInjectionBoundary,
+} from "../src/shared/promptInjectionIsolation";
+import {
   buildMessageTrackerHistory,
   claimMessageWidget,
   formatDurationMs,
@@ -869,14 +874,16 @@ test("repairSettings repairs memory and prompt injection settings with defaults 
   const migrated = repairSettings({ recentMessageLimit: 8 });
   assert.equal(migrated.memory.enabled, true);
   assert.equal(migrated.memory.includeInTrackerGeneration, true);
-  assert.equal(migrated.memory.retainCount, 3);
-  assert.equal(migrated.memory.fullSnapshotCount, 3);
+  assert.equal(migrated.memory.retainCount, 2);
+  assert.equal(migrated.memory.fullSnapshotCount, 1);
   assert.equal(migrated.memory.maxMemoryChars, estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.trackerMemoryBudgetTokens));
-  assert.equal(migrated.memory.source, "hybrid");
+  assert.equal(migrated.memory.source, "sidecar_index");
+  assert.equal(migrated.memory.requireSameSwipeWhenAvailable, true);
   assert.equal(migrated.injection.enabled, false);
-  assert.equal(migrated.injection.retainCount, 3);
-  assert.equal(migrated.injection.format, "embedded_tag");
-  assert.equal(migrated.injection.injectionPlacement, "append_to_last_assistant");
+  assert.equal(migrated.injection.retainCount, 1);
+  assert.equal(migrated.injection.format, "minimal");
+  assert.equal(migrated.injection.injectionPlacement, "system_before_last");
+  assert.equal(migrated.injection.isolationMode, "latest_selected_swipe_only");
 
   const settings = repairSettings({
     ...DEFAULT_SETTINGS,
@@ -898,6 +905,7 @@ test("repairSettings repairs memory and prompt injection settings with defaults 
       retainCount: 999,
       format: "compact",
       injectionPlacement: "system_before_last",
+      isolationMode: "legacy_recent",
       includeOnlyIfMissingFromPrompt: false,
       stripOlderTrackerBlocks: false,
       maxInjectedChars: "999999",
@@ -922,6 +930,7 @@ test("repairSettings repairs memory and prompt injection settings with defaults 
   assert.equal(settings.injection.retainCount, 10);
   assert.equal(settings.injection.format, "compact_text");
   assert.equal(settings.injection.injectionPlacement, "system_before_last");
+  assert.equal(settings.injection.isolationMode, "legacy_recent");
   assert.equal(settings.injection.includeOnlyIfMissingFromPrompt, false);
   assert.equal(settings.injection.stripOlderTrackerBlocks, false);
   assert.equal(settings.injection.maxInjectedChars, 512_000);
@@ -931,6 +940,7 @@ test("repairSettings repairs memory and prompt injection settings with defaults 
 
   const repaired = repairSettings({ injection: { format: "bad", maxInjectedChars: 10, retainCount: -5 } });
   assert.equal(repaired.injection.format, DEFAULT_SETTINGS.injection.format);
+  assert.equal(repaired.injection.isolationMode, DEFAULT_SETTINGS.injection.isolationMode);
   assert.equal(repaired.injection.maxInjectedChars, 1_000);
   assert.equal(repaired.injection.retainCount, 0);
 });
@@ -1074,7 +1084,113 @@ function memoryEntry(
   };
 }
 
-test("tracker memory retains last three, excludes target, dedupes, and sorts oldest to newest", () => {
+const promptInjectionBoundary: PromptInjectionBoundary = {
+  verified: true,
+  boundaryMessageId: "u3",
+  boundaryMessageIndex: 3,
+  latestAssistantMessageId: "a2",
+  latestAssistantMessageIndex: 2,
+  selectedSwipeKey: "index-1",
+  selectedSwipeByMessageId: {
+    a1: "index-0",
+    a2: "index-1",
+  },
+};
+
+test("prompt injection isolation accepts only the latest selected swipe snapshot", () => {
+  const selected = memoryEntry("a2", 2, { scene: { location: "Office door" } }, { swipeKey: "index-1" });
+  const alternate = memoryEntry("a2", 2, { scene: { location: "Room 214" } }, { swipeKey: "index-0" });
+  const prior = memoryEntry("a1", 1, { scene: { location: "Hall" } }, { swipeKey: "index-0" });
+  const result = isolatePromptInjectionEntries({
+    entries: [prior, alternate, selected],
+    isolationMode: "latest_selected_swipe_only",
+    retainCount: 1,
+    boundary: promptInjectionBoundary,
+  });
+  assert.equal(result.acceptedCount, 1);
+  assert.equal(result.entries[0]?.messageId, "a2");
+  assert.equal(result.entries[0]?.swipeKey, "index-1");
+  assert.ok(result.rejectedReasons.includes("skipped_non_selected_swipe"));
+  assert.ok(result.rejectedReasons.includes("skipped_no_selected_swipe_match"));
+});
+
+test("prompt injection isolation rejects future, global, non-prompt, and ambiguous candidates", () => {
+  const future = memoryEntry("a4", 4, { scene: { location: "Future" } }, { swipeKey: "index-0" });
+  const global: TrackerMemoryEntry = {
+    ...memoryEntry("global", 9, { scene: { location: "Global stale" } }),
+    messageId: null,
+    messageIndex: null,
+    swipeKey: null,
+    source: "latest_chat_snapshot",
+  };
+  const nonPrompt = memoryEntry("a-missing", 1, { scene: { location: "Missing" } }, { swipeKey: "index-0" });
+  const selected = memoryEntry("a2", 2, { scene: { location: "Office door" } }, { swipeKey: "index-1" });
+  const result = isolatePromptInjectionEntries({
+    entries: [future, global, nonPrompt, selected],
+    isolationMode: "same_swipe_chain",
+    retainCount: 4,
+    boundary: promptInjectionBoundary,
+  });
+  assert.deepEqual(result.entries.map((entry) => entry.messageId), ["a2"]);
+  assert.ok(result.rejectedReasons.includes("skipped_future_message_index"));
+  assert.ok(result.rejectedReasons.includes("skipped_global_snapshot_unverified"));
+  assert.ok(result.rejectedReasons.includes("skipped_message_not_in_prompt"));
+
+  const ambiguous = isolatePromptInjectionEntries({
+    entries: [selected],
+    isolationMode: "latest_selected_swipe_only",
+    retainCount: 1,
+    boundary: { ...promptInjectionBoundary, verified: false, boundaryMessageId: null, boundaryMessageIndex: null },
+  });
+  assert.equal(ambiguous.acceptedCount, 0);
+  assert.ok(ambiguous.rejectedReasons.includes("skipped_ambiguous_prompt_boundary"));
+});
+
+test("prompt injection strips stale existing tracker blocks in swipe-isolated modes", () => {
+  const staleTag = buildLTrackerTag(JSON.stringify({ scene: { location: "Room 214" } }), "index-0");
+  const selected = memoryEntry("a2", 2, { scene: { location: "Office door" } }, { swipeKey: "index-1" });
+  const result = applyPromptInjection({
+    messages: [
+      { role: "assistant", content: `Well?\n\n${staleTag}` },
+      { role: "user", content: "Reply" },
+    ],
+    entries: [selected],
+    settings: {
+      ...DEFAULT_SETTINGS.injection,
+      enabled: true,
+      retainCount: 1,
+      format: "minimal",
+      isolationMode: "latest_selected_swipe_only",
+      stripOlderTrackerBlocks: true,
+    },
+  });
+  assert.equal(result.strippedCount, 1);
+  assert.equal(result.injectedCount, 1);
+  assert.equal(countTrackerBlocks(result.messages), 0);
+  assert.doesNotMatch(JSON.stringify(result.messages), /Room 214/);
+  assert.match(JSON.stringify(result.messages), /Office door/);
+});
+
+test("prompt injection safety report includes boundary, selected swipe, and rejection reasons", () => {
+  const selected = memoryEntry("a2", 2, { scene: { location: "Office door" } }, { swipeKey: "index-1" });
+  const result = isolatePromptInjectionEntries({
+    entries: [selected],
+    isolationMode: "latest_selected_swipe_only",
+    retainCount: 1,
+    boundary: promptInjectionBoundary,
+  });
+  const report = buildPromptInjectionSafetyReport({
+    enabled: true,
+    isolationMode: "latest_selected_swipe_only",
+    boundary: promptInjectionBoundary,
+    result,
+  });
+  assert.match(report, /boundaryMessageId: u3/);
+  assert.match(report, /selectedSwipeKey: index-1/);
+  assert.match(report, /candidatesInjected: 1/);
+});
+
+test("tracker memory can retain last three, exclude target, dedupe, and sort oldest to newest", () => {
   const entries = [
     memoryEntry("m1", 1, { scene: { location: "One" } }),
     memoryEntry("m2", 2, { scene: { location: "Two" } }),
@@ -1082,7 +1198,11 @@ test("tracker memory retains last three, excludes target, dedupes, and sorts old
     memoryEntry("m3-dupe", 4, { scene: { location: "Three" } }),
     memoryEntry("m4", 5, { scene: { location: "Current" } }),
   ];
-  const result = buildTrackerMemoryResult(entries, DEFAULT_SETTINGS.memory, {
+  const result = buildTrackerMemoryResult(entries, {
+    ...DEFAULT_SETTINGS.memory,
+    retainCount: 3,
+    fullSnapshotCount: 3,
+  }, {
     targetMessageId: "m4",
     targetSwipeKey: "index-0",
     activePreset: DEFAULT_TRACKER_PRESET,
@@ -1291,6 +1411,8 @@ test("prompt interceptor clones frozen messages, strips older blocks, and inject
       enabled: true,
       retainCount: 1,
       format: "embedded_tag",
+      isolationMode: "legacy_recent",
+      injectionPlacement: "append_to_last_assistant",
       stripOlderTrackerBlocks: true,
       includeOnlyIfMissingFromPrompt: false,
     },
@@ -1324,6 +1446,7 @@ test("prompt interceptor skips when enough tracker blocks already exist and catc
       ...DEFAULT_SETTINGS.injection,
       enabled: true,
       retainCount: 1,
+      isolationMode: "legacy_recent",
     },
   }).injection;
   const existing = [{ role: "assistant" as const, content: buildLTrackerTag("{\"ok\":true}", "index-0") }];
@@ -2963,8 +3086,8 @@ test("frontend exposes a storage-free Preset Render Lab", () => {
 test("README settings reference covers the major setting groups", () => {
   const readme = readFileSync("README.md", "utf8");
   for (const text of [
-    "Version: `0.26`",
-    "Current release: `0.26 Owner Power Mode + Interactive Tracker Runtime`",
+    "Version: `0.26.1`",
+    "Current release: `0.26.1 Prompt Injection Swipe Isolation + Stale Tracker Leak Fix`",
     "Drawer Command Center",
     "Sticky Command Header",
     "Scrollable Active Panel",
@@ -3123,7 +3246,7 @@ test("README settings reference covers the major setting groups", () => {
     "template CSS stripped",
     "tracker generated for wrong swipe",
     "old tracker changed appearance",
-    "0.26 Owner Power Mode + Interactive Tracker Runtime",
+    "0.26.1 Prompt Injection Swipe Isolation + Stale Tracker Leak Fix",
     "0.27 Preset Pack Collections / Advanced Export Polish",
     "0.28 Final UX Polish / Stabilization",
     "Optional Future / Backlog",
@@ -3755,19 +3878,20 @@ test("Owner Power reports and UI/backend wiring are present", () => {
   assert.match(backend, /activePresetHasOwnerPowerScript/);
 });
 
-test("v0.26 Release Completion Verification", () => {
+test("v0.26.1 Hotfix Completion Verification", () => {
   // 1. Version consistency checks
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
   const spindleJson = JSON.parse(readFileSync("spindle.json", "utf8"));
-  assert.equal(packageJson.version, "0.26");
-  assert.equal(spindleJson.version, "0.26");
-  assert.equal(EXTENSION_VERSION, "0.26");
+  assert.equal(packageJson.version, "0.26.1");
+  assert.equal(spindleJson.version, "0.26.1");
+  assert.equal(EXTENSION_VERSION, "0.26.1");
   assert.ok(spindleJson.permissions.includes("world_books"));
   assert.ok(spindleJson.permissions.includes("characters"));
   assert.ok(spindleJson.permissions.includes("personas"));
 
   // 2. Changelog check
   const changelog = readFileSync("CHANGELOG.md", "utf8");
+  assert.match(changelog, /## 0\.26\.1 - Prompt Injection Swipe Isolation \+ Stale Tracker Leak Fix/);
   assert.match(changelog, /## 0\.26 - Owner Power Mode \+ Interactive Tracker Runtime/);
   assert.match(changelog, /## 0\.25 - Context Filters, World\/Lore Integration Prep, and Character Exclusions/);
   assert.match(changelog, /## 0\.24 - Cleanup, Repair, Runtime Polish, and Mobile Smoke Fixes/);
@@ -3781,9 +3905,12 @@ test("v0.26 Release Completion Verification", () => {
 
   // 3. README.md consistency check
   const readme = readFileSync("README.md", "utf8");
-  assert.match(readme, /Version: `0\.26`/);
-  assert.match(readme, /Current release: `0\.26 Owner Power Mode \+ Interactive Tracker Runtime`/);
+  assert.match(readme, /Version: `0\.26\.1`/);
+  assert.match(readme, /Current release: `0\.26\.1 Prompt Injection Swipe Isolation \+ Stale Tracker Leak Fix`/);
   assert.match(readme, /Drawer Command Center/);
+  assert.match(readme, /v0\.26\.1 Prompt Injection Swipe Isolation \+ Stale Tracker Leak Fix/);
+  assert.match(readme, /latest_selected_swipe_only/);
+  assert.match(readme, /Prompt Injection Safety Report/);
   assert.match(readme, /v0\.26 Owner Power Mode \+ Interactive Tracker Runtime/);
   assert.match(readme, /Imported packs cannot enable Owner Power automatically/);
   assert.match(readme, /data-ltracker-power-action/);
@@ -3835,9 +3962,17 @@ test("v0.26 Release Completion Verification", () => {
   assert.match(frontendSource, /function handleOwnerPowerAction/);
   assert.match(frontendSource, /copy-owner-power-report/);
   assert.match(frontendSource, /disable_owner_power/);
+  assert.match(frontendSource, /data-injection-setting="isolationMode"/);
+  assert.match(frontendSource, /copy-prompt-injection-safety-report/);
+  assert.match(frontendSource, /apply-swipe-safe-injection-defaults/);
 
   // 5. Check size guard validation in backend importPreset
   const backendSource = readFileSync("src/backend.ts", "utf8");
+  assert.match(backendSource, /resolvePromptInjectionBoundaryFromMessages/);
+  assert.match(backendSource, /isolatePromptInjectionEntries/);
+  assert.match(backendSource, /allowLatestChatSnapshotFallback = true/);
+  assert.match(backendSource, /applySwipeSafeInjectionDefaultsAction/);
+  assert.match(backendSource, /applySwipeSafeMemoryDefaultsAction/);
   assert.match(backendSource, /ownerPowerFeatureSummary/);
   assert.match(backendSource, /async function disableOwnerPowerAction/);
   assert.match(backendSource, /async function resetOwnerPowerSettingsAction/);

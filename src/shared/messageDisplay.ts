@@ -182,6 +182,7 @@ function injectionSettings(settings: LTrackerMessageDisplaySettings): LTrackerIn
     retainCount: 1,
     format: "compact_text",
     injectionPlacement: "append_to_last_assistant",
+    isolationMode: "latest_selected_swipe_only",
     includeOnlyIfMissingFromPrompt: true,
     stripOlderTrackerBlocks: true,
     maxInjectedChars: settings.maxRenderedChars,

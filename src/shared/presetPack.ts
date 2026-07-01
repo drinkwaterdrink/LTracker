@@ -284,6 +284,7 @@ export function exportPresetPack(
       format: settings.injection.format,
       retainCount: settings.injection.retainCount,
       injectionPlacement: settings.injection.injectionPlacement,
+      isolationMode: settings.injection.isolationMode,
       maxInjectedChars: settings.injection.maxInjectedChars,
     };
     recommended.renderer = {

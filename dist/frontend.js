@@ -372,7 +372,7 @@ function estimatePresetStats(preset) {
 }
 
 // src/shared/types.ts
-var EXTENSION_VERSION = "0.26";
+var EXTENSION_VERSION = "0.26.1";
 var STORAGE_SCHEMA_VERSION = 1;
 var SETTINGS_SCHEMA_VERSION = 1;
 var SPINDLE_TYPES_VERSION = "0.5.21";
@@ -1525,6 +1525,7 @@ function exportPresetPack(preset, options) {
       format: settings.injection.format,
       retainCount: settings.injection.retainCount,
       injectionPlacement: settings.injection.injectionPlacement,
+      isolationMode: settings.injection.isolationMode,
       maxInjectedChars: settings.injection.maxInjectedChars
     };
     recommended.renderer = {
@@ -2875,6 +2876,7 @@ function injectionSettings(settings) {
     retainCount: 1,
     format: "compact_text",
     injectionPlacement: "append_to_last_assistant",
+    isolationMode: "latest_selected_swipe_only",
     includeOnlyIfMissingFromPrompt: true,
     stripOlderTrackerBlocks: true,
     maxInjectedChars: settings.maxRenderedChars,
@@ -3334,10 +3336,10 @@ var SETTINGS_LIMITS = {
   skipFirstMessages: { min: 0, max: 100, default: 2 },
   postCompletionSettleMs: { min: 0, max: 1e4, default: 750 },
   stableContentCheckMs: { min: 0, max: 5e3, default: 400 },
-  memoryRetainCount: { min: 0, max: 10, default: 3 },
-  memoryFullSnapshotCount: { min: 0, max: 10, default: 3 },
+  memoryRetainCount: { min: 0, max: 10, default: 2 },
+  memoryFullSnapshotCount: { min: 0, max: 10, default: 1 },
   maxMemoryChars: { min: 1e3, max: 512e3, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.trackerMemoryBudgetTokens) },
-  injectionRetainCount: { min: 0, max: 10, default: 3 },
+  injectionRetainCount: { min: 0, max: 10, default: 1 },
   maxInjectedChars: { min: 1e3, max: 512e3, default: estimateCharsFromTokens(NORMAL_BUDGET_DEFAULTS.promptInjectionBudgetTokens) },
   maxRenderedChars: { min: 1e3, max: 2e6, default: NORMAL_BUDGET_DEFAULTS.renderedHtmlMaxChars },
   maxMessageDisplayRenderedChars: { min: 1e3, max: 2e6, default: NORMAL_BUDGET_DEFAULTS.renderedHtmlMaxChars },
@@ -3392,17 +3394,18 @@ var DEFAULT_SETTINGS = {
     fullSnapshotCount: SETTINGS_LIMITS.memoryFullSnapshotCount.default,
     compactOlderSnapshots: false,
     maxMemoryChars: SETTINGS_LIMITS.maxMemoryChars.default,
-    source: "hybrid",
+    source: "sidecar_index",
     excludeTargetMessage: true,
     order: "oldest_to_newest",
     requireSamePreset: false,
-    requireSameSwipeWhenAvailable: false
+    requireSameSwipeWhenAvailable: true
   },
   injection: {
     enabled: false,
     retainCount: SETTINGS_LIMITS.injectionRetainCount.default,
-    format: "embedded_tag",
-    injectionPlacement: "append_to_last_assistant",
+    format: "minimal",
+    injectionPlacement: "system_before_last",
+    isolationMode: "latest_selected_swipe_only",
     includeOnlyIfMissingFromPrompt: true,
     stripOlderTrackerBlocks: true,
     maxInjectedChars: SETTINGS_LIMITS.maxInjectedChars.default,
@@ -4672,6 +4675,18 @@ function emptyState() {
       lastInjectionSkippedReason: null,
       lastInjectionSnapshotCreatedAt: null,
       lastInjectionSourceMessageId: null,
+      lastPromptInjectionIsolationMode: null,
+      lastPromptInjectionBoundaryMessageId: null,
+      lastPromptInjectionBoundaryMessageIndex: null,
+      lastPromptInjectionSelectedSwipeKey: null,
+      lastPromptInjectionCandidateCount: 0,
+      lastPromptInjectionAcceptedCount: 0,
+      lastPromptInjectionRejectedCount: 0,
+      lastPromptInjectionRejectedReasons: [],
+      lastPromptInjectionInjectedEntryIds: [],
+      lastPromptInjectionSourceSummary: null,
+      lastPromptInjectionSafetyDecision: null,
+      lastPromptInjectionSafetyReport: null,
       lastMemoryEntryCount: 0,
       lastMemoryChars: 0,
       lastMemoryTruncated: false,
@@ -6753,6 +6768,7 @@ function setup(ctx) {
         retainCount: injectionNumberValue("retainCount"),
         format: injectionSelectValue("format", state.settings.injection.format),
         injectionPlacement: injectionSelectValue("injectionPlacement", state.settings.injection.injectionPlacement),
+        isolationMode: injectionSelectValue("isolationMode", state.settings.injection.isolationMode),
         includeOnlyIfMissingFromPrompt: injectionBooleanValue("includeOnlyIfMissingFromPrompt"),
         stripOlderTrackerBlocks: injectionBooleanValue("stripOlderTrackerBlocks"),
         maxInjectedChars: injectionNumberValue("maxInjectedChars"),
@@ -8351,6 +8367,7 @@ function setup(ctx) {
       <button class="ltracker-button" type="button" data-action="copy-health-check-report" ${disabled(!maintenanceReport)}>Copy health check report</button>
       <button class="ltracker-button" type="button" data-action="copy-maintenance-report" ${disabled(!maintenanceReport)}>Copy maintenance report</button>
       <button class="ltracker-button" type="button" data-action="copy-owner-power-report">Copy Owner Power report</button>
+      <button class="ltracker-button" type="button" data-action="copy-prompt-injection-safety-report" ${disabled(!diagnostics.lastPromptInjectionSafetyReport)}>Copy Prompt Injection Safety Report</button>
       <button class="ltracker-button" type="button" data-action="copy-prompt" ${disabled(!prompt)}>Copy last prompt preview</button>
       <button class="ltracker-button" type="button" data-action="copy-raw" ${disabled(!rawOutput)}>Copy last raw model output</button>
       <button class="ltracker-button" type="button" data-action="copy-included-context" ${disabled(!diagnostics.lastIncludedContextPreview)}>Copy included context</button>
@@ -8809,13 +8826,36 @@ function setup(ctx) {
             </div>
             ${statusTone(contextFilters.enabled ? "active" : "warning", contextFilters.enabled ? "Filters on" : "Filters off")}
           </div>
-          <p class="ltracker-note">Generation context controls what LTracker reads before building tracker prompts. Tracker Memory helps tracker continuity. Prompt Injection gives the roleplay model tracker state.</p>
+          <p class="ltracker-note">Generation context controls what LTracker reads before building tracker prompts. Tracker Memory is used only when LTracker generates or updates tracker JSON. Prompt Injection gives the roleplay model tracker state and can affect story continuity.</p>
           <div class="ltracker-card-grid">
-            ${card("Tracker Memory", state.settings.memory.includeInTrackerGeneration ? statusTone("active", "Generator") : statusTone("warning", "Stored only"), escapeHtml2("Tracker Memory helps the tracker generator stay consistent by showing recent tracker snapshots while extracting the next state."), "")}
-            ${card("Prompt Injection", state.settings.injection.enabled ? statusTone("active", "Roleplay context") : statusTone("warning", "Off"), escapeHtml2("Prompt Injection gives the roleplay model recent tracker state. It is related to memory, but it is not the same feature."), "")}
+            ${card("Tracker Memory", state.settings.memory.includeInTrackerGeneration ? statusTone("active", "Generator only") : statusTone("warning", "Stored only"), escapeHtml2("Used only when LTracker generates or updates tracker JSON."), "")}
+            ${card(
+      "Prompt Injection",
+      state.settings.injection.enabled ? statusTone(state.settings.injection.isolationMode === "legacy_recent" ? "warning" : "active", state.settings.injection.isolationMode === "legacy_recent" ? "Legacy on" : "Swipe-isolated") : statusTone("warning", "Off"),
+      escapeHtml2(`Injects tracker state into normal roleplay generation. Isolation: ${state.settings.injection.isolationMode.replace(/_/g, " ")}.`),
+      `<button class="ltracker-button" type="button" data-action="copy-prompt-injection-safety-report" ${disabled(!diagnostics.lastPromptInjectionSafetyReport)}>Copy Safety Report</button>`
+    )}
             ${card("Context Filters", contextFilters.enabled ? statusTone("active", `${diagnostics.lastContextFilterIncludedCount}/${diagnostics.lastContextFilterMessageCount} included`) : statusTone("warning", "Default"), escapeHtml2(contextFilters.enabled ? "Filters apply before tracker prompt construction and auto-mode scheduling." : "Current behavior is preserved until filters are enabled."), "")}
             ${card("World / Character APIs", diagnostics.worldLoreApiAvailable || diagnostics.characterApiAvailable || diagnostics.personaApiAvailable ? statusTone("success", "Typed API") : statusTone("warning", "Unavailable"), escapeHtml2("Read-only world/lore, character, and persona context is used only when enabled and permission is granted."), "")}
           </div>
+          <article class="ltracker-command-card" style="margin-top: 10px;">
+            <div class="ltracker-command-card-header">
+              <span class="ltracker-card-title">Prompt Injection Safety</span>
+              ${state.settings.injection.enabled ? statusTone(state.settings.injection.isolationMode === "legacy_recent" ? "warning" : "active", state.settings.injection.isolationMode) : statusTone("warning", "OFF")}
+            </div>
+            <p class="ltracker-note">Prompt Injection can confuse swipes if it includes tracker state from alternate branches. Keep it off unless you specifically want the RP model to see tracker state, and use Swipe-Isolated mode when enabled.</p>
+            <div class="ltracker-settings">
+              ${renderRow("Boundary", diagnostics.lastPromptInjectionBoundaryMessageId ? `${diagnostics.lastPromptInjectionBoundaryMessageId} / ${diagnostics.lastPromptInjectionBoundaryMessageIndex ?? "?"}` : "Not verified yet")}
+              ${renderRow("Selected swipe", diagnostics.lastPromptInjectionSelectedSwipeKey ?? "Not verified yet")}
+              ${renderRow("Accepted / rejected", `${diagnostics.lastPromptInjectionAcceptedCount} / ${diagnostics.lastPromptInjectionRejectedCount}`)}
+              ${renderRow("Safety decision", diagnostics.lastPromptInjectionSafetyDecision ?? "No prompt injection attempt yet")}
+            </div>
+            <div class="ltracker-toolbar">
+              <button class="ltracker-button" type="button" data-action="disable-prompt-injection">Disable Prompt Injection</button>
+              <button class="ltracker-button ltracker-button-primary" type="button" data-action="apply-swipe-safe-injection-defaults">Apply Swipe-Safe Injection Defaults</button>
+              <button class="ltracker-button" type="button" data-action="copy-prompt-injection-safety-report" ${disabled(!diagnostics.lastPromptInjectionSafetyReport)}>Copy Prompt Injection Safety Report</button>
+            </div>
+          </article>
           <div class="ltracker-settings" style="margin-top: 10px;">
             <details class="ltracker-details" open>
               <summary>Tracker Generation Context</summary>
@@ -8993,6 +9033,20 @@ function setup(ctx) {
               Prompt injection enabled
             </label>
             <label class="ltracker-field">
+              Prompt injection isolation
+              <select data-injection-setting="isolationMode">
+                <option value="latest_selected_swipe_only"${selected(state.settings.injection.isolationMode === "latest_selected_swipe_only")}>Latest selected swipe only</option>
+                <option value="same_message_selected_swipe_only"${selected(state.settings.injection.isolationMode === "same_message_selected_swipe_only")}>Same message selected swipe only</option>
+                <option value="same_swipe_chain"${selected(state.settings.injection.isolationMode === "same_swipe_chain")}>Same selected swipe chain</option>
+                <option value="off"${selected(state.settings.injection.isolationMode === "off")}>Off</option>
+                <option value="legacy_recent"${selected(state.settings.injection.isolationMode === "legacy_recent")}>Legacy recent (advanced, unsafe)</option>
+              </select>
+            </label>
+            <label class="ltracker-field">
+              Prompt injection retained trackers
+              <input type="number" min="0" max="10" step="1" data-injection-setting="retainCount" value="${escapeHtml2(String(state.settings.injection.retainCount))}">
+            </label>
+            <label class="ltracker-field">
               Injection format
               <select data-injection-setting="format">
                 <option value="embedded_tag"${selected(state.settings.injection.format === "embedded_tag")}>Embedded tag</option>
@@ -9022,6 +9076,7 @@ function setup(ctx) {
           <div class="ltracker-toolbar" style="margin-top: 10px;">
             <button class="ltracker-button" type="button" data-action="copy-memory-preview" ${disabled(!state.memoryPreview)}>Copy memory preview</button>
             <button class="ltracker-button" type="button" data-action="copy-injection-preview" ${disabled(!state.injectionPreview)}>Copy injection preview</button>
+            <button class="ltracker-button" type="button" data-action="copy-prompt-injection-safety-report" ${disabled(!diagnostics.lastPromptInjectionSafetyReport)}>Copy safety report</button>
             <button class="ltracker-button" type="button" data-action="copy-included-context" ${disabled(!diagnostics.lastIncludedContextPreview)}>Copy included context</button>
             <button class="ltracker-button" type="button" data-action="copy-exclusion-report" ${disabled(!diagnostics.lastContextExclusionReport)}>Copy exclusion report</button>
             <button class="ltracker-button" type="button" data-action="copy-lore-context" ${disabled(!diagnostics.lastWorldLoreContextPreview)}>Copy last lore context</button>
@@ -9189,6 +9244,17 @@ function setup(ctx) {
             <summary>Prompt injection</summary>
             <div class="ltracker-grid">
               ${renderRow("Injection enabled", diagnostics.injectionEnabled ? "yes" : "no")}
+              ${renderRow("Isolation mode", diagnostics.lastPromptInjectionIsolationMode ?? state.settings.injection.isolationMode)}
+              ${renderRow("Boundary message", diagnostics.lastPromptInjectionBoundaryMessageId)}
+              ${renderRow("Boundary index", diagnostics.lastPromptInjectionBoundaryMessageIndex)}
+              ${renderRow("Selected swipe key", diagnostics.lastPromptInjectionSelectedSwipeKey)}
+              ${renderRow("Candidates considered", diagnostics.lastPromptInjectionCandidateCount)}
+              ${renderRow("Candidates accepted", diagnostics.lastPromptInjectionAcceptedCount)}
+              ${renderRow("Candidates rejected", diagnostics.lastPromptInjectionRejectedCount)}
+              ${renderRow("Rejected reasons", diagnostics.lastPromptInjectionRejectedReasons.join(", "))}
+              ${renderRow("Injected entry ids", diagnostics.lastPromptInjectionInjectedEntryIds.join(", "))}
+              ${renderRow("Source summary", diagnostics.lastPromptInjectionSourceSummary)}
+              ${renderRow("Safety decision", diagnostics.lastPromptInjectionSafetyDecision)}
               ${renderRow("Context handler registered", diagnostics.contextHandlerRegistered ? "yes" : "no")}
               ${renderRow("Context handler disabled reason", diagnostics.contextHandlerDisabledReason)}
               ${renderRow("Last injection at", diagnostics.lastInjectionAt)}
@@ -9603,6 +9669,34 @@ function setup(ctx) {
         requestId: requestId("repair-settings")
       });
     }
+    if (action === "disable-prompt-injection") {
+      send({
+        type: "disable_prompt_injection",
+        chatId: activeChatId(),
+        requestId: requestId("disable-prompt-injection")
+      });
+    }
+    if (action === "apply-swipe-safe-injection-defaults") {
+      send({
+        type: "apply_swipe_safe_injection_defaults",
+        chatId: activeChatId(),
+        requestId: requestId("swipe-safe-injection")
+      });
+    }
+    if (action === "apply-swipe-safe-memory-defaults") {
+      send({
+        type: "apply_swipe_safe_memory_defaults",
+        chatId: activeChatId(),
+        requestId: requestId("swipe-safe-memory")
+      });
+    }
+    if (action === "clear-prompt-injection-safety-diagnostics") {
+      send({
+        type: "clear_prompt_injection_safety_diagnostics",
+        chatId: activeChatId(),
+        requestId: requestId("clear-injection-safety")
+      });
+    }
     if (action === "disable-owner-power") {
       send({
         type: "disable_owner_power",
@@ -9673,6 +9767,7 @@ function setup(ctx) {
     }
     if (action === "copy-memory-preview") void copyText(state.memoryPreview, "tracker memory block");
     if (action === "copy-injection-preview") void copyText(state.injectionPreview, "injection preview");
+    if (action === "copy-prompt-injection-safety-report") void copyText(state.diagnostics.lastPromptInjectionSafetyReport, "prompt injection safety report");
     if (action === "copy-included-context") void copyText(state.diagnostics.lastIncludedContextPreview, "included context");
     if (action === "copy-exclusion-report") void copyText(state.diagnostics.lastContextExclusionReport, "context exclusion report");
     if (action === "copy-lore-context") void copyText(state.diagnostics.lastWorldLoreContextPreview, "world lore context");

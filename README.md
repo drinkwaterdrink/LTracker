@@ -1,8 +1,8 @@
 # LTracker
 
-Version: `0.26`
+Version: `0.26.1`
 
-Current release: `0.26 Owner Power Mode + Interactive Tracker Runtime`
+Current release: `0.26.1 Prompt Injection Swipe Isolation + Stale Tracker Leak Fix`
 
 LTracker is a Lumiverse Spindle extension that creates tracker snapshots from recent chat messages. It is inspired by Zaakh/SillyTavern-zTracker's tracker concept, but this project is a fresh Lumiverse-native implementation and does not depend on SillyTavern APIs, globals, DOM selectors, templates, prompt builders, World Info APIs, connection profile APIs, or `generate_interceptor`.
 
@@ -13,7 +13,7 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Manual, auto, and exact message/swipe tracker generation.
 - Swipe-aware sidecar snapshots and optional embedded `<ltracker type="state">` tags.
 - Tracker Memory for prior snapshot baseline context.
-- Optional normal prompt injection through `spindle.registerInterceptor()`, disabled by default.
+- Optional normal prompt injection through `spindle.registerInterceptor()`, disabled by default and swipe-isolated when enabled.
 - Selected tracker profile workflow with tracker-specific advanced parameters.
 - Display surfaces for inline contained, inline wide, anchored popover, fullscreen reader, and drawer-only use.
 - Preset-locked snapshot rendering so existing trackers keep the preset/template they were generated with.
@@ -28,6 +28,7 @@ LTracker is a Lumiverse Spindle extension that creates tracker snapshots from re
 - Maintenance & Repair tools for health checks, settings repair, snapshot index cleanup, preset render-lock diagnostics, orphan scans, broken embedded tag cleanup, and copyable maintenance reports.
 - Context Filters for tracker generation, auto-mode exclusions, manual lore/character/persona notes, and read-only native world/character/persona context when Lumiverse permissions are granted.
 - Owner Power Mode for private/local interactive tracker UIs using LTracker-owned declarative action hooks, inert runtime-source import/export, Render Lab testing, diagnostics, crash recovery, and a global kill switch.
+- Prompt Injection safety diagnostics that reject stale, non-selected, alternate-swipe, future-index, and unverified global tracker states before normal roleplay generation.
 
 ## Drawer Command Center
 
@@ -87,7 +88,7 @@ Generation exposes everyday auto controls, trigger roles, skip count, message li
 
 Connection shows only the tracker profile dropdown, refresh profiles, test connection, fallback status, selected profile identity, and last test result. Low-level `connection.mode` and model parameters live under Advanced Connection.
 
-Memory & Context Filters separates three related features: Tracker Generation Context controls what LTracker reads before building tracker prompts, Tracker Memory helps tracker generation stay consistent, and Prompt Injection gives the roleplay model recent tracker state. These features have separate controls, previews, and diagnostics.
+Memory & Context Filters separates three related features: Tracker Generation Context controls what LTracker reads before building tracker prompts, Tracker Memory is used only when LTracker generates or updates tracker JSON, and Prompt Injection injects tracker state into normal roleplay generation. Prompt Injection can affect story continuity and should stay off unless you specifically want the RP model to see tracker state.
 
 Diagnostics is collapsed and searchable. Groups cover Status, Last error, Generation jobs, Auto timing, Memory, Prompt injection, Display / DOM, Renderer / sanitizer, Presets / import, Connections, and Storage / history. Copy buttons include all diagnostics, last error, last prompt preview, and last raw model output.
 
@@ -136,6 +137,50 @@ v0.25 adds a clear context assembly layer before tracker prompt construction:
 - Prompt preview diagnostics now include included context sections and an exclusion report, with copy actions for full prompt preview, included context, lore context, and filter reports.
 
 Health Check now warns when context filters remove all normal sources, native world/character/persona context is enabled without an available API/permission, or additional context budgets are unusually high.
+
+## v0.26.1 Prompt Injection Swipe Isolation + Stale Tracker Leak Fix
+
+v0.26.1 hardens normal roleplay Prompt Injection so rejected or alternate swipes cannot leak stale tracker state into the provider prompt.
+
+Safer defaults:
+
+- `injection.enabled`: `false`
+- `injection.retainCount`: `1`
+- `injection.format`: `minimal`
+- `injection.injectionPlacement`: `system_before_last`
+- `injection.isolationMode`: `latest_selected_swipe_only`
+- `injection.includeOnlyIfMissingFromPrompt`: `true`
+- `injection.stripOlderTrackerBlocks`: `true`
+- `memory.source`: `sidecar_index`
+- `memory.requireSameSwipeWhenAvailable`: `true`
+- `memory.retainCount`: `2`
+- `memory.fullSnapshotCount`: `1`
+
+Prompt Injection isolation modes:
+
+- `off`: no prompt injection.
+- `latest_selected_swipe_only`: injects only the latest tracker attached to the verified latest assistant message's selected swipe. This is the recommended mode.
+- `same_message_selected_swipe_only`: injects only the tracker attached to the latest assistant message's selected swipe.
+- `same_swipe_chain`: allows recent tracker states only when each entry matches the selected swipe for its own message and is not beyond the prompt boundary.
+- `legacy_recent`: old recent-memory behavior. It remains available under advanced settings, but Health Check warns when it is enabled.
+
+Before injecting, LTracker now verifies the current prompt boundary from the provider prompt and current chat messages. It rejects tracker candidates when:
+
+- the snapshot belongs to a non-selected swipe;
+- the snapshot points beyond the latest live prompt message;
+- the source message is not represented in the prompt;
+- the candidate is the global latest chat snapshot and cannot be tied to a selected swipe;
+- the latest selected assistant swipe has no matching tracker snapshot;
+- the prompt boundary cannot be verified.
+
+In swipe-isolated modes, existing LTracker blocks already present in the prompt are stripped before the verified isolated block is inserted. This prevents stale blocks from surviving just because `includeOnlyIfMissingFromPrompt` is enabled.
+
+Memory & Context Filters now shows a Prompt Injection Safety card with the latest boundary, selected swipe key, accepted/rejected counts, and a copyable Prompt Injection Safety Report. Maintenance & Repair includes warnings and repair actions for unsafe Prompt Injection settings:
+
+- Disable Prompt Injection.
+- Apply Swipe-Safe Injection Defaults.
+- Apply Swipe-Safe Memory Defaults.
+- Clear Prompt Injection safety diagnostics.
 
 ## v0.26 Owner Power Mode + Interactive Tracker Runtime
 
@@ -494,9 +539,9 @@ Validation reports true missing fields, true unused fields, estimated prompt/ren
 
 ## Tracker Memory And Prompt Injection
 
-Tracker Memory feeds prior tracker snapshots into tracker generation. It does not affect normal roleplay generations by itself. Defaults are memory on, last 3 prior snapshots, full snapshot count 3, and oldest-to-newest ordering.
+Tracker Memory feeds prior tracker snapshots into tracker generation. It does not affect normal roleplay generations by itself. Defaults are memory on, sidecar-index source, same-swipe filtering when available, last 2 prior snapshots, full snapshot count 1, and oldest-to-newest ordering.
 
-Prompt Injection is separate, optional, and disabled by default. It uses the interceptor permission path, not `context_handler`; `spindle.json` does not request `context_handler`.
+Prompt Injection is separate, optional, and disabled by default. It uses the interceptor permission path, not `context_handler`; `spindle.json` does not request `context_handler`. When enabled, the recommended isolation mode is `latest_selected_swipe_only`; `legacy_recent` remains available only for advanced compatibility and is warned by Health Check.
 
 ## Settings Reference
 
@@ -591,6 +636,16 @@ Common settings are repaired back to safe defaults if missing or malformed.
 | `contextFilters.manualWorldLoreContext` | empty | Manual extra lore text for tracker generation only. |
 | `contextFilters.manualCharacterContext` | empty | Manual character notes for tracker generation only. |
 | `contextFilters.manualPersonaContext` | empty | Manual persona notes for tracker generation only. |
+| `memory.source` | `sidecar_index` | Tracker Memory source for tracker generation continuity. |
+| `memory.retainCount` | `2` | Prior tracker snapshots retained for tracker generation. |
+| `memory.fullSnapshotCount` | `1` | Full prior snapshots retained before compacting older entries. |
+| `memory.requireSameSwipeWhenAvailable` | `true` | Keeps tracker memory aligned to selected swipe identity when possible. |
+| `injection.enabled` | `false` | Normal roleplay Prompt Injection is off by default. |
+| `injection.retainCount` | `1` | Safe Prompt Injection keeps at most one verified tracker state. |
+| `injection.format` | `minimal` | Compact normal-roleplay injection format. |
+| `injection.injectionPlacement` | `system_before_last` | Places verified tracker state before the final prompt message. |
+| `injection.isolationMode` | `latest_selected_swipe_only` | Rejects alternate-swipe, stale, future, or unverified tracker states. |
+| `injection.stripOlderTrackerBlocks` | `true` | Swipe-isolated modes remove stale existing LTracker blocks before injecting. |
 | `ownerPowerMode.enabled` | `false` | Global private-use Owner Power switch. Imported packs cannot turn it on. |
 | `ownerPowerMode.allowRenderLabRuntime` | `false` | Allows interactive Render Lab testing when Owner Power is enabled. |
 | `ownerPowerMode.allowInstalledPresetRuntime` | `false` | Reserved installed-preset runtime gate; keep off unless testing your own preset. |
@@ -648,7 +703,7 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 ## Roadmap
 
-1. `0.26 Owner Power Mode + Interactive Tracker Runtime`
+1. `0.26.1 Prompt Injection Swipe Isolation + Stale Tracker Leak Fix`
 2. `0.27 Preset Pack Collections / Advanced Export Polish`
 3. `0.28 Final UX Polish / Stabilization`
 
@@ -662,4 +717,4 @@ Validation runs TypeScript typecheck, shared-module tests, backend/frontend bund
 
 ## Attribution
 
-LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.26`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.
+LTracker is inspired by Zaakh/SillyTavern-zTracker and its tracker-oriented design. No zTracker source code is copied in version `0.26.1`. If future versions copy or adapt zTracker code, preserve the original MIT attribution and license notices.

@@ -105,6 +105,12 @@ import {
   type PromptInjectionMessage,
 } from "./shared/promptInjection";
 import {
+  buildPromptInjectionSafetyReport,
+  isolatePromptInjectionEntries,
+  type PromptInjectionBoundary,
+  type PromptInjectionIsolationResult,
+} from "./shared/promptInjectionIsolation";
+import {
   activePresetPath,
   diagnosticsPath,
   legacyMessageSnapshotPath,
@@ -165,6 +171,7 @@ import {
   type LTrackerError,
   type LTrackerErrorStage,
   type LTrackerInjectionFormat,
+  type LTrackerInjectionIsolationMode,
   type LTrackerInjectionMode,
   type LTrackerMaintenanceReport,
   type LTrackerMaintenanceReportItem,
@@ -444,6 +451,10 @@ function isFrontendMessage(payload: unknown): payload is FrontendMessage {
       "repair_preset_render_locks",
       "clean_orphan_snapshots",
       "clean_broken_embedded_tags",
+      "disable_prompt_injection",
+      "apply_swipe_safe_injection_defaults",
+      "apply_swipe_safe_memory_defaults",
+      "clear_prompt_injection_safety_diagnostics",
       "disable_owner_power",
       "reset_owner_power_settings",
       "clear_owner_power_crashes",
@@ -573,6 +584,18 @@ function defaultDiagnostics(chatId: string | null): LTrackerDiagnostics {
     lastInjectionSkippedReason: null,
     lastInjectionSnapshotCreatedAt: null,
     lastInjectionSourceMessageId: null,
+    lastPromptInjectionIsolationMode: null,
+    lastPromptInjectionBoundaryMessageId: null,
+    lastPromptInjectionBoundaryMessageIndex: null,
+    lastPromptInjectionSelectedSwipeKey: null,
+    lastPromptInjectionCandidateCount: 0,
+    lastPromptInjectionAcceptedCount: 0,
+    lastPromptInjectionRejectedCount: 0,
+    lastPromptInjectionRejectedReasons: [],
+    lastPromptInjectionInjectedEntryIds: [],
+    lastPromptInjectionSourceSummary: null,
+    lastPromptInjectionSafetyDecision: null,
+    lastPromptInjectionSafetyReport: null,
     lastMemoryEntryCount: 0,
     lastMemoryChars: 0,
     lastMemoryTruncated: false,
@@ -900,6 +923,16 @@ function injectionFormatOrNull(value: unknown): LTrackerInjectionFormat | null {
   return value === "embedded_tag" || value === "compact_text" || value === "pretty_json" || value === "minimal" ? value : null;
 }
 
+function injectionIsolationModeOrNull(value: unknown): LTrackerInjectionIsolationMode | null {
+  return value === "off"
+    || value === "latest_selected_swipe_only"
+    || value === "same_message_selected_swipe_only"
+    || value === "same_swipe_chain"
+    || value === "legacy_recent"
+    ? value
+    : null;
+}
+
 function renderSourceOrNull(value: unknown): LTrackerRenderSource | null {
   return value === "latest_chat_snapshot" || value === "latest_message_snapshot" ? value : null;
 }
@@ -1086,6 +1119,18 @@ function repairDiagnostics(value: unknown, chatId: string | null): LTrackerDiagn
     lastInjectionSkippedReason: stringOrNull(value.lastInjectionSkippedReason),
     lastInjectionSnapshotCreatedAt: stringOrNull(value.lastInjectionSnapshotCreatedAt),
     lastInjectionSourceMessageId: stringOrNull(value.lastInjectionSourceMessageId),
+    lastPromptInjectionIsolationMode: injectionIsolationModeOrNull(value.lastPromptInjectionIsolationMode),
+    lastPromptInjectionBoundaryMessageId: stringOrNull(value.lastPromptInjectionBoundaryMessageId),
+    lastPromptInjectionBoundaryMessageIndex: nonNegativeInteger(value.lastPromptInjectionBoundaryMessageIndex),
+    lastPromptInjectionSelectedSwipeKey: stringOrNull(value.lastPromptInjectionSelectedSwipeKey),
+    lastPromptInjectionCandidateCount: nonNegativeInteger(value.lastPromptInjectionCandidateCount) ?? 0,
+    lastPromptInjectionAcceptedCount: nonNegativeInteger(value.lastPromptInjectionAcceptedCount) ?? 0,
+    lastPromptInjectionRejectedCount: nonNegativeInteger(value.lastPromptInjectionRejectedCount) ?? 0,
+    lastPromptInjectionRejectedReasons: stringArray(value.lastPromptInjectionRejectedReasons),
+    lastPromptInjectionInjectedEntryIds: stringArray(value.lastPromptInjectionInjectedEntryIds),
+    lastPromptInjectionSourceSummary: stringOrNull(value.lastPromptInjectionSourceSummary),
+    lastPromptInjectionSafetyDecision: stringOrNull(value.lastPromptInjectionSafetyDecision),
+    lastPromptInjectionSafetyReport: stringOrNull(value.lastPromptInjectionSafetyReport),
     lastMemoryEntryCount: typeof value.lastMemoryEntryCount === "number" && Number.isFinite(value.lastMemoryEntryCount)
       ? Math.max(0, Math.round(value.lastMemoryEntryCount))
       : 0,
@@ -1762,7 +1807,8 @@ async function collectTrackerMemory(
     lastMemoryLoadedSnapshotCount?: number;
     lastMemoryLoadDurationMs?: number;
     lastMemoryLoadSkippedCount?: number;
-  }
+  },
+  allowLatestChatSnapshotFallback = true,
 ): Promise<TrackerMemoryResult> {
   const memorySettings = {
     ...settings.memory,
@@ -1782,7 +1828,7 @@ async function collectTrackerMemory(
   if (settings.memory.source === "hybrid" || settings.memory.source === "embedded_tags" || settings.memory.source === "message_history") {
     entries.push(...await embeddedMemoryEntriesFromMessages(chatId, settings));
   }
-  if (entries.length === 0 && (settings.memory.source === "hybrid" || settings.memory.source === "sidecar_index")) {
+  if (allowLatestChatSnapshotFallback && entries.length === 0 && (settings.memory.source === "hybrid" || settings.memory.source === "sidecar_index")) {
     const latestSnapshot = await loadSnapshot(chatId, userId);
     if (latestSnapshot) entries.push(memoryEntryFromChatSnapshot(latestSnapshot));
   }
@@ -2171,6 +2217,7 @@ async function buildState(
       pendingAutoFinalizationCount: pendingAutoFinalizations.size,
       autoSubscriptionActive: autoSubscriptionsActive,
       injectionEnabled: settings.injection.enabled && interceptorRegistered,
+      lastPromptInjectionIsolationMode: settings.injection.isolationMode,
       lastMemoryEntryCount: memoryPreviewResult?.entries.length ?? diagnostics.lastMemoryEntryCount,
       lastMemoryChars: memoryPreviewResult?.totalChars ?? diagnostics.lastMemoryChars,
       lastMemoryTruncated: memoryPreviewResult?.truncated ?? diagnostics.lastMemoryTruncated,
@@ -3611,8 +3658,18 @@ async function recordInterceptorDiagnostics(
   userId: string,
   settings: LTrackerSettings,
   result: ReturnType<typeof applyPromptInjection>,
+  boundary: PromptInjectionBoundary | null = null,
+  isolation: PromptInjectionIsolationResult | null = null,
 ): Promise<void> {
   const currentDiagnostics = await loadDiagnostics(chatId, userId);
+  const safetyReport = isolation
+    ? buildPromptInjectionSafetyReport({
+        enabled: settings.injection.enabled,
+        isolationMode: settings.injection.isolationMode,
+        boundary,
+        result: isolation,
+      })
+    : currentDiagnostics.lastPromptInjectionSafetyReport;
   await tryPersistDiagnostics({
     ...currentDiagnostics,
     injectionEnabled: settings.injection.enabled,
@@ -3630,6 +3687,18 @@ async function recordInterceptorDiagnostics(
     lastInterceptorError: result.error,
     lastInterceptorPromptTrackerCountBefore: result.promptTrackerCountBefore,
     lastInterceptorPromptTrackerCountAfter: result.promptTrackerCountAfter,
+    lastPromptInjectionIsolationMode: settings.injection.isolationMode,
+    lastPromptInjectionBoundaryMessageId: boundary?.boundaryMessageId ?? null,
+    lastPromptInjectionBoundaryMessageIndex: boundary?.boundaryMessageIndex ?? null,
+    lastPromptInjectionSelectedSwipeKey: boundary?.selectedSwipeKey ?? null,
+    lastPromptInjectionCandidateCount: isolation?.candidateCount ?? 0,
+    lastPromptInjectionAcceptedCount: isolation?.acceptedCount ?? result.injectedCount,
+    lastPromptInjectionRejectedCount: isolation?.rejectedCount ?? 0,
+    lastPromptInjectionRejectedReasons: isolation?.rejectedReasons ?? [],
+    lastPromptInjectionInjectedEntryIds: isolation?.injectedEntryIds ?? [],
+    lastPromptInjectionSourceSummary: isolation?.sourceSummary ?? null,
+    lastPromptInjectionSafetyDecision: isolation?.safetyDecision ?? result.skippedReason,
+    lastPromptInjectionSafetyReport: safetyReport,
   }, userId);
 }
 
@@ -3653,6 +3722,101 @@ async function recordInterceptorSkipped(
   }, userId);
 }
 
+function textContentForPromptMatch(message: { content?: unknown }): string | null {
+  return typeof message.content === "string" ? message.content : null;
+}
+
+function stripEmbeddedTrackerText(content: string): string {
+  const tags = findLTrackerTags(content);
+  if (tags.length === 0) return content;
+  let output = "";
+  let cursor = 0;
+  for (const tag of tags) {
+    output += content.slice(cursor, tag.start);
+    cursor = tag.end;
+  }
+  output += content.slice(cursor);
+  return output;
+}
+
+function normalizePromptMatchText(value: string): string {
+  return stripEmbeddedTrackerText(value)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function promptContainsChatMessage(promptTexts: string[], chatContent: string): boolean {
+  const normalizedChat = normalizePromptMatchText(chatContent);
+  if (!normalizedChat) return false;
+  return promptTexts.some((promptText) => {
+    if (promptText === normalizedChat) return true;
+    if (normalizedChat.length < 80) return false;
+    return promptText.includes(normalizedChat) || normalizedChat.includes(promptText);
+  });
+}
+
+function resolvePromptInjectionBoundaryFromMessages(
+  chatId: string,
+  promptMessages: LlmMessageDTO[],
+  chatMessages: ChatMessageDTO[],
+): PromptInjectionBoundary {
+  const promptTextsByRole = {
+    user: promptMessages
+      .filter((message) => message.role === "user")
+      .map(textContentForPromptMatch)
+      .filter((content): content is string => content !== null)
+      .map(normalizePromptMatchText)
+      .filter(Boolean),
+    assistant: promptMessages
+      .filter((message) => message.role === "assistant")
+      .map(textContentForPromptMatch)
+      .filter((content): content is string => content !== null)
+      .map(normalizePromptMatchText)
+      .filter(Boolean),
+  };
+
+  const selectedSwipeByMessageId: Record<string, string> = {};
+  let boundaryMessageId: string | null = null;
+  let boundaryMessageIndex: number | null = null;
+  let latestAssistantMessageId: string | null = null;
+  let latestAssistantMessageIndex: number | null = null;
+  let selectedSwipeKey: string | null = null;
+
+  for (const message of chatMessages) {
+    const content = typeof message.content === "string" ? message.content : "";
+    const matched = message.is_user
+      ? promptContainsChatMessage(promptTextsByRole.user, content)
+      : promptContainsChatMessage(promptTextsByRole.assistant, content);
+    if (!matched) continue;
+
+    const messageIndex = messageIndexFromChatMessage(message);
+    if (messageIndex !== null && (boundaryMessageIndex === null || messageIndex > boundaryMessageIndex)) {
+      boundaryMessageId = message.id;
+      boundaryMessageIndex = messageIndex;
+    }
+
+    if (!message.is_user) {
+      const identity = deriveSwipeTrackerIdentity(chatId, message);
+      selectedSwipeByMessageId[message.id] = identity.swipeKey;
+      if (messageIndex !== null && (latestAssistantMessageIndex === null || messageIndex > latestAssistantMessageIndex)) {
+        latestAssistantMessageId = message.id;
+        latestAssistantMessageIndex = messageIndex;
+        selectedSwipeKey = identity.swipeKey;
+      }
+    }
+  }
+
+  return {
+    verified: boundaryMessageIndex !== null && latestAssistantMessageIndex !== null,
+    boundaryMessageId,
+    boundaryMessageIndex,
+    latestAssistantMessageId,
+    latestAssistantMessageIndex,
+    selectedSwipeKey,
+    selectedSwipeByMessageId,
+  };
+}
+
 function promptMessagesForInjection(messages: LlmMessageDTO[]): PromptInjectionMessage[] {
   return messages.map((message) => ({ ...message })) as PromptInjectionMessage[];
 }
@@ -3662,6 +3826,8 @@ function ltrackerMessagesFromPrompt(messages: PromptInjectionMessage[]): LlmMess
 }
 
 function injectionMemorySettings(settings: LTrackerSettings): LTrackerSettings {
+  const legacyMode = settings.injection.isolationMode === "legacy_recent";
+  const chainMode = settings.injection.isolationMode === "same_swipe_chain";
   return {
     ...settings,
     memory: {
@@ -3672,11 +3838,11 @@ function injectionMemorySettings(settings: LTrackerSettings): LTrackerSettings {
       fullSnapshotCount: settings.injection.retainCount,
       compactOlderSnapshots: false,
       maxMemoryChars: effectivePromptInjectionChars(settings),
-      source: settings.memory.source,
-      excludeTargetMessage: settings.memory.excludeTargetMessage,
+      source: legacyMode ? settings.memory.source : "sidecar_index",
+      excludeTargetMessage: legacyMode ? settings.memory.excludeTargetMessage : false,
       order: "oldest_to_newest",
       requireSamePreset: settings.memory.requireSamePreset,
-      requireSameSwipeWhenAvailable: settings.memory.requireSameSwipeWhenAvailable,
+      requireSameSwipeWhenAvailable: legacyMode ? settings.memory.requireSameSwipeWhenAvailable : !chainMode,
     },
   };
 }
@@ -3708,24 +3874,75 @@ async function handlePromptInterceptor(
       ...settings.injection,
       maxInjectedChars: effectivePromptInjectionChars(settings),
     };
-    if (!settings.injection.enabled) {
+    if (!settings.injection.enabled || settings.injection.isolationMode === "off") {
       const result = applyPromptInjection({
         messages: promptMessagesForInjection(messages),
         entries: [],
-        settings: injectionSettings,
+        settings: {
+          ...injectionSettings,
+          enabled: false,
+        },
       });
-      await recordInterceptorDiagnostics(chatId, userId, settings, result);
+      const isolation = isolatePromptInjectionEntries({
+        entries: [],
+        isolationMode: settings.injection.isolationMode,
+        retainCount: settings.injection.retainCount,
+        boundary: null,
+      });
+      await recordInterceptorDiagnostics(chatId, userId, settings, result, null, isolation);
       return messages;
     }
 
     const memorySettings = injectionMemorySettings(settings);
-    const memory = await collectTrackerMemory(chatId, userId, memorySettings, presetState.activePreset);
+    let boundary: PromptInjectionBoundary | null = null;
+    let memory: TrackerMemoryResult;
+    if (settings.injection.isolationMode === "legacy_recent") {
+      memory = await collectTrackerMemory(chatId, userId, memorySettings, presetState.activePreset);
+    } else {
+      const chatMessages = await readChatMessages(chatId);
+      boundary = resolvePromptInjectionBoundaryFromMessages(chatId, messages, chatMessages);
+      const latestAssistant = boundary.latestAssistantMessageId
+        ? chatMessages.find((message) => message.id === boundary?.latestAssistantMessageId) ?? null
+        : null;
+      if (!boundary.verified || !latestAssistant || !boundary.selectedSwipeKey) {
+        memory = buildTrackerMemoryResult([], memorySettings.memory, {
+          activePreset: presetState.activePreset,
+        });
+      } else {
+        const identity = deriveSwipeTrackerIdentity(chatId, latestAssistant);
+        memory = await collectTrackerMemory(
+          chatId,
+          userId,
+          memorySettings,
+          presetState.activePreset,
+          {
+            kind: "widget",
+            requestId: "prompt-injection",
+            sourceMessageId: latestAssistant.id,
+            sourceMessageIndex: messageIndexFromChatMessage(latestAssistant),
+            swipeKey: identity.swipeKey,
+            swipeIndex: identity.swipeIndex,
+            swipeId: identity.swipeId,
+            swipeContentHash: identity.swipeContentHash,
+            swipeKeySource: identity.swipeKeySource,
+          },
+          undefined,
+          false,
+        );
+      }
+    }
+    const isolated = isolatePromptInjectionEntries({
+      entries: memory.entries,
+      isolationMode: settings.injection.isolationMode,
+      retainCount: settings.injection.retainCount,
+      boundary,
+    });
     const result = applyPromptInjection({
       messages: promptMessagesForInjection(messages),
-      entries: memory.entries,
+      entries: isolated.entries,
       settings: injectionSettings,
     });
-    await recordInterceptorDiagnostics(chatId, userId, settings, result);
+    await recordInterceptorDiagnostics(chatId, userId, settings, result, boundary, isolated);
     if (result.error) return messages;
     const response: InterceptorResultDTO = {
       messages: ltrackerMessagesFromPrompt(result.messages),
@@ -4929,6 +5146,7 @@ async function importPresetPackHandler(
       if (inj.format) settings.injection.format = inj.format;
       if (typeof inj.retainCount === "number") settings.injection.retainCount = inj.retainCount;
       if (inj.injectionPlacement) settings.injection.injectionPlacement = inj.injectionPlacement;
+      if (inj.isolationMode) settings.injection.isolationMode = inj.isolationMode;
       if (typeof inj.maxInjectedChars === "number") settings.injection.maxInjectedChars = inj.maxInjectedChars;
     }
     if (rec.renderer) {
@@ -5512,6 +5730,7 @@ async function buildMaintenanceReport(
   const repairedSettings = repairSettings(rawSettings);
   const settingsChanged = JSON.stringify(rawSettings) !== JSON.stringify(repairedSettings);
   const settings = repairedSettings;
+  const currentDiagnostics = await loadDiagnostics(chatId, userId);
   if (settingsChanged) {
     items.push({
       severity: "repairable",
@@ -5519,6 +5738,69 @@ async function buildMaintenanceReport(
       message: "Settings contain stale, invalid, or out-of-range values.",
       suggestedFix: "Run Repair Settings to rewrite the repaired settings object.",
       repairActionId: "repair_settings",
+    });
+  }
+  if (settings.injection.enabled && settings.injection.isolationMode === "legacy_recent") {
+    items.push({
+      severity: "warning",
+      category: "Prompt Injection",
+      message: "Prompt Injection is enabled with legacy recent mode, which can include alternate-swipe tracker states.",
+      suggestedFix: "Apply Swipe-Safe Injection Defaults.",
+      repairActionId: "apply_swipe_safe_injection_defaults",
+    });
+  }
+  if (settings.injection.enabled && !settings.memory.requireSameSwipeWhenAvailable) {
+    items.push({
+      severity: "repairable",
+      category: "Prompt Injection",
+      message: "Prompt Injection is enabled while Tracker Memory same-swipe filtering is disabled.",
+      suggestedFix: "Apply Swipe-Safe Memory Defaults.",
+      repairActionId: "apply_swipe_safe_memory_defaults",
+    });
+  }
+  if (settings.injection.enabled && settings.injection.retainCount > 1) {
+    items.push({
+      severity: "warning",
+      category: "Prompt Injection",
+      message: "Prompt Injection retains more than one tracker state, increasing stale-state risk.",
+      suggestedFix: "Apply Swipe-Safe Injection Defaults or lower retained trackers to 1.",
+      repairActionId: "apply_swipe_safe_injection_defaults",
+    });
+  }
+  if (settings.injection.enabled && (settings.memory.source === "hybrid" || settings.memory.source === "embedded_tags")) {
+    items.push({
+      severity: "warning",
+      category: "Prompt Injection",
+      message: "Tracker Memory source includes embedded tags or hybrid history while Prompt Injection is enabled.",
+      suggestedFix: "Use sidecar_index for swipe-safe prompt injection.",
+      repairActionId: "apply_swipe_safe_memory_defaults",
+    });
+  }
+  if (currentDiagnostics.lastInterceptorPromptTrackerCountAfter > 1) {
+    items.push({
+      severity: "warning",
+      category: "Prompt Injection",
+      message: "The last intercepted prompt contained more than one LTracker block.",
+      suggestedFix: "Apply Swipe-Safe Injection Defaults and keep strip older tracker blocks enabled.",
+      repairActionId: "apply_swipe_safe_injection_defaults",
+    });
+  }
+  if (currentDiagnostics.lastPromptInjectionRejectedReasons.includes("skipped_non_selected_swipe")) {
+    items.push({
+      severity: "warning",
+      category: "Prompt Injection",
+      message: "The last prompt injection attempt rejected tracker state from a non-selected swipe.",
+      suggestedFix: "Keep swipe-isolated mode enabled. Copy the Prompt Injection Safety Report if this recurs.",
+      repairActionId: "clear_prompt_injection_safety_diagnostics",
+    });
+  }
+  if (currentDiagnostics.lastPromptInjectionRejectedReasons.includes("skipped_global_snapshot_unverified")) {
+    items.push({
+      severity: "warning",
+      category: "Prompt Injection",
+      message: "The last prompt injection attempt rejected a global latest chat snapshot because selected swipe context was not verified.",
+      suggestedFix: "Keep sidecar_index and latest_selected_swipe_only for normal roleplay injection.",
+      repairActionId: "apply_swipe_safe_injection_defaults",
     });
   }
 
@@ -5615,7 +5897,6 @@ async function buildMaintenanceReport(
       repairActionId: "reset_owner_power_settings",
     });
   }
-  const currentDiagnostics = await loadDiagnostics(chatId, userId);
   if (currentDiagnostics.ownerPowerCrashCount >= settings.ownerPowerMode.crashDisableThreshold) {
     items.push({
       severity: "repairable",
@@ -6298,6 +6579,129 @@ async function repairSettingsAction(
   await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
 }
 
+async function disablePromptInjectionAction(
+  payload: Extract<FrontendMessage, { type: "disable_prompt_injection" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const settings = await getSettings(userId);
+  settings.injection.enabled = false;
+  settings.injection.isolationMode = "latest_selected_swipe_only";
+  await saveSettings(settings, userId);
+  const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+  await tryPersistDiagnostics({
+    ...diagnostics,
+    injectionEnabled: false,
+    lastPromptInjectionSafetyDecision: "disabled_by_repair_action",
+    lastPromptInjectionSafetyReport: "Prompt Injection Safety Report\nenabled: no\nsafetyDecision: disabled_by_repair_action",
+  }, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Prompt Injection was disabled.",
+  }, "disable_prompt_injection");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function applySwipeSafeInjectionDefaultsAction(
+  payload: Extract<FrontendMessage, { type: "apply_swipe_safe_injection_defaults" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const settings = await getSettings(userId);
+  settings.injection = {
+    ...settings.injection,
+    enabled: false,
+    retainCount: 1,
+    format: "minimal",
+    injectionPlacement: "system_before_last",
+    isolationMode: "latest_selected_swipe_only",
+    includeOnlyIfMissingFromPrompt: true,
+    stripOlderTrackerBlocks: true,
+  };
+  await saveSettings(settings, userId);
+  const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+  await tryPersistDiagnostics({
+    ...diagnostics,
+    injectionEnabled: false,
+    lastPromptInjectionIsolationMode: "latest_selected_swipe_only",
+    lastPromptInjectionSafetyDecision: "swipe_safe_defaults_applied",
+    lastPromptInjectionSafetyReport: "Prompt Injection Safety Report\nenabled: no\nisolationMode: latest_selected_swipe_only\nsafetyDecision: swipe_safe_defaults_applied",
+  }, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Prompt Injection was set to swipe-safe defaults.",
+  }, "apply_swipe_safe_injection_defaults");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function applySwipeSafeMemoryDefaultsAction(
+  payload: Extract<FrontendMessage, { type: "apply_swipe_safe_memory_defaults" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const settings = await getSettings(userId);
+  settings.memory = {
+    ...settings.memory,
+    retainCount: Math.min(Math.max(settings.memory.retainCount || 2, 1), 2),
+    fullSnapshotCount: 1,
+    source: "sidecar_index",
+    requireSameSwipeWhenAvailable: true,
+  };
+  await saveSettings(settings, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Tracker Memory was set to swipe-safe defaults.",
+  }, "apply_swipe_safe_memory_defaults");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
+async function clearPromptInjectionSafetyDiagnosticsAction(
+  payload: Extract<FrontendMessage, { type: "clear_prompt_injection_safety_diagnostics" }>,
+  userId: string,
+): Promise<void> {
+  const resolvedChatId = await resolveActiveChatId(payload.chatId, userId).catch((error: unknown) => {
+    stageError("active_chat", error);
+  });
+  rememberActiveChat(userId, resolvedChatId);
+  const diagnostics = await loadDiagnostics(resolvedChatId, userId);
+  await tryPersistDiagnostics({
+    ...diagnostics,
+    lastPromptInjectionBoundaryMessageId: null,
+    lastPromptInjectionBoundaryMessageIndex: null,
+    lastPromptInjectionSelectedSwipeKey: null,
+    lastPromptInjectionCandidateCount: 0,
+    lastPromptInjectionAcceptedCount: 0,
+    lastPromptInjectionRejectedCount: 0,
+    lastPromptInjectionRejectedReasons: [],
+    lastPromptInjectionInjectedEntryIds: [],
+    lastPromptInjectionSourceSummary: null,
+    lastPromptInjectionSafetyDecision: "cleared",
+    lastPromptInjectionSafetyReport: null,
+  }, userId);
+  const report = await buildMaintenanceReport(resolvedChatId, userId);
+  await persistMaintenanceReport(resolvedChatId, userId, {
+    ...report,
+    repairedCount: report.repairedCount + 1,
+    summary: "Prompt Injection safety diagnostics were cleared.",
+  }, "clear_prompt_injection_safety_diagnostics");
+  await sendState(resolvedChatId, userId, "idle", null, payload.requestId);
+}
+
 async function disableOwnerPowerAction(
   payload: Extract<FrontendMessage, { type: "disable_owner_power" }>,
   userId: string,
@@ -6692,6 +7096,22 @@ spindle.onFrontendMessage((payload, userId) => {
       }
       if (payload.type === "repair_settings") {
         await repairSettingsAction(payload, userId);
+        return;
+      }
+      if (payload.type === "disable_prompt_injection") {
+        await disablePromptInjectionAction(payload, userId);
+        return;
+      }
+      if (payload.type === "apply_swipe_safe_injection_defaults") {
+        await applySwipeSafeInjectionDefaultsAction(payload, userId);
+        return;
+      }
+      if (payload.type === "apply_swipe_safe_memory_defaults") {
+        await applySwipeSafeMemoryDefaultsAction(payload, userId);
+        return;
+      }
+      if (payload.type === "clear_prompt_injection_safety_diagnostics") {
+        await clearPromptInjectionSafetyDiagnosticsAction(payload, userId);
         return;
       }
       if (payload.type === "disable_owner_power") {

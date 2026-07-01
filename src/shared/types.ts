@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.26";
+export const EXTENSION_VERSION = "0.26.1";
 export const STORAGE_SCHEMA_VERSION = 1;
 export const SETTINGS_SCHEMA_VERSION = 1;
 export const SPINDLE_TYPES_VERSION = "0.5.21";
@@ -11,6 +11,12 @@ export type LTrackerInjectionMode = "latest_chat_snapshot" | "latest_message_sna
 export type LTrackerInjectionFormat = "embedded_tag" | "compact_text" | "pretty_json" | "minimal";
 export type LTrackerInjectionPlacement = "append_to_last_assistant" | "system_before_last" | "system_after_history";
 export type LTrackerInjectionRoleFallback = "system" | "assistant";
+export type LTrackerInjectionIsolationMode =
+  | "off"
+  | "latest_selected_swipe_only"
+  | "same_message_selected_swipe_only"
+  | "same_swipe_chain"
+  | "legacy_recent";
 export type LTrackerMemorySource = "message_history" | "sidecar_index" | "embedded_tags" | "hybrid";
 export type LTrackerMemoryOrder = "oldest_to_newest" | "newest_to_oldest";
 export type LTrackerRenderSource = "latest_chat_snapshot" | "latest_message_snapshot";
@@ -317,6 +323,7 @@ export interface LTrackerInjectionSettings {
   format: LTrackerInjectionFormat;
   retainCount: number;
   injectionPlacement: LTrackerInjectionPlacement;
+  isolationMode: LTrackerInjectionIsolationMode;
   includeOnlyIfMissingFromPrompt: boolean;
   stripOlderTrackerBlocks: boolean;
   maxInjectedChars: number;
@@ -601,6 +608,18 @@ export interface LTrackerDiagnostics {
   lastInjectionSkippedReason: string | null;
   lastInjectionSnapshotCreatedAt: string | null;
   lastInjectionSourceMessageId: string | null;
+  lastPromptInjectionIsolationMode: LTrackerInjectionIsolationMode | null;
+  lastPromptInjectionBoundaryMessageId: string | null;
+  lastPromptInjectionBoundaryMessageIndex: number | null;
+  lastPromptInjectionSelectedSwipeKey: string | null;
+  lastPromptInjectionCandidateCount: number;
+  lastPromptInjectionAcceptedCount: number;
+  lastPromptInjectionRejectedCount: number;
+  lastPromptInjectionRejectedReasons: string[];
+  lastPromptInjectionInjectedEntryIds: string[];
+  lastPromptInjectionSourceSummary: string | null;
+  lastPromptInjectionSafetyDecision: string | null;
+  lastPromptInjectionSafetyReport: string | null;
   lastMemoryEntryCount: number;
   lastMemoryChars: number;
   lastMemoryTruncated: boolean;
@@ -985,6 +1004,10 @@ export type FrontendMessage =
   | { type: "repair_preset_render_locks"; chatId: string | null; requestId: string }
   | { type: "clean_orphan_snapshots"; chatId: string | null; requestId: string }
   | { type: "clean_broken_embedded_tags"; chatId: string | null; requestId: string }
+  | { type: "disable_prompt_injection"; chatId: string | null; requestId: string }
+  | { type: "apply_swipe_safe_injection_defaults"; chatId: string | null; requestId: string }
+  | { type: "apply_swipe_safe_memory_defaults"; chatId: string | null; requestId: string }
+  | { type: "clear_prompt_injection_safety_diagnostics"; chatId: string | null; requestId: string }
   | { type: "disable_owner_power"; chatId: string | null; requestId: string }
   | { type: "reset_owner_power_settings"; chatId: string | null; requestId: string }
   | { type: "clear_owner_power_crashes"; chatId: string | null; requestId: string };
